@@ -1,0 +1,468 @@
+syntax = "v1"
+
+import "type.api"
+
+// ============================================================
+// Request types
+// ============================================================
+// Auth
+type (
+	RegisterReq {
+		RegisterInfo RegisterInfo `json:"registerInfo"`
+	}
+	LoginReq {
+		UserEmail    string `json:"userEmail"`
+		UserPassword string `json:"userPassword"`
+	}
+	RefreshReq {
+		RefreshToken string `json:"refreshToken"`
+	}
+)
+
+// User
+type (
+	UserProfileReq {
+		UserId string `path:"userId"`
+	}
+	LogoutReq {
+		UserId string `path:"userId"`
+	}
+)
+
+// RBAC - Role
+type (
+	ListRolesReq {
+		PageRequest
+	}
+	CreateRoleReq {
+		RoleId      int64   `json:"roleId"`
+		RoleName    string  `json:"name,optional"`
+		Description string  `json:"description,optional"`
+		Permissions []int64 `json:"permissions,optional"`
+	}
+	UpdateRoleReq {
+		RoleId int64 `path:"roleId"`
+		Role   Role  `json:"role"`
+	}
+	AssignUserRoleReq {
+		UserId string  `path:"userId"`
+		Roles  []int64 `json:"roles"`
+	}
+	DeleteRoleReq {
+		RoleId int64 `path:"roleId"`
+	}
+)
+
+// RBAC - Permission
+type (
+	ListPermissionsReq {
+		PageRequest
+	}
+	CreatePermissionReq {
+		Permission Permission `json:"permission"`
+	}
+	AssignRolePermissionReq {
+		RoleId      int64   `path:"roleId"`
+		Permissions []int64 `json:"permissions"`
+	}
+	UpdatePermissionReq {
+		PermissionId int64      `path:"permissionId"`
+		Permission   Permission `json:"permission"`
+	}
+	DeletePermissionReq {
+		PermissionId int64 `path:"permissionId"`
+	}
+)
+
+// Announcement
+type (
+	ListAnnouncementReq {
+		PageRequest
+	}
+	CreateAnnouncementReq {
+		Title   string `json:"title"`
+		Content string `json:"content"`
+	}
+	UpdateAnnouncementReq {
+		AnnouncementId string `path:"announcementId"`
+		Title          string `json:"title"`
+		Content        string `json:"content"`
+	}
+	DeleteAnnouncementReq {
+		AnnouncementId string `path:"announcementId"`
+	}
+	PreviewAnnouncementReq {
+		AnnouncementId string `path:"announcementId"`
+	}
+)
+
+// Markdown
+type (
+	ListMarkdownReq {
+		PageRequest
+	}
+	MineMarkdownReq {
+		UserId string `path:"userId"`
+		PageRequest
+		ReviewStatus string `form:"reviewStatus,optional"`
+	}
+	DownloadMarkdownReq {
+		MarkdownId string `path:"markdownId"`
+	}
+	PreviewMarkdownReq {
+		MarkdownId string `path:"markdownId"`
+	}
+	UploadMarkdownReq {
+		Title   string `json:"title"`
+		Content string `json:"content"`
+	}
+	UpdateMarkdownReq {
+		MarkdownId string `path:"markdownId"`
+		Title      string `json:"title"`
+		Content    string `json:"content"`
+	}
+	DeleteMarkdownReq {
+		MarkdownId string `path:"markdownId"`
+	}
+)
+
+// Markdown - Review
+type (
+	ListReviewReq {
+		PageRequest
+		Status string `form:"status,optional"` // pending|approved|rejected，空=全部
+	}
+	GetReviewInfoReq {
+		MarkdownId string `path:"markdownId"`
+	}
+	ReviewMarkdownReq {
+		MarkdownId string `path:"markdownId"`
+		Status     string `json:"status"`
+		Comment    string `json:"comment,optional"`
+	}
+)
+
+// ============================================================
+// Response types (with BaseResp + RespBody)
+// ============================================================
+// Auth
+type (
+	RegisterResp {
+				BaseResp
+RegisterRespBody `json:"data"`
+			}
+	LoginResp {
+			BaseResp
+LoginRespBody `json:"data"`
+		}
+)
+
+// User
+type (
+	UserProfileResp {
+				BaseResp
+UserProfileRespBody `json:"data"`
+			}
+	LogoutResp {
+		BaseResp
+	}
+)
+
+// RBAC - Role
+type (
+	ListRoleResp {
+				BaseResp
+				PageInfo
+ListRoleRespBody `json:"data"`
+			}
+	CreateRoleResp {
+				BaseResp
+CreateRoleRespBody `json:"data"`
+			}
+	AssignUserRoleResp {
+		BaseResp
+	}
+	UpdateRoleResp {
+				BaseResp
+UpdateRoleRespBody `json:"data"`
+			}
+	DeleteRoleResp {
+		BaseResp
+	}
+)
+
+// RBAC - Permission
+type (
+	ListPermissionResp {
+				BaseResp
+				PageInfo
+ListPermissionRespBody `json:"data"`
+			}
+	CreatePermissionResp {
+					BaseResp
+CreatePermissionRespBody `json:"data"`
+				}
+	AssignRolePermissionResp {
+					BaseResp
+AssignRolePermissionRespBody `json:"data"`
+				}
+	UpdatePermissionResp {
+					BaseResp
+UpdatePermissionRespBody `json:"data"`
+				}
+	DeletePermissionResp {
+		BaseResp
+	}
+)
+
+// Announcement
+type (
+	ListAnnouncementResp {
+					BaseResp
+					PageInfo
+ListAnnouncementRespBody `json:"data"`
+				}
+	CreateAnnouncementResp {
+					BaseResp
+CreateAnnouncementRespBody `json:"data"`
+				}
+	UpdateAnnouncementResp {
+					BaseResp
+UpdateAnnouncementRespBody `json:"data"`
+				}
+	DeleteAnnouncementResp {
+		BaseResp
+	}
+	PreviewAnnouncementResp {
+					BaseResp
+PreviewAnnouncementRespBody `json:"data"`
+				}
+)
+
+// Markdown
+type (
+	ListMarkdownResp {
+				BaseResp
+				PageInfo
+ListMarkdownRespBody `json:"data"`
+			}
+	PreviewMarkdownResp {
+				BaseResp
+PreviewMarkdownRespBody `json:"data"`
+			}
+	DownloadMarkdownResp {
+		BaseResp
+	}
+	UploadMarkdownResp {
+				BaseResp
+UploadMarkdownRespBody `json:"data"`
+			}
+	UpdateMarkdownResp {
+				BaseResp
+UpdateMarkdownRespBody `json:"data"`
+			}
+	DeleteMarkdownResp {
+		BaseResp
+	}
+)
+
+// Markdown - Review
+type (
+	ListReviewResp {
+				BaseResp
+				PageInfo
+ListReviewRespBody `json:"data"`
+			}
+	GetReviewInfoResp {
+				BaseResp
+GetReviewInfoRespBody `json:"data"`
+			}
+	ReviewMarkdownResp {
+				BaseResp
+ReviewMarkdownRespBody `json:"data"`
+			}
+)
+
+// ============================================================
+// 1. 健康检查分组：K8s Liveness/Readiness 探针
+// ============================================================
+@server (
+	prefix: /api/v1
+	group:  health
+	sse:    true
+)
+service api {
+	@handler Healthz
+	get /status/healthz returns (BaseResp)
+
+	@handler Readyz
+	get /status/readyz returns (BaseResp)
+}
+
+// ============================================================
+// 2. 用户认证分组：注册、登录、刷新Token
+// ============================================================
+@server (
+	prefix: /api/v1
+	group:  auth
+)
+service api {
+	@handler Register
+	post /auth/register (RegisterReq) returns (RegisterResp)
+
+	@handler Login
+	post /auth/login (LoginReq) returns (LoginResp)
+}
+
+@server (
+	prefix: /api/v1
+	group:  auth
+	jwt:    Refresh
+)
+service api {
+	@handler RefreshToken
+	post /auth/refresh (RefreshReq) returns (LoginResp)
+}
+
+// ============================================================
+// 3. 用户信息分组：用户信息查询、登出
+// ============================================================
+@server (
+	group:  user
+	prefix: /api/v1
+	jwt:    Auth
+)
+service api {
+	@handler GetProfile
+	get /user/profile/:userId (UserProfileReq) returns (UserProfileResp)
+
+	@handler Logout
+	post /user/logout/:userId (LogoutReq) returns (LogoutResp)
+}
+
+// ============================================================
+// 4. 权限管理分组：角色、权限管理
+// ============================================================
+@server (
+	prefix: /api/v1/admin
+	group:  rbac
+	jwt:    Auth
+)
+service api {
+	// ============================================================ Role ====
+	@handler ListRoles
+	get /rbac/roles/list (ListRolesReq) returns (ListRoleResp)
+
+	@handler CreateRole
+	post /rbac/roles/create (CreateRoleReq) returns (CreateRoleResp)
+
+	@handler AssignUserRole
+	post /rbac/roles/assign/:userId (AssignUserRoleReq) returns (AssignUserRoleResp)
+
+	@handler UpdateRole
+	put /rbac/roles/update/:roleId (UpdateRoleReq) returns (UpdateRoleResp)
+
+	@handler DeleteRole
+	delete /rbac/roles/delete/:roleId (DeleteRoleReq) returns (DeleteRoleResp)
+
+	// ============================================================ Permission ====
+	@handler ListPermissions
+	get /rbac/permissions/list (ListPermissionsReq) returns (ListPermissionResp)
+
+	@handler CreatePermission
+	post /rbac/permissions/create (CreatePermissionReq) returns (CreatePermissionResp)
+
+	@handler AssignRolePermission
+	post /rbac/permissions/assign/:permissionId (AssignRolePermissionReq) returns (AssignRolePermissionResp)
+
+	@handler UpdatePermission
+	put /rbac/permissions/update/:permissionId (UpdatePermissionReq) returns (UpdatePermissionResp)
+
+	@handler DeletePermission
+	delete /rbac/permissions/delete/:permissionId (DeletePermissionReq) returns (DeletePermissionResp)
+}
+
+// ============================================================
+// 5. 公告管理分组：公告的增删改查
+// ============================================================
+@server (
+	prefix: /api/v1/admin
+	group:  announcement
+	jwt:    Auth
+)
+service api {
+	@handler CreateAnnouncement
+	post /announcement/create (CreateAnnouncementReq) returns (CreateAnnouncementResp)
+
+	@handler UpdateAnnouncement
+	put /announcement/update/:announcementId (UpdateAnnouncementReq) returns (UpdateAnnouncementResp)
+
+	@handler DeleteAnnouncement
+	delete /announcement/delete/:announcementId (DeleteAnnouncementReq) returns (DeleteAnnouncementResp)
+}
+
+@server (
+	prefix: /api/v1
+	group:  announcement
+)
+service api {
+	@handler ListAnnouncements
+	get /announcement/list (ListAnnouncementReq) returns (ListAnnouncementResp)
+
+	@handler PreviewAnnouncement
+	get /announcement/preview/:announcementId (PreviewAnnouncementReq) returns (PreviewAnnouncementResp)
+}
+
+// ============================================================
+// 6. Markdown管理分组：Markdown的增删改查
+// ============================================================
+@server (
+	prefix: /api/v1/admin
+	group:  markdown
+	jwt:    Auth
+)
+service api {
+	@handler ListReviews
+	get /markdown/reviews (ListReviewReq) returns (ListReviewResp)
+
+	@handler GetReviewInfo
+	get /markdown/review/:markdownId (GetReviewInfoReq) returns (GetReviewInfoResp)
+
+	@handler ListUnreviewedMarkdowns
+	get /markdown/unreviewed (ListMarkdownReq) returns (ListMarkdownResp)
+
+	@handler ReviewMarkdown
+	put /markdown/review/:markdownId (ReviewMarkdownReq) returns (ReviewMarkdownResp)
+}
+
+@server (
+	prefix: /api/v1
+	group:  markdown
+)
+service api {
+	@handler ListMarkdowns
+	get /markdown/list (ListMarkdownReq) returns (ListMarkdownResp)
+
+	@handler MineMarkdown
+	get /markdown/list/:userId (MineMarkdownReq) returns (ListMarkdownResp)
+
+	@handler PreviewMarkdown
+	get /markdown/preview/:markdownId (PreviewMarkdownReq) returns (PreviewMarkdownResp)
+}
+
+@server (
+	prefix: /api/v1
+	group:  markdown
+	jwt:    Auth
+)
+service api {
+	@handler UploadMarkdown
+	post /markdown/upload (UploadMarkdownReq) returns (UploadMarkdownResp)
+
+	@handler UpdateMarkdown
+	put /markdown/update/:markdownId (UpdateMarkdownReq) returns (UpdateMarkdownResp)
+
+	@handler DeleteMarkdown
+	delete /markdown/delete/:markdownId (DeleteMarkdownReq) returns (DeleteMarkdownResp)
+}
+

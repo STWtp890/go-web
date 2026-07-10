@@ -1,0 +1,215 @@
+syntax = "v1"
+
+import "base.api"
+
+// ============================================================
+// Data payload types —— 数据载体
+// ============================================================
+// Auth
+type (
+	RegisterInfo {
+		UserName     string `json:"userName"`
+		UserPassword string `json:"userPassword"`
+		Email        string `json:"email"`
+	}
+	RegisteredInfo {
+		UserId   string `json:"userId"`
+		UserName string `json:"userName"`
+		Email    string `json:"email"`
+	}
+	UserInfo {
+		UserId   string `json:"userId"`
+		UserName string `json:"userName"`
+		Email    string `json:"email"`
+		RoleId   int64  `json:"roleId"`
+	}
+)
+
+// User
+type (
+	UserProfile {
+		UserId   string `json:"userId"`
+		UserName string `json:"userName"`
+		Email    string `json:"email"`
+	}
+)
+
+// RBAC
+type (
+	Permission {
+		PermissionId int64  `json:"permissionId"`
+		Resource     string `json:"resource"`
+		Action       string `json:"action"`
+		Label        string `json:"label"`
+	}
+	PermissionList {
+		PermissionList []Permission `json:"permissionList"`
+	}
+	Role {
+		RoleId      int64   `json:"roleId"`
+		RoleName    string  `json:"name,optional"`
+		Description string  `json:"description"`
+		Permissions []int64 `json:"permissions"`
+	}
+	RoleList {
+		RoleList []Role `json:"roleList"`
+	}
+)
+
+// Announcement
+type (
+	AnnouncementListItem {
+		AnnouncementId string `json:"announcementId"`
+		AnnouceUserId  string `json:"annouceUserId,optional"`
+		Title          string `json:"title"`
+		CreatedAt      string `json:"createdAt"`
+		UpdatedAt      string `json:"updatedAt"`
+	}
+	AnnouncementDetail {
+		AnnouncementId string `json:"announcementId"`
+		AnnouceUserId  string `json:"annouceUserId,optional"`
+		Title          string `json:"title"`
+		Content        string `json:"content"`
+		CreatedAt      string `json:"createdAt"`
+		UpdatedAt      string `json:"updatedAt"`
+	}
+	AnnouncementListItemList {
+		AnnouncementList []AnnouncementListItem `json:"announcementList"`
+	}
+)
+
+// Markdown
+type (
+	MarkdownListItem {
+		MarkdownId    string `json:"markdownId"`
+		AuthorId      string `json:"authorId"`
+		Title         string `json:"title"`
+		Summary       string `json:"summary"`
+		ReviewerId    string `json:"reviewerId,optional"`
+		ReviewStatus  string `json:"reviewStatus,optional"`
+		ReviewComment string `json:"reviewComment,optional"`
+		CreatedAt     string `json:"createdAt"`
+		UpdatedAt     string `json:"updatedAt"`
+	}
+	MarkdownDetail {
+		MarkdownId    string `json:"markdownId"`
+		AuthorId      string `json:"authorId"`
+		Title         string `json:"title"`
+		Summary       string `json:"summary"`
+		Content       string `json:"content"`
+		ReviewerId    string `json:"reviewerId,optional"`
+		ReviewStatus  string `json:"reviewStatus,optional"`
+		ReviewComment string `json:"reviewComment,optional"`
+		CreatedAt     string `json:"createdAt"`
+		UpdatedAt     string `json:"updatedAt"`
+	}
+	MarkdownListItemList {
+		MarkdownList []MarkdownListItem `json:"markdownList"`
+	}
+)
+
+// ============================================================
+// Response Body types (without BaseResp)
+// ============================================================
+// Auth
+type (
+	RegisterRespBody {
+		RegisteredInfo RegisteredInfo `json:"registeredInfo"`
+	}
+	LoginRespBody {
+		AccessToken  string   `json:"accessToken"`
+		RefreshToken string   `json:"refreshToken"`
+		ExpiresIn    int64    `json:"expiresIn"`
+		UserInfo     UserInfo `json:"userInfo"`
+	}
+)
+
+// User
+type (
+	UserProfileRespBody {
+		UserProfile UserProfile `json:"userProfile"`
+	}
+)
+
+// RBAC - Role
+type (
+	ListRoleRespBody {
+		RoleList RoleList `json:"roleList"`
+	}
+	CreateRoleRespBody {
+		Role Role `json:"role"`
+	}
+	UpdateRoleRespBody {
+		Role Role `json:"role"`
+	}
+)
+
+// RBAC - Permission
+type (
+	ListPermissionRespBody {
+		PermissionList PermissionList `json:"permissionList"`
+	}
+	CreatePermissionRespBody {
+		Permission Permission `json:"permission"`
+	}
+	AssignRolePermissionRespBody {
+		Role           Role           `json:"role"`
+		PermissionList PermissionList `json:"permissionList"`
+	}
+	UpdatePermissionRespBody {
+		Permission Permission `json:"permission"`
+	}
+)
+
+// Announcement
+type (
+	ListAnnouncementRespBody {
+		AnnouncementList AnnouncementListItemList `json:"announcementList"`
+	}
+	PreviewAnnouncementRespBody {
+		Announcement AnnouncementDetail `json:"announcement"`
+	}
+	CreateAnnouncementRespBody {
+		Announcement AnnouncementDetail `json:"announcement"`
+	}
+	UpdateAnnouncementRespBody {
+		Announcement AnnouncementDetail `json:"announcement"`
+	}
+)
+
+// Markdown
+type (
+	ListMarkdownRespBody {
+		MarkdownList MarkdownListItemList `json:"markdownList"`
+	}
+	PreviewMarkdownRespBody {
+		Markdown MarkdownDetail `json:"markdown"`
+	}
+	UploadMarkdownRespBody {
+		Markdown MarkdownDetail `json:"markdown"`
+	}
+	UpdateMarkdownRespBody {
+		Markdown MarkdownDetail `json:"markdown"`
+	}
+)
+
+// Markdown - Review
+type (
+	ListReviewRespBody {
+		MarkdownList MarkdownListItemList `json:"markdownList"`
+	}
+	GetReviewInfoRespBody {
+		MarkdownId    string `json:"markdownId"`
+		ReviewerId    string `json:"reviewerId"`
+		ReviewStatus  string `json:"reviewStatus"`
+		ReviewComment string `json:"reviewComment"`
+		ReviewAt      string `json:"reviewAt"`
+	}
+	ReviewMarkdownRespBody {
+		MarkdownId string `json:"markdownId"`
+		AuthorId   string `json:"authorId"`
+		Status     string `json:"status"`
+		Comment    string `json:"comment,optional"`
+	}
+)
+

@@ -1,0 +1,976 @@
+.app-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+// ── 顶部导航栏：固定高度，水平伸缩 ──
+.app-navbar.navbar {
+  flex: 0 0 60px;
+  width: 100%;
+  height: 60px;
+  padding: 15px;
+  position: static;
+  background-color: var(--app-navbar-bg) !important;
+  box-shadow: var(--app-navbar-shadow);
+}
+
+// ── 中间行：侧边栏 + 内容 ──
+.app-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  padding: 10px;
+}
+
+.app-content {
+  flex: 1;
+  padding: 0;
+  margin-left: 20px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-width: 0;
+  background-color: transparent;
+  display: flex;
+  flex-direction: column;
+
+  // 修复 Bootstrap row/col 在零 padding 容器中的溢出
+  .row {
+    margin-left: 0;
+    margin-right: 0;
+  }
+  [class*="col-"] {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+  .row > [class*="col-"]:first-child { padding-left: 0; }
+  .row > [class*="col-"]:last-child  { padding-right: 0; }
+
+  // Vue SFC 根节点：打通垂直 flex 链
+  > div {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  // 页面容器：统一 flex 列布局
+  .app-page {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+
+    > .d-flex.justify-content-between {
+      flex-shrink: 0;
+    }
+  }
+
+  .app-page > .card {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+
+    .card-body {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+  }
+
+  .card > .card-body > .markdown-body {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+  }
+
+  .detail-card {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+
+    .detail-card-body {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+    }
+  }
+
+  // ── 列表卡片（文章/公告/审核通用）──
+  .list-card {
+    background: var(--app-bg-card);
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    cursor: pointer;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    transition: border-color .2s, box-shadow .2s;
+  }
+  .list-card:hover {
+    border-color: var(--app-brand);
+    box-shadow: 0 2px 12px rgba(0, 0, 0, .06);
+  }
+  .list-card-body { padding: 20px 24px; }
+  .list-card-title {
+    color: var(--app-brand);
+    font-weight: 700;
+    font-size: 1.1rem;
+    margin: 0 0 8px;
+  }
+  .list-card-summary {
+    color: var(--app-text-muted);
+    font-size: .9rem;
+    line-height: 1.6;
+    margin: 0 0 14px;
+  }
+  .list-card-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .list-card-time {
+    color: var(--app-text-primary);
+    font-size: .85rem;
+    font-weight: 500;
+  }
+  .list-card-actions { display: flex; gap: 6px; }
+
+  // ── 空状态提示（暂无数据）──
+  .empty-state {
+    text-align: center;
+    padding: 3rem 0;
+    color: var(--app-text-muted);
+  }
+  .empty-state-icon {
+    font-size: 48px;
+    color: var(--app-empty-icon);
+    opacity: .35;
+  }
+  .empty-state-text {
+    margin-top: 1rem;
+    color: var(--app-empty-text);
+  }
+
+  // 滚动条
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--app-scrollbar-thumb);
+    border-radius: 3px;
+    &:hover { background: var(--app-scrollbar-thumb-hover); }
+  }
+}
+
+// ── 侧边栏：固定宽度，垂直伸缩，flex column ──
+.app-sidebar {
+  width: 210px;
+  flex-shrink: 0;
+  margin-left: 10px;
+  padding: 10px;
+  border: 1px solid var(--app-border);
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(
+    180deg,
+    var(--app-sidebar-gradient-start) 0%,
+    var(--app-sidebar-gradient-end) 100%
+  );
+  color: var(--app-sidebar-text);
+  overflow: hidden;
+  z-index: 2;
+  transition: transform .3s ease;
+
+  // Logo 区
+  .sidebar-logo {
+    flex-shrink: 0;
+    padding: 6px 10px 10px;
+    border-bottom: 1px solid var(--app-sidebar-divider);
+
+    .logo-link {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #fff;
+      text-decoration: none;
+
+      .logo-icon { font-size: 20px; }
+      .logo-text { font-size: 15px; font-weight: 600; white-space: nowrap; }
+    }
+  }
+
+  // 导航区：自动填充剩余空间，可滚动
+  .sidebar-nav {
+    flex: 1;
+    overflow-y: auto;
+    padding-top: 4px;
+    min-height: 0;  // 关键：允许 flex 子元素收缩到内容以下
+
+    .nav {
+      margin-top: 0;
+    }
+  }
+
+  // 底部用户区：固定在底部
+  .sidebar-footer {
+    flex-shrink: 0;
+    padding: 6px 0;
+    border-top: 1px solid var(--app-sidebar-divider);
+  }
+}
+
+// ── 文章/公告编辑：textarea 取消高度锁 ──
+textarea.form-control {
+  max-height: none !important;
+  min-height: 300px;
+  resize: vertical;
+}
+
+// ── 底部页脚：固定高度，水平伸缩 ──
+.app-footer {
+  flex: 0 0 60px;
+  width: 100%;
+
+  .footer {
+    height: 60px;
+    border-top: 0;
+
+    .footer-inner {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+  }
+}
+
+// ── 移动端：侧边栏覆盖模式 ──
+@media (max-width: 991px) {
+  .app-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100%;
+    z-index: 1050;
+    transform: translateX(-100%);
+    box-shadow: 2px 0 20px rgba(0, 0, 0, .3);
+    border-radius: 0;
+    margin-left: 0;
+    padding: 10px;
+
+    &.open {
+      transform: translateX(0);
+    }
+  }
+
+  .sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, .4);
+    z-index: -1;
+
+    .app-sidebar.open & {
+      display: block;
+    }
+  }
+
+  .app-content {
+    padding: 10px 10px 10px;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// 图标：fontello 基础对齐
+// ═══════════════════════════════════════════════════════════
+[class^="icon-"],
+[class*=" icon-"] {
+  vertical-align: middle;
+}
+
+// ═══════════════════════════════════════════════════════════
+// 全局：背景 & 文字
+// ═══════════════════════════════════════════════════════════
+body,
+.app-layout,
+.app-body,
+.app-content,
+.wrapper,
+.main-panel,
+.content {
+  color: var(--app-text-primary);
+}
+
+// 容器透明 — 透出 body 壁纸
+body,
+.app-layout,
+.app-body,
+.app-content,
+.wrapper,
+.main-panel,
+.content {
+  background-color: transparent !important;
+}
+
+.wrapper {
+  position: relative;
+  z-index: 1;
+}
+
+// ═══════════════════════════════════════════════════════════
+// 标题（.markdown-body 内由 github-markdown-css 控制，此处排除）
+// ═══════════════════════════════════════════════════════════
+:where(h1, h2, h3, h4, h5, h6,
+       .h1, .h2, .h3, .h4, .h5, .h6):not(.markdown-body *) {
+  color: var(--app-brand) !important;
+}
+
+// ═══════════════════════════════════════════════════════════
+// 卡片（50% 透明度 + 毛玻璃）
+// ═══════════════════════════════════════════════════════════
+.card {
+  background-color: var(--app-bg-card);
+  border: 1px solid var(--app-border);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+
+  .card-header {
+    background-color: var(--app-bg-elevated);
+    border-bottom-color: var(--app-border);
+  }
+
+  .card-footer {
+    background-color: var(--app-bg-elevated);
+    border-top-color: var(--app-border);
+  }
+
+  .card-category {
+    color: var(--app-text-secondary);
+  }
+
+  .card-title,
+  .card-body {
+    color: var(--app-text-primary);
+  }
+
+  // 统一卡片内所有文字元素继承底色
+  .card-body {
+    strong, b, em, i, span, p, label, small, code,
+    a:not(.btn):not(.nav-link) {
+      color: inherit;
+    }
+
+    .text-muted {
+      color: var(--app-text-muted) !important;
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// 导航栏
+// ═══════════════════════════════════════════════════════════
+.navbar {
+  .navbar-brand {
+    color: var(--app-text-primary);
+  }
+
+  .navbar-toggler-bar {
+    background: var(--app-text-primary) !important;
+  }
+
+  .search-input {
+    color: var(--app-text-primary);
+
+    &::placeholder {
+      color: var(--app-text-secondary);
+    }
+  }
+}
+
+// 搜索栏
+.navbar-search {
+  background: var(--app-bg-input) !important;
+  border-color: var(--app-border) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+
+  .search-icon {
+    color: var(--app-text-secondary);
+  }
+}
+
+// 深色模式 — 导航栏图标与文字纯白
+html.dark-mode {
+  .navbar {
+    .navbar-brand {
+      color: #fff;
+    }
+
+    .navbar-toggler-bar {
+      background: #fff !important;
+    }
+
+    .search-input {
+      color: #fff;
+
+      &::placeholder {
+        color: rgba(255, 255, 255, .5);
+      }
+    }
+
+    .nav-link {
+      color: rgba(255, 255, 255, .85);
+
+      &:hover {
+        color: #fff;
+      }
+    }
+  }
+
+  .navbar-search .search-icon {
+    color: rgba(255, 255, 255, .6);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// 侧边栏 — .app-sidebar（flex 架构）+ .sidebar（兼容旧选择器）
+// ═══════════════════════════════════════════════════════════
+.app-sidebar,
+.sidebar {
+  // 覆盖 white-dashboard 的 fixed 定位（flex 子元素不需要）
+  position: static !important;
+  height: auto !important;
+  width: 210px;
+  margin: 0;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  box-shadow: none;
+
+  background: linear-gradient(
+    180deg,
+    var(--app-sidebar-gradient-start) 0%,
+    var(--app-sidebar-gradient-end) 100%
+  ) !important;
+
+  // Logo 区
+  .sidebar-logo,
+  .logo {
+    .logo-normal,
+    .logo-text {
+      color: var(--app-sidebar-logo-color);
+    }
+
+    .logo-link {
+      color: var(--app-sidebar-logo-color);
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .logo-icon { font-size: 18px; color: var(--app-sidebar-logo-color); }
+
+    border-bottom-color: var(--app-sidebar-divider);
+  }
+
+  .nav {
+    margin-top: 0;  // 覆盖 white-dashboard margin-top: 20px
+
+    li {
+      > a {
+        color: var(--app-sidebar-text);
+
+        &:hover,
+        &:focus {
+          color: var(--app-sidebar-text-hover);
+
+          i, p {
+            color: var(--app-sidebar-text-hover) !important;
+          }
+        }
+
+        i {
+          color: var(--app-sidebar-icon);
+        }
+
+        p {
+          color: var(--app-sidebar-text);
+          text-align: left;
+        }
+      }
+
+      &.active > a {
+        color: var(--app-sidebar-active-text) !important;
+
+        // 左侧圆点：主题分色（浅色-dark / 深色-white）
+        &::before {
+          background: var(--app-sidebar-active-dot) !important;
+        }
+
+        i,
+        p {
+          color: var(--app-sidebar-active-text) !important;
+        }
+
+        background-color: var(--app-sidebar-active-bg);
+      }
+    }
+  }
+
+  .sidebar-footer {
+    padding: 10px 0;
+    border-top-color: var(--app-sidebar-footer-border);
+  }
+
+  // ── 底部用户区 ──
+  .sidebar-user {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .sidebar-user-info,
+  .sidebar-user-logout,
+  .sidebar-user-login {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 23px;
+    color: var(--app-sidebar-text);
+    text-decoration: none;
+    font-size: 15px;
+    line-height: 30px;
+    text-transform: uppercase;
+    border-left: 3px solid transparent;
+    transition: border-color .2s ease, background-color .2s ease, color .2s ease;
+
+    i {
+      font-size: 17px;
+      width: 26px;
+      text-align: center;
+      color: var(--app-sidebar-icon);
+      transition: color .2s ease;
+    }
+
+    &:hover {
+      color: var(--app-sidebar-text-hover);
+      border-left-color: var(--app-brand);
+      background: var(--app-sidebar-hover-bg);
+
+      i {
+        color: var(--app-sidebar-active-text);
+      }
+    }
+
+    &.active {
+      border-left-color: var(--app-brand);
+      color: var(--app-sidebar-active-text);
+      background: var(--app-sidebar-active-bg);
+
+      i {
+        color: var(--app-sidebar-active-text);
+      }
+    }
+  }
+
+  // 退出登录：红色 hover + 手型光标
+  .sidebar-user-logout {
+    cursor: pointer;
+
+    &:hover {
+      color: var(--app-danger) !important;
+      border-left-color: var(--app-danger) !important;
+
+      i {
+        color: var(--app-danger) !important;
+      }
+    }
+  }
+
+  .sidebar-user-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+  }
+
+  .sidebar-user-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    line-height: 1.2;
+  }
+
+  .sidebar-user-email {
+    font-size: 12px;
+    line-height: 1.2;
+    text-transform: none;
+    color: var(--app-sidebar-icon);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  hr {
+    border-color: var(--app-sidebar-divider) !important;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// 移动端遮罩
+// ═══════════════════════════════════════════════════════════
+#bodyClick {
+  background-color: var(--app-overlay-bg);
+}
+
+// ═══════════════════════════════════════════════════════════
+// 表格
+// ═══════════════════════════════════════════════════════════
+.table {
+  color: var(--app-text-primary);
+
+  thead th {
+    color: var(--app-brand) !important;
+    border-bottom-color: var(--app-border);
+  }
+
+  td,
+  th {
+    color: var(--app-text-primary) !important;
+    border-color: var(--app-border);
+  }
+
+  &.table-striped tbody tr:nth-of-type(odd) {
+    background-color: rgba(128, 128, 128, .04);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// 表单
+// ═══════════════════════════════════════════════════════════
+.form-control {
+  background-color: var(--app-bg-input);
+  border-color: var(--app-border);
+  color: var(--app-text-primary);
+
+  &:focus {
+    background-color: var(--app-bg-elevated);
+    border-color: var(--app-brand);
+    color: var(--app-text-primary);
+  }
+
+  &::placeholder {
+    color: var(--app-text-muted);
+  }
+}
+
+select.form-control {
+  option {
+    background-color: var(--app-bg-card);
+    color: var(--app-text-primary);
+  }
+}
+
+.form-control-label {
+  color: var(--app-text-secondary);
+}
+
+// ═══════════════════════════════════════════════════════════
+// 按钮
+// ═══════════════════════════════════════════════════════════
+.btn-outline-secondary {
+  color: var(--app-text-secondary);
+  border-color: var(--app-border);
+
+  &:hover {
+    background-color: var(--app-bg-hover);
+    color: var(--app-text-primary);
+  }
+}
+
+.btn-default {
+  color: var(--app-text-primary);
+  background-color: var(--app-bg-elevated);
+  border-color: var(--app-border);
+
+  &:hover {
+    background-color: var(--app-bg-hover);
+  }
+
+  &:disabled {
+    opacity: .4;
+  }
+}
+
+// ── 统一内容区按钮（公告/文章/审核等列表页）──
+.app-content {
+  // 覆盖 white-dashboard 灰色背景，保留语义色
+  .btn {
+    background: var(--app-bg-card) !important;
+    background-image: none !important;
+    color: var(--app-text-primary) !important;
+    font-weight: 400;
+    border: 1px solid var(--app-border) !important;
+    border-radius: 6px;
+    box-shadow: none !important;
+    transform: none !important;
+
+    &:hover,
+    &:focus,
+    &:active {
+      transform: none !important;
+      box-shadow: none !important;
+      background: var(--app-bg-hover) !important;
+    }
+  }
+
+  // 主按钮：品牌绿实心
+  .btn-primary {
+    color: #fff !important;
+    background: var(--app-brand) !important;
+    border-color: var(--app-brand) !important;
+
+    &:hover {
+      background: #1aae6f !important;
+      border-color: #1aae6f !important;
+      color: #fff !important;
+    }
+  }
+
+  // outline-primary：透明底 + 品牌绿 hover
+  .btn-outline-primary {
+    &:hover {
+      border-color: var(--app-brand) !important;
+      color: var(--app-brand) !important;
+      background: var(--app-bg-hover) !important;
+    }
+  }
+
+  // 成功按钮：绿色实心
+  .btn-success {
+    color: #fff !important;
+    background: #2dce89 !important;
+    border-color: #2dce89 !important;
+
+    &:hover {
+      background: #1aae6f !important;
+      border-color: #1aae6f !important;
+    }
+  }
+
+  // 危险按钮：红色实心
+  .btn-danger {
+    color: #fff !important;
+    background: #e74c3c !important;
+    border-color: #e74c3c !important;
+
+    &:hover {
+      background: #c0392b !important;
+      border-color: #c0392b !important;
+    }
+  }
+
+  // outline-danger：透明底 + 红色 hover
+  .btn-outline-danger {
+    &:hover {
+      border-color: var(--app-danger) !important;
+      color: var(--app-danger) !important;
+      background: var(--app-bg-hover) !important;
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// 模态框
+// ═══════════════════════════════════════════════════════════
+.modal-content {
+  background-color: var(--app-bg-card);
+  border-color: var(--app-border);
+  color: var(--app-text-primary);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.modal-header {
+  border-bottom-color: var(--app-border);
+
+  .modal-title {
+    color: var(--app-text-primary);
+  }
+
+  .close {
+    color: var(--app-text-primary);
+  }
+}
+
+.modal-footer {
+  border-top-color: var(--app-border);
+}
+
+.modal-backdrop {
+  background-color: #000;
+
+  &.show {
+    opacity: .5;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Alert 提示/警告
+// ═══════════════════════════════════════════════════════════
+.alert-danger {
+  background-color: var(--app-alert-danger-bg);
+  border-color: var(--app-alert-danger-border);
+  color: var(--app-alert-danger-text);
+}
+
+.alert-success {
+  background-color: var(--app-alert-success-bg);
+  border-color: var(--app-alert-success-border);
+  color: var(--app-alert-success-text);
+}
+
+.alert-warning {
+  background-color: var(--app-alert-warning-bg);
+  border-color: var(--app-alert-warning-border);
+  color: var(--app-alert-warning-text);
+}
+
+.alert-info {
+  background-color: var(--app-alert-info-bg);
+  border-color: var(--app-alert-info-border);
+  color: var(--app-alert-info-text);
+}
+
+// ═══════════════════════════════════════════════════════════
+// 分页（预留 — 当前无模板使用，但保留以备后用）
+// ═══════════════════════════════════════════════════════════
+.pagination {
+  .page-link {
+    background-color: var(--app-bg-elevated);
+    border-color: var(--app-border);
+    color: var(--app-text-secondary);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Bootstrap 4 工具类覆盖（!important 对抗 !important）
+// 解决 .text-muted / .text-primary 等硬编码值在深色模式下不可读的问题
+// ═══════════════════════════════════════════════════════════
+.text-muted {
+  color: var(--app-text-muted) !important;
+}
+.text-primary {
+  color: var(--app-brand) !important;
+}
+.text-secondary {
+  color: var(--app-text-secondary) !important;
+}
+.small, small {
+  color: inherit;  // 继承父级文字色，不另设硬编码
+}
+
+// 深色模式：强化 card-body 内所有文字为白色
+html.dark-mode {
+  .card-body {
+    color: #fff;
+
+    // 确保所有文本元素继承白色
+    strong, b, em, i, span, p, a:not(.btn) {
+      color: #fff;
+    }
+
+    // 次级文字在深色背景下适度提亮
+    .text-muted {
+      color: rgba(255, 255, 255, .6) !important;
+    }
+
+    // 表格单元格继承卡片白色
+    .table {
+      color: #fff;
+
+      td, th {
+        color: #fff !important;
+      }
+
+      .text-muted {
+        color: rgba(255, 255, 255, .55) !important;
+      }
+    }
+  }
+
+  // 全局 muted 文字提亮
+  .text-muted {
+    color: rgba(255, 255, 255, .6) !important;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// 页脚
+// ═══════════════════════════════════════════════════════════
+.footer {
+  background-color: var(--app-footer-bg) !important;
+  border-top-color: var(--app-border);
+  box-shadow: var(--app-footer-shadow);
+
+  .nav-link,
+  .copyright {
+    color: var(--app-text-secondary);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// 下拉菜单
+// ═══════════════════════════════════════════════════════════
+.dropdown-menu {
+  background-color: var(--app-bg-elevated);
+  border-color: var(--app-border);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+
+  .dropdown-item {
+    color: var(--app-text-primary);
+
+    &:hover {
+      background-color: var(--app-bg-hover);
+    }
+  }
+
+  .dropdown-divider {
+    border-top-color: var(--app-border);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Badge / Code / 辅助文字（.markdown-body 内由 github-markdown-css + hljs 控制）
+// ═══════════════════════════════════════════════════════════
+code:not(.markdown-body *) {
+  color: var(--app-code-color);
+  background-color: var(--app-code-bg);
+}
+
+.badge-primary {
+  background-color: var(--app-badge-primary-bg);
+  color: #fff;
+}
+
+.text-muted {
+  color: var(--app-text-muted) !important;
+}
+
+.text-primary {
+  color: var(--app-brand) !important;
+}
+
+// ═══════════════════════════════════════════════════════════
+// 认证页
+// ═══════════════════════════════════════════════════════════
+.auth-page {
+  .card {
+    box-shadow: 0 4px 24px rgba(0, 0, 0, .06);
+    border: none;
+  }
+}

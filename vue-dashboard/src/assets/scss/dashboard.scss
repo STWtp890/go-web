@@ -1,0 +1,42 @@
+
+// ============================================================
+// Dashboard 样式入口
+//
+// ⚠ @import 保留说明：
+//   Bootstrap 4 + White Dashboard 的 SCSS 架构依赖 @import 的
+//   全局作用域机制 —— 函数/变量/Mixin 通过 @import 链全局共享。
+//   Sass 的 @use 是词法作用域，与此架构不兼容。
+//   完整迁移到 @use 需等待框架升级（Bootstrap 5+ 原生支持 @use）。
+//   Sass 弃用警告已通过 vite.config.js silenceDeprecations 抑制。
+//
+// 架构（由底层到顶层，顺序敏感）：
+//   0. 基础设施  — SCSS 函数/变量/Mixin（@import 全局共享）
+//   1. vendor/   — 第三方：Bootstrap 4 核心 + White Dashboard 组件
+//   2. base/     — 基础层：组件颜色覆盖（CSS 变量驱动，主题无关）
+//   3. themes/   — 主题层：浅色/深色 CSS 变量值
+//
+// 主题切换原理：
+//   - 所有组件颜色通过 CSS 自定义属性（--app-*）控制
+//   - themes/_light.scss  在 :root 上定义浅色值
+//   - themes/_dark.scss   在 html.dark-mode 上覆盖深色值
+//   - 切换主题只需添加/移除 <html> 上的 .dark-mode 类
+// ============================================================
+
+// ── 0. 基础设施（顺序敏感：custom → bootstrap）───────────
+@import "white-dashboard/custom/functions";
+@import "white-dashboard/bootstrap/functions";
+@import "white-dashboard/custom/variables";
+@import "white-dashboard/bootstrap/variables";
+@import "white-dashboard/custom/mixins";
+@import "white-dashboard/bootstrap/mixins";
+
+// ── 1. 第三方样式（精简导入，仅实际使用的组件）──────────
+@import "vendor/bootstrap-components";
+@import "vendor/white-dashboard-components";
+
+// ── 2. 组件颜色覆盖（CSS 变量驱动，主题无关）──────────
+@import "base/components";
+
+// ── 3. 主题变量值 ──────────────────────────────────────
+@import "themes/light";
+@import "themes/dark";

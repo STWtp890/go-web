@@ -1,0 +1,48 @@
+
+name: htdo
+
+services:
+
+  # ==================== 反向代理（统一入口） ====================
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: htdo-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - service_frontend
+    extra_hosts:
+      # Docker Desktop / WSL2: 解析宿主机地址，访问后端暴露的 18888 端口
+      - "host.docker.internal:host-gateway"
+    environment:
+      # 前端（同 compose 内服务名）
+      FRONTEND_HOST: service_frontend
+      FRONTEND_PORT: "5173"
+      # 后端（通过宿主机暴露端口，解耦后端 compose）
+      BACKEND_HOST: host.docker.internal
+      BACKEND_PORT: "18888"
+    volumes:
+      # 官方镜像自动处理 /etc/nginx/templates/*.template → /etc/nginx/conf.d/
+      - ./nginx/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+    networks:
+      - service_frontend
+
+  # ==================== 前端服务（Node.js 托管 Vue SPA） ====================
+  service_frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: htdo-frontend:latest
+    container_name: htdo-frontend
+    restart: unless-stopped
+    expose:
+      - "5173"
+    environment:
+      PORT: "5173"
+    networks:
+      - service_frontend
+
+networks:
+  service_frontend:
+    driver: bridge
