@@ -40,6 +40,7 @@ func UploadHandler(c *gin.Context) {
 		"markdownId": md.MarkdownID,
 		"title":      md.Title,
 		"summary":    md.Summary,
+		"visibility": md.Visibility,
 		"createdAt":  md.CreatedAt,
 		"updatedAt":  md.UpdatedAt,
 	})

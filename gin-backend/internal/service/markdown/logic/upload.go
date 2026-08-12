@@ -42,12 +42,17 @@ func UploadMarkdownLogic(ctx context.Context, authorID string, req *requests.Upl
 	//    SearchText = 标题 + 摘要 + 正文, 供 pg_search 全文检索索引
 	title := strings.TrimSpace(req.Title)
 	summary := buildSummary(req.Content)
+	visibility := req.Visibility
+	if visibility == "" {
+		visibility = markdownmodel.VisibilityPrivate // 缺省私有
+	}
 	md := &markdownmodel.Markdown{
-		MarkdownID: uuid.NewString(),
-		AuthorUserID:   authorID,
-		Title:      title,
-		Summary:    summary,
-		SearchText: title + " " + summary + " " + req.Content,
+		MarkdownID:   uuid.NewString(),
+		AuthorUserID: authorID,
+		Title:        title,
+		Summary:      summary,
+		Visibility:   visibility,
+		SearchText:   title + " " + summary + " " + req.Content,
 	}
 	content := &markdownmodel.Content{
 		MarkdownID: md.MarkdownID,

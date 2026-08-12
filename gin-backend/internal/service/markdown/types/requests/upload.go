@@ -1,9 +1,11 @@
 package requests
 
 // UploadMarkdownRequest 上传文章请求参数
+// Visibility: 可见性 (public 公开 / private 私有), 缺省 private
 type UploadMarkdownRequest struct {
-	Title   string `json:"title" binding:"required,min=1,max=255"`
-	Content string `json:"content" binding:"required"`
+	Title      string `json:"title" binding:"required,min=1,max=255"`
+	Content    string `json:"content" binding:"required"`
+	Visibility string `json:"visibility" binding:"omitempty,oneof=public private"`
 }
 
 // ListMyMarkdownQuery 我的文章列表查询参数

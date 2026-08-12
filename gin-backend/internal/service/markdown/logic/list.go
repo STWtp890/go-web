@@ -51,3 +51,48 @@ func ListMyMarkdownLogic(ctx context.Context, authorID string, page, pageSize in
 
 	return list, total, nil
 }
+
+// ListPublicMarkdownLogic 公开文章分页列表 (visibility = public, 所有登录用户可浏览)
+// 不含完整 content, 列表用 summary
+// :Param
+// - `ctx` 上下文
+// - `page` 页码 (<=0 时默认 1)
+// - `pageSize` 每页条数 (<=0 或 >100 时默认 10)
+// :Return
+// - `[]*markdownmodel.Markdown` 公开文章元信息列表 (按 id 倒序)
+// - `int64` 公开文章总数 (用于分页)
+// - `error` 如果查询失败, 返回错误信息
+func ListPublicMarkdownLogic(ctx context.Context, page, pageSize int) ([]*markdownmodel.Markdown, int64, error) {
+	db, err := markdownDB(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 1. 归一化分页参数
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 10
+	}
+
+	// 2. 统计总数 (仅 public, 软删除过滤由 gorm 自动附加)
+	var total int64
+	if err := db.Model(&markdownmodel.Markdown{}).
+		Where("visibility = ?", markdownmodel.VisibilityPublic).
+		Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// 3. 分页查询列表
+	var list []*markdownmodel.Markdown
+	if err := db.Where("visibility = ?", markdownmodel.VisibilityPublic).
+		Order("id DESC").
+		Offset((page - 1) * pageSize).
+		Limit(pageSize).
+		Find(&list).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return list, total, nil
+}

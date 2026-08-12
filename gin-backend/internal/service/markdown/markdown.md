@@ -15,10 +15,11 @@ markdown 业务用于**登录用户上传自己的 Markdown 文章并可随时�
 
 | 表 | 字段要点 | 说明 |
 | --- | --- | --- |
-| `markdowns` | `id`(PK), `markdown_id`(UUID 唯一), `author_id`(JWT sub), `title`, `summary`, `search_text`(text, 供检索), 时间字段, `deleted_at`(软删除) | 列表查询不加载大字段; `search_text` 供全文检索 |
+| `markdowns` | `id`(PK), `markdown_id`(UUID 唯一), `author_id`(JWT sub), `title`, `summary`, `visibility`(public/private), `search_text`(text, 供检索), 时间字段, `deleted_at`(软删除) | 列表查询不加载大字段; `search_text` 供全文检索 |
 | `markdown_contents` | `id`(PK), `markdown_id`(唯一), `content`(text) | 与元信息 1:1, 详情时才读取 |
 
 - `markdown_id` 为 UUID, 对外暴露防遍历攻击; 内部自增 `id` 不下发。
+- **可见性** (`visibility`): `public` 公开 (所有登录用户可浏览列表/详情), `private` 私有 (仅作者可见, 默认); 详情接口对 private 非作者返回 403。
 - **软删除** (GORM): `deleted_at` 为 `gorm.DeletedAt` 类型 (见 `orm.TimeFiled`), 删除自动转为 UPDATE 软删, 查询自动附加 `deleted_at IS NULL`, 物理删除需 `Unscoped()`。
 - **全文检索** (`search_text`): 文本列, 内容 = 标题 + 摘要 + 正文;
   经 **ParadeDB pg_search** 的 BM25 索引 (`USING bm25`, 中文 **jieba** 分词) 实现智能检索,
@@ -30,8 +31,9 @@ markdown 业务用于**登录用户上传自己的 Markdown 文章并可随时�
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/api/v1/protected/markdown/upload` | 上传文章 (title + content) |
+| `POST` | `/api/v1/protected/markdown/upload` | 上传文章 (title + content + 可选 visibility, 默认 private) |
 | `GET` | `/api/v1/protected/markdown/mine` | 我的文章分页列表 (summary, 不含 content) |
+| `GET` | `/api/v1/protected/markdown/public` | 公开文章分页列表 (visibility=public, 所有登录用户可浏览) |
 | `GET` | `/api/v1/protected/markdown/search` | 全文搜索我的文章 (按相关度排序) |
 | `GET` | `/api/v1/protected/markdown/:markdownId` | 文章详情 (含完整 content) |
 
