@@ -1,0 +1,20 @@
+# 编译产物
+*.exe
+*.out
+*.test
+*.bin
+
+# 密钥文件 (本地生成, 不应入库)
+*.pem
+
+# 日志
+*.log
+logs/
+
+# IDE
+.idea/
+*.iml
+
+# 系统
+.DS_Store
+Thumbs.db

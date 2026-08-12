@@ -1,0 +1,68 @@
+# Gin 后端应用配置
+server:
+  port: 8080
+  mode: debug          # debug | release | test
+  read_timeout: 30s
+  write_timeout: 30s
+
+# PostgreSQL 配置 (auth/markdown/chat 共用)
+postgres:
+  host: 127.0.0.1
+  port: 5432
+  user: postgres
+  password: "postgres"
+  dbname: gin_demo
+  max_idle_conns: 10
+  max_open_conns: 100
+
+# Redis 配置
+redis:
+  host: 127.0.0.1
+  port: 6379
+  password: ""
+  db: 0
+
+custom:
+  # JWT 配置 (RS256 非对称加密)
+  jwt:
+    private_key_path: "configs/rsa_private.pem"
+    public_key_path: "configs/rsa_public.pem"
+    access_expire_hours: 24     # Access Token 有效期 (小时)
+    refresh_expire_hours: 168   # Refresh Token 有效期 (小时, 7 天)
+
+  # CORS 配置
+  cors:
+    allow_origins:
+      - "http://localhost:5173"
+      - "http://localhost:3000"
+    allow_methods:
+      - GET
+      - POST
+      - PUT
+      - DELETE
+      - PATCH
+      - OPTIONS
+    allow_headers:
+      - Origin
+      - Content-Type
+      - Authorization
+    expose_headers:
+      - Content-Length
+    allow_credentials: true
+    max_age: 12h
+
+  # 上传文件配置
+  upload:
+    max_size: 10485760    # 10MB
+    allow_exts:
+      - .jpg
+      - .jpeg
+      - .png
+      - .gif
+      - .pdf
+    path: storage/uploads
+log:
+  level: info           # debug | info | warn | error
+  format: text          # text | json
+  output: stdout        # stdout | file
+  file_path: storage/logs/app.log

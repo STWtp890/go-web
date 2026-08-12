@@ -1,0 +1,52 @@
+package handler
+
+import (
+	"net/http"
+	"strings"
+
+	eror "gin-backend/internal/common/base/errors"
+	"gin-backend/internal/common/base/responses"
+	logic "gin-backend/internal/service/markdown/logic"
+	req "gin-backend/internal/service/markdown/types/requests"
+
+	"github.com/gin-gonic/gin"
+)
+
+// SearchHandler 全文搜索我的文章 (标题/摘要/正文, 按相关度排序)
+// GET /api/v1/protected/markdown/search?keyword=xxx&page=1&pageSize=10
+func SearchHandler(c *gin.Context) {
+	// 1. 提取当前用户 (JWT claims sub)
+	userID, ok := currentUserID(c)
+	if !ok {
+		responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "无法识别用户身份")
+		return
+	}
+
+	// 2. 绑定查询参数
+	q := new(req.SearchMarkdownQuery)
+	if err := c.ShouldBindQuery(q); err != nil {
+		responses.Fail(c, http.StatusBadRequest, eror.CodeValidationFailed, "请检查搜索参数")
+		return
+	}
+	if strings.TrimSpace(q.Keyword) == "" {
+		responses.Fail(c, http.StatusBadRequest, eror.CodeValidationFailed, "搜索关键词不能为空")
+		return
+	}
+
+	// 3. 执行全文搜索
+	list, total, err := logic.SearchMarkdownLogic(c.Request.Context(), userID, q.Keyword, q.Page, q.PageSize)
+	if err != nil {
+		responses.Fail(c, http.StatusInternalServerError, eror.CodeInternalError, err.Error())
+		return
+	}
+
+	// 4. 归一化分页并返回结果
+	page, pageSize := normalizePage(q.Page, q.PageSize)
+	totalPages := (int(total) + pageSize - 1) / pageSize
+	responses.OKWithMeta(c, gin.H{"markdownList": list}, &responses.Meta{
+		Page:       page,
+		PerPage:    pageSize,
+		Total:      int(total),
+		TotalPages: totalPages,
+	})
+}
