@@ -1,7 +1,7 @@
 package handler
 
 import (
-	"gin-backend/internal/common/service/jwtmethod"
+	"gin-backend/internal/common/service/jwt"
 
 	"github.com/gin-gonic/gin"
 )
@@ -11,7 +11,7 @@ import (
 // - `string` 用户 ID
 // - `bool` 是否提取成功
 func currentSubject(c *gin.Context) (string, bool) {
-	claims, ok := jwtmethod.ExtractClaims(c)
+	claims, ok := jwt.ExtractClaims(c)
 	if !ok {
 		return "", false
 	}

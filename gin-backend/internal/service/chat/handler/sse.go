@@ -5,7 +5,7 @@ import (
 
 	eror "gin-backend/internal/common/base/errors"
 	"gin-backend/internal/common/base/responses"
-	"gin-backend/internal/common/service/jwtmethod"
+	"gin-backend/internal/common/service/jwt"
 	logic "gin-backend/internal/service/chat/logic"
 
 	"github.com/gin-gonic/gin"
@@ -14,7 +14,7 @@ import (
 // SSEHandler SSE 流入口: GET /api/v1/protected/chat/sse
 func SSEHandler(c *gin.Context) {
 	// 鉴权 (AuthRequired 中间件已校验, 此处提取 subject)
-	claims, exists := jwtmethod.ExtractClaims(c)
+	claims, exists := jwt.ExtractClaims(c)
 	if !exists {
 		responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "无效的Token")
 		return
@@ -22,6 +22,11 @@ func SSEHandler(c *gin.Context) {
 	sub, err := claims.GetSubject()
 	if err != nil {
 		responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "无效的Token")
+		return
+	}
+	sessionID, ok := jwt.SessionIDFromClaims(*claims)
+	if !ok {
+		responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "会话已失效，请重新登录")
 		return
 	}
 
@@ -33,5 +38,5 @@ func SSEHandler(c *gin.Context) {
 	}
 
 	// 进入 SSE 长连接 (阻塞直至断开)
-	logic.SSELogic(c.Request.Context(), sub, lastEventID, c.Writer)
+	logic.SSELogic(c.Request.Context(), sub, sessionID, lastEventID, c.Writer)
 }

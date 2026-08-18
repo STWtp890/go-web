@@ -5,11 +5,12 @@ import (
 	"errors"
 	"strings"
 
-	markdownmodel "gin-backend/internal/orm/markdown"
+	markdownmodel "gin-backend/internal/model/orm/markdown"
+	"gin-backend/internal/service/markdown/utils"
 )
 
 // SearchMarkdownLogic 全文搜索当前用户的文章 (标题/摘要/正文)
-// 基于 ParadeDB pg_search 的 BM25 智能检索 (jieba 中文分词, 见 ../deployments/postgresql/sql/pg_search_setup.sql)
+// 基于 ParadeDB pg_search 的 BM25 智能检索 (jieba 中文分词, 见 deployments/postgresql/sql/service/markdown/search_setup.sql)
 // 使用 ||| (match disjunction) 操作符: 命中任一查询词即可, 且对原始用户输入安全
 // :Param
 // - `ctx` 上下文
@@ -30,7 +31,7 @@ func SearchMarkdownLogic(ctx context.Context, authorID, keyword string, page, pa
 		return nil, 0, errors.New("无法识别用户身份")
 	}
 
-	db, err := markdownDB(ctx)
+	db, err := utils.MarkdownDB(ctx)
 	if err != nil {
 		return nil, 0, err
 	}

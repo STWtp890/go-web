@@ -13,16 +13,20 @@ import (
 type UserChannel struct {
 	mu      sync.Mutex
 	subject string
+	session string
 	alive   atomic.Bool
 	msgCh   chan message.Message // 类型化消息通道 (投递队列)
+	done    chan struct{}        // Offline 后关闭，供 HTTP Handler 结束长连接
 	client  Client               // 底层连接 (SSE / WebSocket)
 }
 
 // NewUserChannel 创建用户通道
-func NewUserChannel(subject string, c Client) *UserChannel {
+func NewUserChannel(subject, sessionID string, c Client) *UserChannel {
 	return &UserChannel{
 		subject: subject,
+		session: sessionID,
 		msgCh:   make(chan message.Message, 64),
+		done:    make(chan struct{}),
 		client:  c,
 	}
 }
@@ -30,6 +34,7 @@ func NewUserChannel(subject string, c Client) *UserChannel {
 // Online 启动异步投递协程: 消费 msgCh 并经 client.Send 发送到连接
 // 通道关闭或发送失败时退出
 func (uc *UserChannel) Online() {
+	uc.alive.Store(true)
 	go func() {
 		for m := range uc.msgCh {
 			if !uc.alive.Load() {
@@ -51,6 +56,7 @@ func (uc *UserChannel) Offline() {
 		return
 	}
 	close(uc.msgCh)
+	close(uc.done)
 	_ = uc.client.Close()
 }
 
@@ -72,5 +78,11 @@ func (uc *UserChannel) Push(m message.Message) bool {
 // Subject 返回用户标识
 func (uc *UserChannel) Subject() string { return uc.subject }
 
+// SessionID 返回该连接建立时绑定的 JWT 会话标识。
+func (uc *UserChannel) SessionID() string { return uc.session }
+
 // Alive 返回是否存活
 func (uc *UserChannel) Alive() bool { return uc.alive.Load() }
+
+// Done 在连接被 Offline 时关闭。WS/SSE HTTP 生命周期通过它及时返回。
+func (uc *UserChannel) Done() <-chan struct{} { return uc.done }

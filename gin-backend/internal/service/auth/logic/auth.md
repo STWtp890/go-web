@@ -1,154 +1,54 @@
-# 认证逻辑的设计
+# 用户认证与单有效会话
 
-## JWT
+## Token
 
-### 总体策略
+用户登录后签发一对 RS256 JWT：
 
-| Token 类型 | 策略 | 原则 |
-|-----------|------|------|
-| Access Token | **黑名单** | 有效的 token 不存 Redis, 只存被吊销的 |
-| Refresh Token | **白名单** | 只有 Redis 中存在的 token 才有效 |
+| 类型 | `token_use` | 有效期 | 用途 |
+| --- | --- | --- | --- |
+| Access Token | `access` | `access_expire_hours` | 访问受保护接口 |
+| Refresh Token | `refresh` | `refresh_expire_hours` | 原子轮换并取得新的 Token 对 |
 
-### Redis Key 规范
+两类 Token 都包含 `iss`、`sub`、`sid`、`jti`、`iat`、`nbf` 与 `exp`。`sid` 是一次登录会话的随机标识；`jti` 是每个 JWT 独有的标识。
 
-#### Access Token 黑名单
+## Redis 会话状态
 
-全语义: `jwt:accessToken:blacklist:{accessTokenId}`  
-简化:   `jwt:acs:bl:{accessTokenId}`  
-Value:  "1"  
-TTL:    = accessToken 剩余有效期（精确计算, 上限保护）  
+每个普通用户只保存一个当前有效会话：
 
-#### Refresh Token 白名单
-
-全语义: `jwt:refreshToken:whitelist:{userId}:{refreshTokenId}`  
-简化:   `jwt:ref:wl:{userId}:{refreshTokenId}`  
-Value:  SHA256(token) 前 16 位 hex  
-TTL:    = RefreshExpireHours  
-
----
-
-## 四种场景的 Redis 行为
-
-### 1. 登录 (POST /login)
-
-```go
-func LoginLogic() {
-    bcrypt.CompareHashAndPassword() // ← 验证密码
-    signToken(accessToken,  AccessExpireHours)   // ← RS256 签发
-    signToken(refreshToken, RefreshExpireHours)  // ← RS256 签发
-
-    // 不写 "有效 token 不需要存, 只在吊销时才写"
-    RedisAccessToken()
-
-    // 写入, SET jwt:ref:wl:{uid}
-    // Value = SHA256(refreshToken) 前 16 位 hex
-    // TTL   = RefreshExpireHours
-    // 不影响 Access Token
-    RedisRefreshToken()
-}
+```text
+jwt:session:user:<uid>  (Hash, TTL = Refresh Token 有效期)
+  sid           <当前会话 ID>
+  refresh_hash  <SHA-256(当前 Refresh Token)>
 ```
 
-### 2. 刷新 (POST /refresh-token)
+登录会以 Lua 脚本原子覆盖该 Hash；因此后一次成功登录会替换旧 `sid` 和旧 Refresh Token 哈希。
 
-```go
-func RefreshTokenLogic() {
-    // ← RS256 验签
-    jwt.Parse(oldRefreshToken, publicKey)// 提取 email, userID from claims
+## 请求鉴权
 
-    // GET jwt:ref:wl:{uid}
-    // value ≠ hash(oldToken) → 拒绝（已被轮换或吊销）
-    RedisRefreshToken()
+`AuthRequired` 的处理顺序：
 
-    // SET jwt:acs:bl:{hash(旧AT)}
-    // 可选：如果旧 AT 仍在有效期内, 加入黑名单防止被继续使用
-    Redis Access Token()
+1. 从 `Authorization: Bearer <Access Token>` 提取 Token。
+2. 固定接受 RS256，校验签名、签发者、有效期和 `token_use=access`。
+3. 从 claims 提取 `sub` 和 `sid`。
+4. 读取 `jwt:session:user:<sub>`，只有其中的 `sid` 等于 Token 的 `sid` 才放行。
 
-    signToken(newAccessToken,  AccessExpireHours)   // ← 签发新 AT
-    signToken(newRefreshToken, RefreshExpireHours)  // ← 签发新 RT（轮换）
+所以新登录、主动登出或未来的管理员强制下线删除/覆盖会话后，旧 Access Token 不需要逐条写入黑名单，也会在下一次受保护请求时立即返回 401。Redis 不可用时鉴权失败关闭，返回 503。
 
-    // SET jwt:ref:wl:{uid}
-    // Value = SHA256(newRefreshToken)
-    // 覆盖旧值（Write Through）
-    RedisRefreshToken() 
-    
-    
-    // 效果: 旧 Refresh Token 被覆盖 → 立即失效, 无法再用于刷新
-}
-         
-```
+## 刷新
 
-### 3. 登出 (POST /logout)
+刷新接口验签旧 Refresh Token 后，使用 Lua 原子确认：
 
-```go
-func AuthRequired() { // 中间件（先验证身份）
-    RS256 jwt.Parse()                     ← 验签
-    claims → context
-}
+- Token `sid` 仍为该用户当前 `sid`；
+- `refresh_hash` 仍匹配旧 Refresh Token。
 
-func LogoutHandler() {
-    // SET jwt:acs:bl:{hash(AT)}
-    // TTL = AT 剩余有效时间（精确计算 + 上限保护）
-    // 此 AT 立即失效, 中间件下次检查时返回 401
-    RedisAccessToken()
+通过后才写入新 Refresh Token 哈希，并延长会话 TTL。并发使用同一个 Refresh Token 时最多一个请求成功。
 
-    // DEL jwt:ref:wl:{uid}
-    // "强制下线, 无法再刷新"
-    RedisRefreshToken()
-}
-```
+## 登出
 
-### 4. 每次请求（AuthRequired 中间件）
+登出只在 Access Token 中的 `sid` 仍等于 Redis 当前 `sid` 时删除会话 Hash。这个条件删除避免旧端延迟发出的登出请求误删新端的会话。
 
-```go
-func AuthRequired() {
-    extractToken("Bearer xxx")  // ← 提取
-    jwt.Parse(token, publicKey) // ← RS256 验签
+## 当前范围
 
-    // EXISTS jwt:acs:bl:{hash(AT)}
-    // 存在 → 401（token 已被吊销）
-    // 不存在 → ✅ 放行
-    RedisAccessToken()
+本机制目前覆盖普通用户 `auth` 链路。登录替换旧 SID 和成功登出会向 Redis Pub/Sub 写入 `session.revoked` 事件；该事件仅用于后续业务资源清理，Token 有效性仍以 Redis 会话状态为准。
 
-    // 不查
-    // Refresh Token 只在刷新接口中使用
-    RedisRefreshToken()
-
-    c.Set("claims", jwtToken.Claims) // ← 注入用户信息
-}
-```
-
----
-
-## Redis 操作次数汇总
-
-| 场景 | 读 | 写 |
-|------|----|----|
-| 登录 | 0 | 1 SET refresh |
-| 刷新 | 1 GET refresh | 2 SET bl(可选) + SET refresh |
-| 登出 | 0 | 2 SET bl + DEL refresh |
-| 每次请求 | 1 EXISTS bl | 0 |
-
----
-
-## 设计目的
-
-1. **无感登录续期**
-
-    通过 Refresh Token 刷新防止 Access Token 到期强制重新登录
-
-2. **减少 Redis 写入**
-
-    Access Token 仅在吊销（登出/封禁）时写, 99% 请求不写 Redis
-
-3. **减少内存占用**
-
-    正常 Access Token 不占 Redis 内存, 黑名单条目 TTL 自动过期
-
-4. **可随时吊销**
-
-    删除 Refresh Token 白名单 → 用户下线, 无法刷新
-
-5. **支持多设备管理**
-
-    当前 Refresh Token 白名单按 `{userId}` `{refreshTokenId}` 账户粒度管理登录;  
-    或后续升级`{userId}:{jti}` `{refreshTokenId}` 设备粒度登录管理.  
+管理员会话、WebSocket/SSE 主动断开，以及各业务模块对下线事件的订阅处理仍不在本轮范围内。

@@ -3,7 +3,9 @@ package chat
 
 import (
 	"context"
+	"fmt"
 
+	"gin-backend/internal/common/service/sessionevent"
 	"gin-backend/internal/config"
 	"gin-backend/internal/service/chat/store"
 	"gin-backend/internal/service/chat/structure/bridge"
@@ -28,7 +30,7 @@ func Init(conf *config.Config) func() {
 	// 持久化懒加载接入: store 首次使用时才获取 PostgreSQL 连接 (复用 ServiceMarkdown),
 	// DB 不可用时桥自动降级为纯内存模式 (仅在线投递, 不落库不补发)
 	shared := bridge.NewMessageBridge(
-		store.NewGormMessageStore(),
+		store.NewTimescaleMessageStore(),
 		store.NewGormGroupStore(),
 	)
 	// 应用启动初始化: 群模型 (群+成员) 从 DB 加载到内存
@@ -37,7 +39,18 @@ func Init(conf *config.Config) func() {
 	wsHub = hub.NewHub(shared)
 	sseHub = hub.NewHub(shared)
 
+	listenerCtx, cancelListener := context.WithCancel(context.Background())
+	subscription, err := sessionevent.Subscribe(listenerCtx, "chat-session-revoker", HandleSessionRevoked)
+	if err != nil {
+		cancelListener()
+		wsHub = nil
+		sseHub = nil
+		panic(fmt.Sprintf("订阅会话撤销事件失败: %v", err))
+	}
+
 	return func() {
+		_ = subscription.Close()
+		cancelListener()
 		wsHub = nil
 		sseHub = nil
 	}

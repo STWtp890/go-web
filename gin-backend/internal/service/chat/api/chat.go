@@ -17,6 +17,7 @@ func SetRouteGroup(protected *gin.RouterGroup) {
 	chatProtected.GET("/sse", handler.SSEHandler)               // GET /api/v1/protected/chat/sse (SSE 流, 支持 Last-Event-ID 断点续传)
 	chatProtected.POST("/messages", handler.MessageHandler)     // POST /api/v1/protected/chat/messages (通用消息发送: 私聊/群聊)
 	chatProtected.POST("/sse/messages", handler.MessageHandler) // POST /api/v1/protected/chat/sse/messages (兼容别名)
+	chatProtected.POST("/deliveries/:deliveryId/ack", handler.AcknowledgeDeliveryHandler)
 
 	// 群 (应用级聊天室): 用户不能自建群/删群 (由应用/管理员创建), 可申请加入/退出聊天室
 	chatProtected.POST("/groups/:groupId/join", handler.JoinGroupHandler)      // POST /api/v1/protected/chat/groups/:groupId/join (申请加入聊天室)

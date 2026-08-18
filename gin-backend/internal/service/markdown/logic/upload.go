@@ -5,9 +5,11 @@ import (
 	"errors"
 	"strings"
 
-	"gin-backend/internal/common/connection/postgresql"
-	markdownmodel "gin-backend/internal/orm/markdown"
+	"gin-backend/internal/common/base/connection/postgresql"
+	markdownmodel "gin-backend/internal/model/orm/markdown"
+	"gin-backend/internal/model/store"
 	"gin-backend/internal/service/markdown/types/requests"
+	"gin-backend/internal/service/markdown/utils"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -33,7 +35,7 @@ func UploadMarkdownLogic(ctx context.Context, authorID string, req *requests.Upl
 		return nil, errors.New("文章内容不能为空")
 	}
 
-	db, err := markdownDB(ctx)
+	db, err := utils.MarkdownDB(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -41,18 +43,18 @@ func UploadMarkdownLogic(ctx context.Context, authorID string, req *requests.Upl
 	// 2. 组装数据 (markdown_id 对外暴露, 防遍历)
 	//    SearchText = 标题 + 摘要 + 正文, 供 pg_search 全文检索索引
 	title := strings.TrimSpace(req.Title)
-	summary := buildSummary(req.Content)
+	summary := utils.BuildSummary(req.Content)
 	visibility := req.Visibility
 	if visibility == "" {
 		visibility = markdownmodel.VisibilityPrivate // 缺省私有
 	}
 	md := &markdownmodel.Markdown{
-		MarkdownID:   uuid.NewString(),
-		AuthorUserID: authorID,
-		Title:        title,
-		Summary:      summary,
-		Visibility:   visibility,
-		SearchText:   title + " " + summary + " " + req.Content,
+		MarkdownID: uuid.NewString(),
+		AuthorID:   authorID,
+		Title:      title,
+		Summary:    summary,
+		Visibility: visibility,
+		SearchText: title + " " + summary + " " + req.Content,
 	}
 	content := &markdownmodel.Content{
 		MarkdownID: md.MarkdownID,
@@ -69,6 +71,9 @@ func UploadMarkdownLogic(ctx context.Context, authorID string, req *requests.Upl
 	if err != nil {
 		return nil, err
 	}
+
+	// 4. 失效缓存 (新文章下次详情回源新数据; Cache-Aside 一致性, 尽力而为)
+	_ = store.Markdown.Evict(ctx, md.MarkdownID)
 
 	return md, nil
 }

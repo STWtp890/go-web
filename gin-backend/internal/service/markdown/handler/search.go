@@ -6,8 +6,10 @@ import (
 
 	eror "gin-backend/internal/common/base/errors"
 	"gin-backend/internal/common/base/responses"
+	"gin-backend/internal/common/service/jwt"
 	logic "gin-backend/internal/service/markdown/logic"
 	req "gin-backend/internal/service/markdown/types/requests"
+	"gin-backend/internal/service/markdown/utils"
 
 	"github.com/gin-gonic/gin"
 )
@@ -16,7 +18,7 @@ import (
 // GET /api/v1/protected/markdown/search?keyword=xxx&page=1&pageSize=10
 func SearchHandler(c *gin.Context) {
 	// 1. 提取当前用户 (JWT claims sub)
-	userID, ok := currentUserID(c)
+	userID, ok := jwt.Subject(c)
 	if !ok {
 		responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "无法识别用户身份")
 		return
@@ -41,7 +43,7 @@ func SearchHandler(c *gin.Context) {
 	}
 
 	// 4. 归一化分页并返回结果
-	page, pageSize := normalizePage(q.Page, q.PageSize)
+	page, pageSize := utils.NormalizePage(q.Page, q.PageSize)
 	totalPages := (int(total) + pageSize - 1) / pageSize
 	responses.OKWithMeta(c, gin.H{"markdownList": list}, &responses.Meta{
 		Page:       page,

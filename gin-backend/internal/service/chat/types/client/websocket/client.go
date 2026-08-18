@@ -3,6 +3,7 @@ package websocket
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -53,24 +54,9 @@ func (h *heartbeat) notifyStop() {
 // startListen 启动心跳协程: 定时发送 ping 帧, 维持连接活跃
 func (h *heartbeat) start(conn *websocket.Conn) {
 	// 启动心跳协程: 定时发送 ping 帧, 维持连接活跃
-	pingHandler := conn.PingHandler()
-
-	pingFailed := func() bool { // 包装重试机制的 Ping
-		err := pingHandler("")
-		if err != nil { // 首次失败, 记录失败次数并尝试重试
-			for h.failedCount < h.maxFailedCount {
-				h.failedCount++
-				time.Sleep(time.Duration(h.timeoutSecond / h.maxFailedCount)) // 等待一半的超时时间再重试
-				err = pingHandler("")
-				if err == nil {
-					h.failedCount = 0 // 成功后重置失败计数
-					break
-				}
-			}
-
-		}
-		return h.failedCount >= h.maxFailedCount
-	}
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(time.Duration(h.timeoutSecond*2) * time.Second))
+	})
 
 	go func() {
 		// 心跳停止 (任意退出分支) → 触发连接清理回调
@@ -80,7 +66,7 @@ func (h *heartbeat) start(conn *websocket.Conn) {
 		for {
 			select {
 			case <-ticker.C:
-				if pingFailed() { // ping 连续失败, 触发回调清理并退出
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
 					return
 				}
 			case <-h.stopIn: // 连接已关闭
@@ -146,6 +132,7 @@ func (c *WebSocketClient) Init(inCh chan []byte, outCh chan []byte, errCh chan e
 	go func() {
 		defer close(inCh) // 读协程退出时关闭 inCh, 结束入站消费方
 		for {
+			_ = c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 			_, data, err := c.conn.ReadMessage()
 			if err != nil {
 				c.reportError(errCh, err)
@@ -210,7 +197,7 @@ func (c *WebSocketClient) Send(m msg.Message) error {
 	case c.outCh <- m.Marshal():
 		return nil
 	case <-time.After(sendWaitTimeout):
-		return nil // 等待后仍满 → 丢弃 (非阻塞语义)
+		return errors.New("websocket 出站队列已满")
 	}
 }
 

@@ -172,7 +172,7 @@ func (m *Manager) EnsureLoaded(ctx context.Context, gid string, s *GroupState) {
 		}
 		msgs := make([]message.Message, 0, len(rows))
 		for _, row := range rows {
-			if mm, err := message.Unmarshal([]byte(row.Payload)); err == nil {
+			if mm, err := message.Unmarshal(row.Payload); err == nil {
 				msgs = append(msgs, mm)
 			}
 		}

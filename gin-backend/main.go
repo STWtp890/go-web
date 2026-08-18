@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"gin-backend/internal/common/base/logger"
 	"gin-backend/internal/config"
@@ -35,14 +39,26 @@ func main() {
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(quit)
 
-	// 998. 启动 HTTP 服务
-	go StartServer(r, conf, quit)
+	server := NewHTTPServer(r, conf)
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.ListenAndServe() }()
 
-	// 999. 阻塞主 goroutine，等待信号
-	<-quit
-	slog.Info("服务正在关闭...")
-	os.Exit(0)
+	select {
+	case sig := <-quit:
+		slog.Info("服务正在关闭...", slog.String("signal", sig.String()))
+	case err := <-errCh:
+		if !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("服务启动失败", slog.String("error", err.Error()))
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		slog.Error("服务优雅关闭失败", slog.String("error", err.Error()))
+	}
 
 }
 
@@ -52,7 +68,7 @@ func configPath() string {
 	if p := os.Getenv("GIN_CONFIG_PATH"); p != "" {
 		return p
 	}
-	return "./config.yaml"
+	return "configs/config.yaml"
 }
 
 // LoadConfig 加载配置文件并初始化日志、JWT 密钥等
@@ -72,16 +88,23 @@ func LoadConfig(conf *config.Config) {
 	}
 }
 
-// StartServer 启动 HTTP 服务
-// :Param
-// - `r` gin.Engine 实例
-// - `conf` 配置文件
-func StartServer(r *gin.Engine, conf *config.Config, quit <-chan os.Signal) {
-	err := r.RunTLS(fmt.Sprintf(":%d", conf.ServerConfig.Port), conf.TLSConfig.CertFile, conf.TLSConfig.KeyFile)
-	if err != nil {
-		slog.Error(
-			"服务启动失败",
-			slog.String("error", err.Error()),
-		)
+// NewHTTPServer 创建由反向代理终止 TLS 的 HTTP 服务。
+func NewHTTPServer(r *gin.Engine, conf *config.Config) *http.Server {
+	return &http.Server{
+		Addr:              fmt.Sprintf(":%d", conf.ServerConfig.Port),
+		Handler:           r,
+		ReadHeaderTimeout: minDuration(conf.ServerConfig.ReadTimeout, 10*time.Second),
+		ReadTimeout:       conf.ServerConfig.ReadTimeout,
+		// SSE/WebSocket 是长连接，http.Server 的全局 WriteTimeout 会在配置时间后强制断流。
+		// 单次 API 写入由反向代理超时策略保护，流连接由各自的心跳和断线检测维护。
+		WriteTimeout: 0,
+		IdleTimeout:  60 * time.Second,
 	}
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }

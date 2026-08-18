@@ -5,8 +5,8 @@ package store
 import (
 	"sync"
 
-	"gin-backend/internal/common/connection"
-	postgresqlconn "gin-backend/internal/common/connection/postgresql"
+	"gin-backend/internal/common/base/connection"
+	postgresqlconn "gin-backend/internal/common/base/connection/postgresql"
 
 	"gorm.io/gorm"
 )

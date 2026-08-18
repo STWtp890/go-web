@@ -3,7 +3,8 @@ package logic
 import (
 	"context"
 
-	markdownmodel "gin-backend/internal/orm/markdown"
+	markdownmodel "gin-backend/internal/model/orm/markdown"
+	"gin-backend/internal/service/markdown/utils"
 )
 
 // ListMyMarkdownLogic 当前用户的文章分页列表 (不含完整 content, 列表用 summary)
@@ -17,7 +18,7 @@ import (
 // - `int64` 该用户文章总数 (用于分页)
 // - `error` 如果查询失败, 返回错误信息
 func ListMyMarkdownLogic(ctx context.Context, authorID string, page, pageSize int) ([]*markdownmodel.Markdown, int64, error) {
-	db, err := markdownDB(ctx)
+	db, err := utils.MarkdownDB(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -63,7 +64,7 @@ func ListMyMarkdownLogic(ctx context.Context, authorID string, page, pageSize in
 // - `int64` 公开文章总数 (用于分页)
 // - `error` 如果查询失败, 返回错误信息
 func ListPublicMarkdownLogic(ctx context.Context, page, pageSize int) ([]*markdownmodel.Markdown, int64, error) {
-	db, err := markdownDB(ctx)
+	db, err := utils.MarkdownDB(ctx)
 	if err != nil {
 		return nil, 0, err
 	}

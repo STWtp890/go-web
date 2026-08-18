@@ -65,6 +65,10 @@ func (s *eventStream) close() {
 //	(空行)
 func encodeEvent(m msg.Message) ([]byte, error) {
 	data := m.Marshal()
+	id := m.ToOrigin().MetaData.DeliveryID
+	if id != "" {
+		return []byte(fmt.Sprintf("id: %s\nevent: %s\ndata: %s\n\n", id, m.Type(), data)), nil
+	}
 	return []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", m.Type(), data)), nil
 }
 

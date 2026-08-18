@@ -1,0 +1,31 @@
+# ============================================================
+# docker-compose.yaml — gin-backend Redis 运行时依赖
+#
+# 用法:
+#   docker compose up -d
+#   docker compose logs -f redis
+#   docker compose exec redis redis-cli ping
+#
+# 默认配置面向本机开发，端口仅绑定 127.0.0.1:16379，且与
+# gin-backend/configs/config.yaml 的 redis 段一致。
+# ============================================================
+services:
+  redis:
+    image: redis:7.4-alpine
+    container_name: gin-backend-redis
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - redisdata:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  redisdata:

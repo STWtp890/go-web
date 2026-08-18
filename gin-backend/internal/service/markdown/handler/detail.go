@@ -6,6 +6,7 @@ import (
 
 	eror "gin-backend/internal/common/base/errors"
 	"gin-backend/internal/common/base/responses"
+	"gin-backend/internal/common/service/jwt"
 	logic "gin-backend/internal/service/markdown/logic"
 
 	"github.com/gin-gonic/gin"
@@ -16,7 +17,7 @@ import (
 // 可见性: public 任意登录用户可读; private 仅作者本人 (403)
 func DetailHandler(c *gin.Context) {
 	// 1. 提取当前用户 (JWT claims sub)
-	userID, ok := currentUserID(c)
+	userID, ok := jwt.Subject(c)
 	if !ok {
 		responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "无法识别用户身份")
 		return

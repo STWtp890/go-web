@@ -5,6 +5,7 @@ import (
 
 	eror "gin-backend/internal/common/base/errors"
 	"gin-backend/internal/common/base/responses"
+	"gin-backend/internal/common/service/jwt"
 	logic "gin-backend/internal/service/markdown/logic"
 	req "gin-backend/internal/service/markdown/types/requests"
 
@@ -15,7 +16,7 @@ import (
 // POST /api/v1/protected/markdown/upload
 func UploadHandler(c *gin.Context) {
 	// 1. 提取当前用户 (JWT claims sub)
-	userID, ok := currentUserID(c)
+	userID, ok := jwt.Subject(c)
 	if !ok {
 		responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "无法识别用户身份")
 		return

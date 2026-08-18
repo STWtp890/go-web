@@ -16,18 +16,22 @@ import (
 // - `PublicKey` 解析后的 RSA 公钥（运行时注入，非 YAML 字段）
 // - `ExpireHours` JWT 过期时间, 单位为小时
 type JWTConfig struct {
-	PrivateKeyPath string `yaml:"private_key_path"` // 私钥 PEM 文件路径
-	PublicKeyPath  string `yaml:"public_key_path"`  // 公钥 PEM 文件路径
-	AccessExpireHours    uint   `yaml:"access_expire_hours"`     // Access Token 过期时间, 单位为小时
-	RefreshExpireHours   uint   `yaml:"refresh_expire_hours"` // Refresh Token 过期时间, 单位为小时
+	Issuer             string `yaml:"issuer"`
+	PrivateKeyPath     string `yaml:"private_key_path"`     // 私钥 PEM 文件路径
+	PublicKeyPath      string `yaml:"public_key_path"`      // 公钥 PEM 文件路径
+	AccessExpireHours  uint   `yaml:"access_expire_hours"`  // Access Token 过期时间, 单位为小时
+	RefreshExpireHours uint   `yaml:"refresh_expire_hours"` // Refresh Token 过期时间, 单位为小时
 
 	// 运行时解析后的密钥（不参与 YAML 序列化）
 	privateKey *rsa.PrivateKey
-	publicKey  *rsa.PublicKey 
+	publicKey  *rsa.PublicKey
 }
 
 // ConfigCheck 检查 JWT 配置是否有效
 func (c *JWTConfig) ConfigCheck() error {
+	if c.Issuer == "" {
+		return fmt.Errorf("jwt: issuer 不能为空")
+	}
 	if c.PrivateKeyPath == "" || c.PublicKeyPath == "" {
 		return fmt.Errorf("jwt: private_key_path 和 public_key_path 不能为空")
 	}

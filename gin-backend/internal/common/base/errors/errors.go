@@ -28,7 +28,6 @@ const (
 	CodeValidationFailed = "VALIDATION_FAILED"
 	CodeInternalError    = "INTERNAL_ERROR"
 	CodeServiceUnavail   = "SERVICE_UNAVAILABLE"
-	CodeUpgradeError	 = "UPGRADE_ERROR"
 )
 
 // 预定义错误工厂函数

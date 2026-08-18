@@ -4,7 +4,7 @@ package store
 import (
 	"context"
 
-	ormchat "gin-backend/internal/orm/chat"
+	ormchat "gin-backend/internal/model/orm/chat"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"

@@ -1,0 +1,43 @@
+# ============================================================
+# docker-compose.yaml — gin-backend PostgreSQL 服务编排
+# 内置扩展: TimescaleDB + ParadeDB pg_search (见 Dockerfile)
+#
+# 用法:
+#   docker compose up -d --build                          # 构建并启动
+#   docker compose exec postgres psql -U postgres -d gin_demo  # 连接
+#
+# 首次初始化 (数据卷为空时) 自动执行 docker-entrypoint-initdb.d/00-init.sh:
+#   服务表 → 插件 → Markdown BM25 索引 → chat_messages hypertable
+# 初始管理员 (sql/service/manager/seed_admin.sql) 需手动执行并传密码
+#
+# 宿主机端口 15432 与 gin-backend configs/config.yaml 的 postgres.port 一致
+# ============================================================
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gin-postgres:local
+    container_name: gin-backend-postgres
+    ports:
+      - "127.0.0.1:15432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: gin_demo
+    # pg_search 官方文档要求加入 shared_preload_libraries; pgvector 无需 preload
+    command: ["postgres", "-c", "shared_preload_libraries=timescaledb,pg_search"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql:/sql:ro                      # 初始化脚本 (供 initdb/手动调用)
+      - ./entryscript:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d gin_demo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  pgdata:

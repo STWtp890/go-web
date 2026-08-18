@@ -8,12 +8,14 @@ package message
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"gin-backend/internal/service/chat/types/constant"
 )
 
 // MetaData 代表消息的元数据
 type MetaData struct {
+	DeliveryID  string `json:"deliveryId,omitempty"`
 	MessageType string `json:"type"`      // 消息类型
 	GroupType   string `json:"groupType"` // 群组类型
 	From        string `json:"from"`      // 发送者标识
@@ -103,5 +105,27 @@ func Unmarshal(raw []byte) (Message, error) {
 	if err := json.Unmarshal(raw, &origin); err != nil {
 		return nil, err
 	}
+	if err := ValidateIncoming(origin); err != nil {
+		return nil, err
+	}
 	return FromOrigin(origin)
+}
+
+const MaxContentBytes = 48 * 1024
+
+// ValidateIncoming 校验客户端可提交的最小消息契约；From、Timestamp 由服务端覆盖。
+func ValidateIncoming(o OriginMessageJson) error {
+	if o.MetaData.MessageType != constant.TypeText {
+		return fmt.Errorf("不支持的消息类型")
+	}
+	if strings.TrimSpace(o.MetaData.To) == "" {
+		return fmt.Errorf("接收者不能为空")
+	}
+	if strings.TrimSpace(o.ContentBody) == "" || len(o.ContentBody) > MaxContentBytes {
+		return fmt.Errorf("消息内容不能为空或过长")
+	}
+	if o.MetaData.GroupType != constant.GroupPrivate && o.MetaData.GroupType != constant.GroupGroup {
+		return fmt.Errorf("%w: %q", constant.ErrUnknownGroupType, o.MetaData.GroupType)
+	}
+	return nil
 }

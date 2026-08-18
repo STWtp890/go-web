@@ -5,11 +5,11 @@
 markdown 业务用于**登录用户上传自己的 Markdown 文章并可随时取回**。
 
 存储选用 **PostgreSQL** (auth/markdown/chat 统一使用 PostgreSQL), 连接复用
-`internal/common/connection/postgresql` 的注册模式:
+`internal/common/base/connection/postgresql` 的注册模式:
 
 - 服务名: `connection.ServiceMarkdown = "markdown"`
 - 生命周期: `service.Init` 中 `PostgreSQLManager.RegisterAndGet` 注册, cleanup 中 `Unregister` 释放
-- 表结构: 经独立迁移工具 `utils/automigrate` 的 AutoMigrate 创建/更新 (不再随服务启动自动建表)
+- 表结构: 经部署脚本 `../deployments/postgresql/sql/service/markdown/schema_init.sql` 创建 (不再随服务启动自动建表)
 
 ### 表设计 (元信息与内容分离)
 
@@ -23,7 +23,8 @@ markdown 业务用于**登录用户上传自己的 Markdown 文章并可随时�
 - **软删除** (GORM): `deleted_at` 为 `gorm.DeletedAt` 类型 (见 `orm.TimeFiled`), 删除自动转为 UPDATE 软删, 查询自动附加 `deleted_at IS NULL`, 物理删除需 `Unscoped()`。
 - **全文检索** (`search_text`): 文本列, 内容 = 标题 + 摘要 + 正文;
   经 **ParadeDB pg_search** 的 BM25 索引 (`USING bm25`, 中文 **jieba** 分词) 实现智能检索,
-  索引由迁移工具 `utils/automigrate -index` 幂等创建, 依赖 `../deployments/postgresql/sql/pg_search_setup.sql` 安装扩展。
+  插件由 `../deployments/postgresql/sql/plugin/pg_search_setup.sql` 安装，索引由
+  `../deployments/postgresql/sql/service/markdown/search_setup.sql` 幂等创建。
 
 ## 接口设计
 
@@ -65,10 +66,10 @@ GET /api/v1/protected/markdown/search?keyword=Go 并发&page=1&pageSize=10
   高级语法可改用 `pdb.parse()`。
 - 中文分词使用内置 **jieba** (`pdb.jieba`, 词典+统计模型, 官方最先进中文分词器);
   也可换 lindera (`pdb.lindera(chinese)`) 或 unicode 等其它 tokenizer。
-- **前置准备**: 执行 `../deployments/postgresql/sql/pg_search_setup.sql` 安装 pg_search 扩展 (推荐官方镜像
-  `paradedb/paradedb`); BM25 索引由 `utils/automigrate -index` 创建, 未装扩展时创建会失败并提示。
+- **前置准备**: 执行 `../deployments/postgresql/sql/plugin/pg_search_setup.sql` 安装 pg_search 扩展 (推荐官方镜像
+  `paradedb/paradedb`)，再执行 `../deployments/postgresql/sql/service/markdown/search_setup.sql` 创建 BM25 索引。
 - 如需 `pdb.snippet()` 高亮片段可作为后续扩展。
-- 注意: 新增 `search_text` 列后, 存量文章需回填 (见 `../deployments/postgresql/sql/pg_search_setup.sql` 第 4 步):
+- 注意: 新增 `search_text` 列后, 存量文章需回填 (见 `../deployments/postgresql/sql/service/markdown/search_setup.sql`):
   `UPDATE markdowns SET search_text = title || ' ' || summary || ' ' || (SELECT content FROM markdown_contents WHERE markdown_id = markdowns.markdown_id)`
 
 ### 返回

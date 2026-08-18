@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 
-	markdownmodel "gin-backend/internal/orm/markdown"
+	markdownmodel "gin-backend/internal/model/orm/markdown"
+	"gin-backend/internal/model/store"
 
 	"gorm.io/gorm"
 )
@@ -29,29 +30,33 @@ func GetMarkdownLogic(ctx context.Context, viewerID, markdownID string) (*markdo
 	if viewerID == "" {
 		return nil, "", errors.New("无法识别用户身份")
 	}
-	db, err := markdownDB(ctx)
-	if err != nil {
-		return nil, "", err
-	}
 
-	// 1. 查询元信息 (软删除过滤由 gorm 自动附加)
-	var md markdownmodel.Markdown
-	err = db.Where("markdown_id = ?", markdownID).First(&md).Error
+	// 1. 查询元信息 (实体缓存: Redis 主 → 内存回退 → DB 回源; 软删除过滤由 gorm 自动附加)
+	mc, err := store.Markdown.GetMeta(ctx, markdownID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, "", errors.New("文章不存在")
 		}
 		return nil, "", err
 	}
+	// 缓存 DTO → ORM 模型 (可见性校验与响应共用)
+	md := &markdownmodel.Markdown{
+		ID:         mc.ID,
+		MarkdownID: mc.MarkdownID,
+		AuthorID:   mc.AuthorID,
+		Title:      mc.Title,
+		Summary:    mc.Summary,
+		Visibility: mc.Visibility,
+		SearchText: mc.SearchText,
+	}
 
 	// 2. 可见性校验: private 仅作者; public 任意登录用户
-	if md.Visibility == markdownmodel.VisibilityPrivate && md.AuthorUserID != viewerID {
+	if md.Visibility == markdownmodel.VisibilityPrivate && md.AuthorID != viewerID {
 		return nil, "", ErrMarkdownForbidden
 	}
 
-	// 3. 查询正文内容
-	var content markdownmodel.Content
-	err = db.Where("markdown_id = ?", markdownID).First(&content).Error
+	// 3. 查询正文内容 (实体缓存)
+	cc, err := store.Markdown.GetContent(ctx, markdownID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, "", errors.New("文章内容不存在")
@@ -59,5 +64,5 @@ func GetMarkdownLogic(ctx context.Context, viewerID, markdownID string) (*markdo
 		return nil, "", err
 	}
 
-	return &md, content.Content, nil
+	return md, cc.Content, nil
 }

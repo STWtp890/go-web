@@ -4,6 +4,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -17,6 +18,8 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+var ErrNotGroupMember = errors.New("chat: 非群成员")
 
 // MessageBridge 消息桥: 统一维护连接注册 (userClients) 与投递 (私聊直投 / 群聊窗口)
 // 持久化: messages (私聊离线/群历史) + groupMgr (群管理, DB 为成员真相源), 均懒加载接入;
@@ -41,13 +44,13 @@ func NewMessageBridge(messages store.MessageStore, groupsStore store.GroupStore)
 
 // NewWebSocketChannel 创建 WebSocket 用户通道并注册 (Bridge 提供接口, 创建即注册)
 // 接入后异步补发: 私聊离线消息 + 群成员/群历史懒加载 (不阻塞连接建立)
-func (b *MessageBridge) NewWebSocketChannel(ctx context.Context, subject string, conn *websocket.Conn) *client.UserChannel {
+func (b *MessageBridge) NewWebSocketChannel(ctx context.Context, subject, sessionID string, conn *websocket.Conn) *client.UserChannel {
 	inCh := make(chan []byte, 64)
 	outCh := make(chan []byte, 64)
 	errCh := make(chan error, 4)
 
 	ws := wsclient.NewWebSocketClient(ctx, conn, inCh)
-	uc := client.NewUserChannel(subject, ws)
+	uc := client.NewUserChannel(subject, sessionID, ws)
 	// 心跳停止 (连接异常/超时/主动关闭) → 触发连接清理 (Detach → Offline → Close)
 	ws.SetOnStop(func() { b.Detach(subject, uc) })
 	ws.Init(inCh, outCh, errCh)
@@ -65,7 +68,7 @@ func (b *MessageBridge) NewWebSocketChannel(ctx context.Context, subject string,
 			if err != nil {
 				continue
 			}
-			b.Publish(ctx, built)
+			_, _ = b.Publish(ctx, built)
 		}
 	}()
 
@@ -73,27 +76,27 @@ func (b *MessageBridge) NewWebSocketChannel(ctx context.Context, subject string,
 	b.userClients.Attach(subject, uc)
 
 	// 接入后异步补发 (懒加载接入): 私聊离线 + 用户所属群
-	go b.flushOffline(ctx, subject, uc)
+	go b.flushOffline(ctx, subject, uc, "")
 	go b.joinUserGroups(ctx, subject, uc)
 	return uc
 }
 
 // NewSSEChannel 创建 SSE 用户通道并注册 (Bridge 提供接口, 创建即注册)
 // 接入后异步补发: 私聊离线消息 + 群成员/群历史懒加载 (不阻塞连接建立)
-func (b *MessageBridge) NewSSEChannel(ctx context.Context, subject string, w http.ResponseWriter) *client.UserChannel {
+func (b *MessageBridge) NewSSEChannel(ctx context.Context, subject, sessionID, lastEventID string, w http.ResponseWriter) *client.UserChannel {
 	se, err := sseclient.NewSSEClient(ctx, w)
 	if err != nil {
 		slog.Warn("SSE 连接创建失败", slog.String("subject", subject), slog.String("error", err.Error()))
 		return nil
 	}
-	uc := client.NewUserChannel(subject, se)
+	uc := client.NewUserChannel(subject, sessionID, se)
 	// 心跳停止 (连接异常/超时/主动关闭) → 触发连接清理 (Detach → Offline → Close)
 	se.SetOnStop(func() { b.Detach(subject, uc) })
 	uc.Online()
 	b.userClients.Attach(subject, uc)
 
 	// 接入后异步补发 (懒加载接入): 私聊离线 + 用户所属群
-	go b.flushOffline(ctx, subject, uc)
+	go b.flushOffline(ctx, subject, uc, lastEventID)
 	go b.joinUserGroups(ctx, subject, uc)
 	return uc
 }
@@ -114,14 +117,27 @@ func (b *MessageBridge) Get(subject string) *client.UserChannel {
 	return b.userClients.Get(subject)
 }
 
+// RevokeSession 关闭当前实例中 subject 对应且 sid 匹配的聊天连接。
+func (b *MessageBridge) RevokeSession(subject, sessionID string) int {
+	return b.userClients.RevokeSession(subject, sessionID)
+}
+
 // Publish 消息投递入口: 私聊直投 / 群聊窗口广播
-func (b *MessageBridge) Publish(ctx context.Context, m message.Message) {
+func (b *MessageBridge) Publish(ctx context.Context, m message.Message) ([]store.Delivery, error) {
 	switch m.GroupType() {
 	case constant.GroupGroup:
-		b.deliverToGroup(ctx, m)
+		return b.deliverToGroup(ctx, m)
 	default: // GroupPrivate
-		b.deliverToUser(ctx, m)
+		return b.deliverToUser(ctx, m)
 	}
+}
+
+func (b *MessageBridge) Acknowledge(ctx context.Context, subject, deliveryID string) (bool, error) {
+	ds, ok := b.messages.(store.DeliveryStore)
+	if !ok {
+		return false, errors.New("chat: 可靠投递存储未初始化")
+	}
+	return ds.Acknowledge(ctx, subject, deliveryID)
 }
 
 // JoinGroup 加入聊天室 (委托群管理器, 先写 DB 后入内存原子, 返回窗口消息供补发)

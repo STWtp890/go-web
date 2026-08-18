@@ -18,9 +18,9 @@ const (
 
 const (
 	// CtxKeyTraceID 用于在 context 中存储 trace_id
-	CtxKeyTraceID  string = "trace_id"
+	CtxKeyTraceID string = "trace_id"
 	// CtxKeyUserID 用于在 context 中存储用户 ID
-	CtxKeyUserID   string = "user_id"
+	CtxKeyUserID string = "user_id"
 	// CtxKeyClientIP 用于在 context 中存储客户端 IP
 	CtxKeyClientIP string = "client_ip"
 )

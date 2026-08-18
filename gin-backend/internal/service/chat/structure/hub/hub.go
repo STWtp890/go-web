@@ -2,8 +2,10 @@ package hub
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
+	"gin-backend/internal/service/chat/store"
 	"gin-backend/internal/service/chat/structure/bridge"
 	"gin-backend/internal/service/chat/types/client"
 
@@ -29,26 +31,27 @@ func (h *Hub) Bridge() *bridge.MessageBridge {
 }
 
 // NewWebSocketChannel 创建 WebSocket 用户通道并注册 (Bridge 提供接口, Hub 侧调用)
-func (h *Hub) NewWebSocketChannel(ctx context.Context, subject string, conn *websocket.Conn) *client.UserChannel {
+func (h *Hub) NewWebSocketChannel(ctx context.Context, subject, sessionID string, conn *websocket.Conn) *client.UserChannel {
 	if h.bridge == nil {
 		return nil
 	}
-	return h.bridge.NewWebSocketChannel(ctx, subject, conn)
+	return h.bridge.NewWebSocketChannel(ctx, subject, sessionID, conn)
 }
 
 // NewSSEChannel 创建 SSE 用户通道并注册 (Bridge 提供接口, Hub 侧调用)
-func (h *Hub) NewSSEChannel(ctx context.Context, subject string, w http.ResponseWriter) *client.UserChannel {
+func (h *Hub) NewSSEChannel(ctx context.Context, subject, sessionID, lastEventID string, w http.ResponseWriter) *client.UserChannel {
 	if h.bridge == nil {
 		return nil
 	}
-	return h.bridge.NewSSEChannel(ctx, subject, w)
+	return h.bridge.NewSSEChannel(ctx, subject, sessionID, lastEventID, w)
 }
 
 // Publish 入站消息投递入口 (委托 bridge)
-func (h *Hub) Publish(ctx context.Context, m msg.Message) {
+func (h *Hub) Publish(ctx context.Context, m msg.Message) ([]store.Delivery, error) {
 	if h.bridge != nil {
-		h.bridge.Publish(ctx, m)
+		return h.bridge.Publish(ctx, m)
 	}
+	return nil, fmt.Errorf("chat bridge 未初始化")
 }
 
 // Attach 注册用户通道 (委托 bridge)
@@ -63,4 +66,12 @@ func (h *Hub) Detach(subject string, uc *client.UserChannel) {
 	if h.bridge != nil {
 		h.bridge.Detach(subject, uc)
 	}
+}
+
+// RevokeSession 关闭此 Hub 所在实例中匹配会话的连接。
+func (h *Hub) RevokeSession(subject, sessionID string) int {
+	if h.bridge == nil {
+		return 0
+	}
+	return h.bridge.RevokeSession(subject, sessionID)
 }
