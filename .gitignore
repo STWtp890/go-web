@@ -1,62 +1,23 @@
-# ------------------------------------------------------------
-# Operating system files
-# ------------------------------------------------------------
+# 系统
 .DS_Store
 Thumbs.db
 Desktop.ini
 
-# ------------------------------------------------------------
-# Editors and local workspace state
-# Keep the tracked .vscode/settings.json available to the team.
-# ------------------------------------------------------------
+# IDE
 .idea/
 *.iml
 *.swp
 *.swo
 *~
 
-# ------------------------------------------------------------
-# Local environment and secrets
-# ------------------------------------------------------------
-.env
-.env.*
-!.env.example
+# 敏感信息
 *.local
 *.pem
 *.key
 
-# ------------------------------------------------------------
-# Logs, caches, and runtime data
-# ------------------------------------------------------------
+# 临时文件
 *.log
 logs/
 .cache/
 tmp/
 temp/
-gin-backend/storage/
-
-# ------------------------------------------------------------
-# Go build, test, coverage, and profiling artifacts
-# ------------------------------------------------------------
-bin/
-*.exe
-*.out
-*.test
-*.prof
-coverage.out
-coverage.html
-
-# ------------------------------------------------------------
-# Node.js / Vue / Vite artifacts
-# Lockfiles remain tracked for reproducible installs.
-# ------------------------------------------------------------
-node_modules/
-dist/
-coverage/
-.vite/
-*.tsbuildinfo
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-

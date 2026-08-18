@@ -1,21 +1,30 @@
-# 编译产物
-*.exe
-*.out
-*.test
-*.bin
-*.sum
-
-# 密钥文件 (本地生成, 不应入库)
-*.pem
-
-# 日志
-*.log
-logs/
+# 系统
+.DS_Store
+Thumbs.db
+Desktop.ini
 
 # IDE
 .idea/
 *.iml
+*.swp
+*.swo
+*~
 
-# 系统
-.DS_Store
-Thumbs.db
+# 敏感信息
+*.local
+*.pem
+*.key
+
+# 临时文件
+*.log
+logs/
+.cache/
+tmp/
+temp/
+
+# 编译产物
+bin/
+*.exe
+*.out
+*.test
+*.sum
