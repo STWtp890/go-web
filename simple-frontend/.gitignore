@@ -1,0 +1,34 @@
+# 系统
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+
+# 敏感信息
+*.local
+*.pem
+*.key
+
+# 临时文件
+*.log
+logs/
+.cache/
+tmp/
+temp/
+
+# 编译产物
+node_modules/
+dist/
+coverage/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
