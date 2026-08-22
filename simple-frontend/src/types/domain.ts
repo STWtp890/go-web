@@ -28,12 +28,14 @@ export interface ChatMessageInput {
 
 export interface SentMessage {
   localId: string
+  direction: 'sent' | 'received'
+  from?: string
   to: string
   groupType: 'private' | 'group'
   content: string
   createdAt: number
   deliveryIds: string[]
-  status: 'accepted' | 'failed'
+  status: 'sending' | 'accepted' | 'failed' | 'received'
 }
 
 export interface RegistrationRequest {

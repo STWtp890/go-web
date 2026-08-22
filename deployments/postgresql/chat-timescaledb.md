@@ -56,7 +56,7 @@ flowchart LR
 
 ### 阶段 0：部署层（扩展安装）
 
-TimescaleDB 要求 `shared_preload_libraries` 含 `timescaledb`，且扩展二进制已安装。当前仓库无 docker-compose，按实际部署方式三选一：
+TimescaleDB 要求 `shared_preload_libraries` 含 `timescaledb`，且扩展二进制已安装。根目录的 `docket-compose.yaml` 已设置此参数；其他部署方式可按实际环境三选一：
 
 **方式 A（推荐）：基于 timescale 官方镜像 + 装 pg_search**
 ```dockerfile

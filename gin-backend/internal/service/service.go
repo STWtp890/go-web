@@ -9,6 +9,7 @@ import (
 	postgresqlconn "gin-backend/internal/common/base/connection/postgresql"
 	redisconn "gin-backend/internal/common/base/connection/redis"
 	"gin-backend/internal/common/base/responses"
+	"gin-backend/internal/common/service/sessioncookie"
 	"gin-backend/internal/common/service/sessionevent"
 	"gin-backend/internal/config"
 	"gin-backend/internal/middleware"
@@ -45,10 +46,12 @@ func Setup(r *gin.Engine, conf *config.Config) *gin.Engine {
 	// 保护路由组, 需鉴权
 	protected := v1.Group("/protected")
 	protected.Use(middleware.AuthRequired(conf))
+	protected.Use(middleware.CSRFProtection(sessioncookie.UserCSRFCookie))
 
 	// 管理员保护路由组, 需管理员鉴权 (ManagerAuthRequired)
 	managerProtected := v1.Group("/protected")
 	managerProtected.Use(middleware.ManagerAuthRequired(conf))
+	managerProtected.Use(middleware.CSRFProtection(sessioncookie.ManagerCSRFCookie))
 
 	// 各业务路由注册
 	authapi.SetRouteGroup(public, protected)

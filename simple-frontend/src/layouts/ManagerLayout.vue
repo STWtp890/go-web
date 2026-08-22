@@ -22,7 +22,7 @@ async function logout() {
         <RouterLink :to="{ name: 'manager-requests' }"><ClipboardCheck :size="17" />申请审批</RouterLink>
       </nav>
       <div class="manager-header__session">
-        <span>管理员 #{{ session.subject || '—' }}</span>
+        <span>{{ session.subject ? `管理员 #${session.subject}` : '已登录管理员' }}</span>
         <button type="button" class="button button--ghost button--small" @click="logout"><LogOut :size="16" />退出</button>
       </div>
     </header>

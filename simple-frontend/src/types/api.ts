@@ -16,11 +16,6 @@ export interface ApiFailure {
   error: { code: string; message: string }
 }
 
-export interface TokenPair {
-  accessToken: string
-  refreshToken: string
-}
-
 export interface PageResult<T> {
   items: T[]
   meta: ApiMeta

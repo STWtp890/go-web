@@ -36,8 +36,8 @@ async function submit() {
     if (isRegister.value) {
       await authApi.register({ email: email.value.trim(), password: password.value, nickname: nickname.value.trim() })
     }
-    const result = await authApi.login({ email: email.value.trim(), password: password.value })
-    session.setSession(result.data)
+    await authApi.login({ email: email.value.trim(), password: password.value })
+    session.setSession()
     toast.show({ tone: 'success', title: isRegister.value ? '空间创建成功' : '欢迎回来', message: '你的创作空间已经准备好了' })
     const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/app'
     await router.replace(redirect)

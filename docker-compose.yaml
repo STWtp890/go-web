@@ -1,0 +1,86 @@
+# Run the complete local stack with:
+#   docker compose -f docket-compose.yaml up -d --build
+services:
+  postgres:
+    build:
+      context: ./deployments/postgresql
+      dockerfile: Dockerfile
+    image: gin-postgres:local
+    container_name: gin-backend-postgres
+    ports:
+      - "127.0.0.1:15432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: gin_demo
+    command: ["postgres", "-c", "shared_preload_libraries=timescaledb,pg_search"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deployments/postgresql/sql:/sql:ro
+      - ./deployments/postgresql/entryscript:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d gin_demo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: gin-backend-redis
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - redisdata:/data
+      - ./deployments/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  gin-backend:
+    build:
+      context: ./gin-backend
+      dockerfile: Dockerfile
+    image: gin-backend:local
+    container_name: gin-backend
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./gin-backend/configs/config.docker.yaml:/app/configs/config.yaml:ro
+      - backend-storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  simple-frontend:
+    build:
+      context: ./simple-frontend
+      dockerfile: Dockerfile
+    image: simple-frontend:local
+    container_name: simple-frontend
+    ports:
+      - "15173:80"
+    depends_on:
+      gin-backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  backend-storage:

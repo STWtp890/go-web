@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { readTokenPair } from '@/utils/session-vault'
+import { useManagerSessionStore, useUserSessionStore } from '@/stores/session'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -34,9 +34,13 @@ const router = createRouter({
   ],
 })
 
-router.beforeEach((to) => {
-  const hasUser = Boolean(readTokenPair('user'))
-  const hasManager = Boolean(readTokenPair('manager'))
+router.beforeEach(async (to) => {
+  const userSession = useUserSessionStore()
+  const managerSession = useManagerSessionStore()
+  const needsUserCheck = Boolean(to.meta.requiresUser || to.meta.guestOnly)
+  const needsManagerCheck = Boolean(to.meta.requiresManager || to.meta.managerGuestOnly)
+  const hasUser = needsUserCheck && await userSession.restore()
+  const hasManager = needsManagerCheck && await managerSession.restore()
   if (to.meta.requiresUser && !hasUser) return { name: 'login', query: { redirect: to.fullPath } }
   if (to.meta.requiresManager && !hasManager) return { name: 'manager-login', query: { redirect: to.fullPath } }
   if (to.meta.guestOnly && hasUser) return { name: 'overview' }

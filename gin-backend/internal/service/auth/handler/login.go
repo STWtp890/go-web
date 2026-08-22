@@ -5,6 +5,7 @@ import (
 
 	eror "gin-backend/internal/common/base/errors"
 	"gin-backend/internal/common/base/responses"
+	"gin-backend/internal/common/service/sessioncookie"
 	logic "gin-backend/internal/service/auth/logic"
 	req "gin-backend/internal/service/auth/types/requests"
 
@@ -24,9 +25,10 @@ func LoginHandler(c *gin.Context) {
 		responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, err.Error())
 		return
 	}
+	if err := sessioncookie.SetUserTokens(c, accessToken, refreshToken); err != nil {
+		responses.Fail(c, http.StatusInternalServerError, eror.CodeInternalError, "登录会话写入失败")
+		return
+	}
 
-	responses.OK(c, gin.H{
-		"accessToken":  accessToken,
-		"refreshToken": refreshToken,
-	})
+	responses.OK(c, gin.H{"message": "登录成功"})
 }

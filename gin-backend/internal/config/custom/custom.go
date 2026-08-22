@@ -1,6 +1,7 @@
 package custom
 
 import (
+	"gin-backend/internal/config/custom/cookie"
 	"gin-backend/internal/config/custom/cors"
 	"gin-backend/internal/config/custom/jwt"
 	"gin-backend/internal/config/custom/upload"
@@ -9,6 +10,7 @@ import (
 // CustomConfig 自定义配置
 type CustomConfig struct {
 	JWT    jwt.JWTConfig       `yaml:"jwt"`
+	Cookie cookie.CookieConfig `yaml:"cookie"`
 	CORS   cors.CORSConfig     `yaml:"cors"`
 	Upload upload.UploadConfig `yaml:"upload"`
 }
@@ -19,6 +21,7 @@ type CustomConfig struct {
 func NewCustomConfig() *CustomConfig {
 	cc := &CustomConfig{
 		JWT:    jwt.JWTConfig{},
+		Cookie: cookie.CookieConfig{},
 		CORS:   cors.CORSConfig{},
 		Upload: upload.UploadConfig{},
 	}
@@ -35,6 +38,10 @@ func (c *CustomConfig) ConfigCheck() error {
 		return err
 	}
 	err = c.CORS.ConfigCheck()
+	if err != nil {
+		return err
+	}
+	err = c.Cookie.ConfigCheck()
 	if err != nil {
 		return err
 	}

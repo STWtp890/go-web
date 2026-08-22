@@ -6,32 +6,12 @@ import (
 	"crypto/rsa"
 	"errors"
 	"strconv"
-	"strings"
 
 	"gin-backend/internal/config"
 
 	"github.com/gin-gonic/gin"
 	jwtlib "github.com/golang-jwt/jwt/v5"
 )
-
-// ExtractToken 从请求中提取 JWT Token
-// :Param
-// - c: gin.Context
-// :Return
-// - string: 提取到的 JWT Token，如果未提供则返回空字符串
-func ExtractToken(c *gin.Context) string {
-	authHeader := c.GetHeader("Authorization")
-	if authHeader == "" {
-		return ""
-	}
-
-	tokenStr := strings.TrimPrefix(authHeader, "Bearer")
-	if tokenStr == "" {
-		return ""
-	}
-
-	return strings.TrimSpace(tokenStr)
-}
 
 // ExtractClaims 从 gin.Context 中提取 JWT Claims
 // 中间件 (AuthRequired/ManagerAuthRequired) 注入的是 jwtlib.MapClaims 值类型,

@@ -1,5 +1,5 @@
 import { apiRequest } from './client'
-import type { ApiMeta, PageResult, TokenPair } from '@/types/api'
+import type { ApiMeta, PageResult } from '@/types/api'
 import type { RegistrationRequest } from '@/types/domain'
 
 interface RawRegistrationRequest {
@@ -32,7 +32,7 @@ function normalize(item: RawRegistrationRequest): RegistrationRequest {
 
 export const managerApi = {
   register: (input: { username: string; password: string; email?: string; reason?: string }) => apiRequest<{ requestId: number; username: string; status: 'pending' }>('/api/v1/public/manager/register', { method: 'POST', body: input }),
-  login: (input: { username: string; password: string }) => apiRequest<TokenPair>('/api/v1/public/manager/login', { method: 'POST', body: input }),
+  login: (input: { username: string; password: string }) => apiRequest<void>('/api/v1/public/manager/login', { method: 'POST', body: input }),
   logout: () => apiRequest('/api/v1/protected/manager/logout', { method: 'POST', scope: 'manager', retryAuth: false }),
   requests: async (status: RegistrationRequest['status'], page = 1, pageSize = 10): Promise<PageResult<RegistrationRequest>> => {
     const result = await apiRequest<{ requests: RawRegistrationRequest[] }>(`/api/v1/protected/manager/requests?status=${status}&page=${page}&pageSize=${pageSize}`, { scope: 'manager' })

@@ -22,16 +22,16 @@ flowchart LR
 | 模块 | 前端职责 | 前置条件 | 关键关系 |
 | --- | --- | --- | --- |
 | Auth | 注册、登录、刷新令牌、登出 | 无 | 普通用户的所有业务接口均依赖它 |
-| Markdown | 创建、我的文章、公开阅读、搜索 | 普通用户 access token | 文章作者来自 token，不由页面传入 |
-| Chat | 建立收消息通道、发送消息、群成员操作 | 普通用户 access token | 新登录/登出会使旧会话的连接失效 |
-| Manager | 管理员申请、登录及申请审批 | 管理员审批接口需要 manager token | 管理员注册不是立即可登录，必须先审批 |
+| Markdown | 创建、我的文章、公开阅读、搜索 | 普通用户会话 Cookie | 文章作者来自会话，不由页面传入 |
+| Chat | 建立收消息通道、发送消息、群成员操作 | 普通用户会话 Cookie | 新登录/登出会使旧会话的连接失效 |
+| Manager | 管理员申请、登录及申请审批 | 管理员会话 Cookie | 管理员注册不是立即可登录，必须先审批 |
 
 ### 1.2 路径、鉴权与统一响应
 
 - 所有业务路径以 `/api/v1` 开头；文中示例均省略基地址。
 - 公开接口：`/api/v1/public/**`，不带令牌。
-- 普通用户保护接口：`/api/v1/protected/**`，带普通用户 **access token**。
-- 管理员保护接口也在 `/api/v1/protected/**`，但只接受管理员 access token。
+- 普通用户保护接口：`/api/v1/protected/**`，由 `pp_user_at` HttpOnly Cookie 鉴权。
+- 管理员保护接口也在 `/api/v1/protected/**`，由 `pp_manager_at` HttpOnly Cookie 鉴权。
 - 除健康检查与 `204` 投递确认外，HTTP JSON 响应使用下列包装：
 
 ```ts
@@ -47,11 +47,11 @@ type ApiFailure = {
 };
 ```
 
-请求头（仅对受保护 HTTP 接口和 refresh 接口）：
+所有浏览器请求均应使用 `credentials: 'include'`。受保护写接口和 refresh 接口还必须携带 CSRF Header：
 
 ```http
-Authorization: Bearer <token>
 Content-Type: application/json
+X-CSRF-Token: <对应 pp_*_csrf Cookie 的值>
 ```
 
 ### 1.3 状态码与页面处理
@@ -78,30 +78,20 @@ Content-Type: application/json
 
 ## 2. 令牌与单有效会话（所有模块共用）
 
-登录和刷新都会返回一对令牌：
-
-```json
-{
-  "success": true,
-  "data": {
-    "accessToken": "<JWT access token>",
-    "refreshToken": "<JWT refresh token>"
-  }
-}
-```
+登录和刷新会通过 `Set-Cookie` 写入 HttpOnly access/refresh JWT；响应 `data` 仅返回成功消息，不包含 JWT，也不支持 `Authorization: Bearer`。
 
 服务端为每个用户（普通用户、管理员各自独立）只保留一个当前 `sid` 会话。因此：
 
-1. 登录成功后覆盖本账号旧会话；旧设备的 access token 和 refresh token 都立即不可用。
-2. 使用 refresh token 成功后，**两枚令牌都会轮换**；旧 refresh token 不可重放。
-3. 调用 logout 后，当前这对令牌立即失效。
-4. 当收到 `401` 时，只允许对普通请求尝试一次 refresh；refresh 也为 `401`，或重放后的请求仍为 `401`，必须执行本地登出。
+1. 登录成功后覆盖本账号旧会话；旧设备对应的 Cookie 会话立即不可用。
+2. refresh 成功后，服务端原子轮换两枚 Cookie 中的 JWT；旧 refresh JWT 不可重放。
+3. 调用 logout 后，当前 Cookie 会话立即失效并由服务端清理。
+4. 当收到 `401` 时，只允许对普通请求尝试一次 Cookie refresh；refresh 也为 `401`，或重放后的请求仍为 `401`，必须清除前端展示会话并跳转登录页。
 
 推荐的请求层伪代码：
 
 ```ts
-async function requestWithAuth(input: RequestInfo, init: RequestInit = {}) {
-  const response = await sendWithAccessToken(input, init);
+async function requestWithSession(input: RequestInfo, init: RequestInit = {}) {
+  const response = await fetch(input, { ...init, credentials: 'include' });
   if (response.status !== 401) return response;
 
   // 用单飞锁保证多个并发 401 只触发一次 refresh。
@@ -111,11 +101,11 @@ async function requestWithAuth(input: RequestInfo, init: RequestInit = {}) {
     redirectToLogin();
     throw new Error('session expired');
   }
-  return sendWithAccessToken(input, init);
+  return fetch(input, { ...init, credentials: 'include' });
 }
 ```
 
-不要把 refresh token 放在 URL、日志、错误上报内容或消息载荷中。当前后端通过 `Authorization` 接收 refresh token。
+不要把 JWT 放在 URL、日志、错误上报内容或消息载荷中；浏览器应只通过 HttpOnly Cookie 发送它们。
 
 ## 3. Auth：普通用户认证
 
@@ -140,15 +130,15 @@ async function requestWithAuth(input: RequestInfo, init: RequestInit = {}) {
 { "email": "alice@example.com", "password": "at-least-6-chars" }
 ```
 
-返回令牌对。错误密码、用户不存在或账号不可用均按 `401` 处理，页面不要据此区分用户是否存在。
+成功后响应写入用户 access、refresh 与 CSRF Cookie，`data` 为登录成功消息。错误密码、用户不存在或账号不可用均按 `401` 处理，页面不要据此区分用户是否存在。
 
 ### `POST /api/v1/public/auth/refresh`
 
-请求头携带 **refreshToken**，返回新的令牌对。此接口本身是公开路径，但并不代表无认证；缺少或无效 refresh token 返回 `401`。
+浏览器自动携带 `pp_user_rt`，请求还必须带 `X-CSRF-Token`。成功后服务端覆盖 Cookie；此接口本身是公开路径，但并不代表无认证；缺少或无效 refresh Cookie 返回 `401`。
 
 ### `POST /api/v1/protected/auth/logout`
 
-请求头携带普通用户 access token。成功返回：
+浏览器自动携带普通用户 access Cookie，且请求必须携带 `X-CSRF-Token`。成功返回：
 
 ```json
 { "success": true, "data": { "message": "登出成功" } }
@@ -180,7 +170,7 @@ type MarkdownSummary = {
 
 ### `POST /api/v1/protected/markdown/upload`
 
-创建文章。作者身份由 access token 决定，**不要**提交 `authorId`。
+创建文章。作者身份由 access Cookie 会话决定，**不要**提交 `authorId`。
 
 ```json
 // request
@@ -249,11 +239,11 @@ flowchart LR
 | 收消息 | 双向帧通道 | 单向事件流 |
 | 发消息 | 支持消息 wire JSON | `POST /api/v1/protected/chat/messages`（或兼容别名 `/api/v1/protected/chat/sse/messages`） |
 | 断线行为 | 服务端 ping/pong；旧会话会被关闭 | 事件流断开；旧会话会被关闭 |
-| 浏览器直接可用性 | **当前不可直接使用**，见下方限制 | 原生 `EventSource` **当前不可直接使用**，见下方限制 |
+| 浏览器直接可用性 | 可用：浏览器自动携带 HttpOnly access Cookie | 可用：`new EventSource(url, { withCredentials: true })` |
 
-**重要限制（当前后端契约）**：两个连接入口都经 `Authorization: Bearer <accessToken>` 鉴权，但浏览器原生 `WebSocket` 和 `EventSource` API 不能自定义 Authorization 请求头；服务端也尚未支持 query token 或 cookie 会话。因此浏览器前端暂时无法仅使用原生对象建立已鉴权 WS/SSE 连接。HTTP 消息、群和投递接口可正常集成。
+**当前浏览器契约**：两个连接入口会从 HttpOnly Cookie `pp_user_at` 读取 access JWT；浏览器原生 WebSocket/SSE 会在握手中自动携带该 Cookie。后端不接受 Bearer 凭据，前端不应将 JWT 传入 URL、`Sec-WebSocket-Protocol` 或尝试为原生对象设置 Authorization。
 
-在连接 API 扩展为浏览器可用（推荐短期令牌的 query 参数，或 HttpOnly cookie）之前，前端应将实时聊天 UI 标为“连接能力待接入”，不要将 token 放在 URL 中自行假设服务端能解析。
+Cookie 鉴权的 HTTP 写操作需要 `X-CSRF-Token`；详细迁移步骤、Cookie 作用域和错误处理见 [httpOnlyCookieMigration.md](./httpOnlyCookieMigration.md)。
 
 ### 5.2 消息 wire 格式
 
@@ -286,7 +276,7 @@ flowchart LR
 
 `deliveryIds` 是每个接收者的专属投递 ID；群消息可能返回多个 ID。群发送者必须已经是群成员，否则 `403`。
 
-若后端连接能力完成，SSE 收到的帧如下，事件名为 `text`；`id` 对应 delivery ID：
+SSE 收到的帧如下，事件名为 `text`；`id` 对应 delivery ID：
 
 ```text
 id: <deliveryId>
@@ -318,20 +308,20 @@ data: {"metadata":{"deliveryId":"...","type":"text","groupType":"private","from"
 
 ## 6. Manager：申请审批与管理端认证
 
-管理员 token 与普通用户 token 不能互用。管理端可独立维护 `managerAccessToken`、`managerRefreshToken`，或使用完全独立的管理端应用状态。
+管理员与普通用户 Cookie 会话不能互用。管理端可维护独立的非敏感会话展示状态。
 
 ### 申请与登录
 
 | 接口 | 请求 | 成功表现 |
 | --- | --- | --- |
 | `POST /api/v1/public/manager/register` | `{ username, password, email?, reason? }` | `201`，`{ requestId, username, status: "pending" }` |
-| `POST /api/v1/public/manager/login` | `{ username, password }` | `200`，管理员令牌对 |
-| `POST /api/v1/public/manager/refresh` | `Authorization: Bearer <managerRefreshToken>` | `200`，新的管理员令牌对 |
-| `POST /api/v1/protected/manager/logout` | 管理员 access token | `200`，当前管理会话失效 |
+| `POST /api/v1/public/manager/login` | `{ username, password }` | `200`，写入管理员 Cookie 会话 |
+| `POST /api/v1/public/manager/refresh` | Refresh Cookie + CSRF Header | `200`，轮换管理员 Cookie 会话 |
+| `POST /api/v1/protected/manager/logout` | Access Cookie + CSRF Header | `200`，当前管理会话失效 |
 
 约束：用户名 3–64 字符、密码 6–128 字符、email 为可选合法邮箱、reason 最长 512。申请后必须由已有管理员审批；尚未通过或被禁用的账户不能正常登录。
 
-### 审批接口（均需管理员 access token）
+### 审批接口（均需管理员 access Cookie 会话）
 
 | 接口 | 请求 | 成功 data | 行为关系 |
 | --- | --- | --- | --- |
@@ -347,10 +337,10 @@ data: {"metadata":{"deliveryId":"...","type":"text","groupType":"private","from"
 src/
   api/
     client.ts          # 基地址、统一响应解析、401 refresh 单飞
-    auth.ts            # 普通用户令牌对
+    auth.ts            # 普通用户 Cookie 会话接口
     markdown.ts
     chat.ts
-    manager.ts         # 与 auth.ts 分离的管理员令牌对
+    manager.ts         # 与 auth.ts 分离的管理员 Cookie 会话接口
   stores/
     session.ts         # 用户身份、登出、跨标签页同步
     markdown.ts
@@ -358,8 +348,8 @@ src/
   pages/
 ```
 
-- 业务页面只消费经 `api/*` 归一化后的 DTO，不直接判断 `success` 或处理 token。
-- 普通用户与管理员会话隔离，避免把 manager token 发到普通用户接口或相反。
+- 业务页面只消费经 `api/*` 归一化后的 DTO，不直接判断 `success` 或处理 JWT。
+- 普通用户与管理员会话隔离，避免将错误 scope 的 CSRF Header 发到接口。
 - 对 `401` 触发全局登出时，同时关闭实时连接（待连接能力接入后）并清空聊天内存状态。
 - 对 `403` 保留当前登录状态；它代表资源权限，而不是 token 失效。
 
@@ -372,4 +362,4 @@ GET /healthz  # 存活：{ data: { status: "ok", service: "gin-backend" } }
 GET /readyz   # PostgreSQL、Redis、聊天 Hub 都可用时为 200
 ```
 
-当前已验证的 HTTP 主链路包括：用户认证与单有效会话、refresh 轮换、登出、Markdown 的公开/私有访问控制、列表和搜索、群列表接口。管理员审批需要已有管理员账号；浏览器实时 WS/SSE 连接需要后端先补齐浏览器可携带 token 的认证方式。
+当前代码已具备：用户与管理员 Cookie-only 认证、单有效会话、refresh 轮换、登出、CSRF、Markdown 的公开/私有访问控制、聊天 WebSocket/SSE Cookie 握手与群列表接口。管理员审批仍需要已有管理员账号；部署环境联调仍应覆盖实时连接、CORS 与 Cookie 属性。

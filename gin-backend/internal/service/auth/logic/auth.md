@@ -27,7 +27,7 @@ jwt:session:user:<uid>  (Hash, TTL = Refresh Token 有效期)
 
 `AuthRequired` 的处理顺序：
 
-1. 从 `Authorization: Bearer <Access Token>` 提取 Token。
+1. 从 `pp_user_at` HttpOnly Cookie 提取 Access Token。
 2. 固定接受 RS256，校验签名、签发者、有效期和 `token_use=access`。
 3. 从 claims 提取 `sub` 和 `sid`。
 4. 读取 `jwt:session:user:<sub>`，只有其中的 `sid` 等于 Token 的 `sid` 才放行。
@@ -49,6 +49,4 @@ jwt:session:user:<uid>  (Hash, TTL = Refresh Token 有效期)
 
 ## 当前范围
 
-本机制目前覆盖普通用户 `auth` 链路。登录替换旧 SID 和成功登出会向 Redis Pub/Sub 写入 `session.revoked` 事件；该事件仅用于后续业务资源清理，Token 有效性仍以 Redis 会话状态为准。
-
-管理员会话、WebSocket/SSE 主动断开，以及各业务模块对下线事件的订阅处理仍不在本轮范围内。
+本文件描述普通用户 `auth` 链路；管理员在 `service/manager` 中使用独立 Cookie 与等价的 `sid` 会话校验。登录替换旧 SID 和成功登出会向 Redis Pub/Sub 写入 `session.revoked` 事件；Token 有效性仍以 Redis 会话状态为准。所有受保护 HTTP、WebSocket 与 SSE 路由均先经 Cookie JWT 鉴权。

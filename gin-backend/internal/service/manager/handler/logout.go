@@ -6,6 +6,7 @@ import (
 
 	eror "gin-backend/internal/common/base/errors"
 	"gin-backend/internal/common/base/responses"
+	"gin-backend/internal/common/service/sessioncookie"
 	logic "gin-backend/internal/service/manager/logic"
 
 	"github.com/gin-gonic/gin"
@@ -32,6 +33,7 @@ func LogoutHandler(c *gin.Context) {
 		responses.Fail(c, http.StatusInternalServerError, eror.CodeInternalError, err.Error())
 		return
 	}
+	sessioncookie.ClearManagerTokens(c)
 
 	responses.OK(c, gin.H{"message": "登出成功"})
 }

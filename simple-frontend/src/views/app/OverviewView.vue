@@ -33,7 +33,7 @@ onMounted(async () => {
     <header class="page-header page-header--hero">
       <div>
         <span class="page-kicker">YOUR WORKSPACE</span>
-        <h1>你好，用户 #{{ session.subject || '—' }}</h1>
+        <h1>{{ session.subject ? `你好，用户 #${session.subject}` : '你好，欢迎回来' }}</h1>
         <p>今天也留一点时间，整理脑海里尚未成形的想法。</p>
       </div>
       <RouterLink :to="{ name: 'editor' }" class="button button--primary button--large"><PenLine :size="18" />开始写作</RouterLink>

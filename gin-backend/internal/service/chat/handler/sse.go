@@ -13,6 +13,11 @@ import (
 
 // SSEHandler SSE 流入口: GET /api/v1/protected/chat/sse
 func SSEHandler(c *gin.Context) {
+	if !browserOriginAllowed(c.Request) {
+		responses.Fail(c, http.StatusForbidden, eror.CodeForbidden, "不允许的连接来源")
+		return
+	}
+
 	// 鉴权 (AuthRequired 中间件已校验, 此处提取 subject)
 	claims, exists := jwt.ExtractClaims(c)
 	if !exists {

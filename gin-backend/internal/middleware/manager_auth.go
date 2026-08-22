@@ -8,6 +8,7 @@ import (
 	eror "gin-backend/internal/common/base/errors"
 	"gin-backend/internal/common/base/responses"
 	"gin-backend/internal/common/service/jwt"
+	"gin-backend/internal/common/service/sessioncookie"
 	"gin-backend/internal/config"
 
 	"github.com/gin-gonic/gin"
@@ -19,7 +20,7 @@ import (
 func ManagerAuthRequired(conf *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 1. 提取 JWT Token
-		tokenStr := jwt.ExtractToken(c)
+		tokenStr := sessioncookie.AccessToken(c, sessioncookie.ManagerAccessCookie)
 		if tokenStr == "" {
 			responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "无效的Token")
 			return

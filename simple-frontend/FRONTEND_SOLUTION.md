@@ -39,7 +39,7 @@ src/
   router/       # 路由表和鉴权守卫
   stores/       # 会话与全局提示
   types/        # API 包装和归一化领域模型
-  utils/        # token vault、JWT 展示信息和日期格式化
+  utils/        # CSRF、跨标签会话事件和日期格式化
   views/        # 路由页面
   styles/       # 设计令牌、组件和响应式样式
 ```
@@ -48,15 +48,15 @@ src/
 
 ## 4. 请求与会话策略
 
-- 普通用户和管理员分别使用 `user`、`manager` scope，令牌不会跨业务发送。
+- 普通用户和管理员分别使用 `user`、`manager` scope，Cookie 不会跨业务发送。
 - 每个 scope 都有独立的 refresh 单飞锁；并发 401 只产生一次 refresh。
-- refresh 成功后原子覆盖 access/refresh token pair，并只重放原请求一次。
+- refresh 成功后由服务端原子轮换 Cookie 会话，并只重放原请求一次。
 - refresh 失败或重放仍为 401 时清除对应会话；403 不会触发刷新。
 - 登出请求无论成功或失败，最终都会清理本地会话。
 - 使用 `BroadcastChannel` 和 `storage` 事件同步跨标签页登录态。
-- JWT payload 仅用于显示 subject 和过期时间，绝不用于前端授权判断。
+- 前端不读取 JWT；路由守卫通过受保护接口探测会话，后端是唯一的授权事实来源。
 
-当前令牌存储在 `localStorage`，是基于现有 Bearer token 接口的工程折中。生产环境更推荐后端改为 Secure、HttpOnly、SameSite cookie，并配套 CSRF 防护。
+当前使用 HttpOnly、SameSite Cookie 并配套 CSRF 防护；生产部署必须启用 `Secure`，页面不存储 access / refresh JWT。
 
 ## 5. 接口覆盖矩阵
 
@@ -65,18 +65,18 @@ src/
 | Health | `/healthz`、`/readyz` |
 | Auth | 注册、登录、refresh、登出 |
 | Markdown | 创建、我的列表、公开列表、详情、搜索、分页、字段归一化 |
-| Chat | HTTP 私信/群消息、我的群、加入、退出、成员列表；ACK 客户端方法已预留 |
+| Chat | Cookie WebSocket 实时收件、会话列表与未读数、HTTP 可靠发信、ACK 失败重试、我的群、加入、退出、成员列表 |
 | Manager | 申请、登录、refresh、登出、按状态分页、通过、拒绝、409 后刷新 |
 
 ### Chat 的明确边界
 
-当前后端要求 WebSocket/SSE 握手携带 `Authorization`，浏览器原生 `WebSocket` 和 `EventSource` 无法设置该请求头。前端因此：
+当前后端通过 HttpOnly Cookie 鉴权 WebSocket/SSE 握手。前端因此：
 
 - 不把 access token 放入 URL；
-- 不创建不可工作的伪实时连接；
-- 明确标注当前仅 HTTP 投递可用；
-- 发送记录仅保存于本次 `sessionStorage`，不冒充服务端历史；
-- 保留 delivery ACK API，待后端提供浏览器可用的短期连接凭证或 HttpOnly cookie 后接入实时收件。
+- 使用原生 WebSocket 建立实时收件，并在会话有效时退避重连；
+- 发信继续调用可返回 delivery ID 的 HTTP 接口，确保接收端可确认投递；
+- 收到消息后先显示，再通过 CSRF 保护的 ACK 请求确认；失败的 ACK 会保留到下一次连接恢复；
+- 浏览器会话缓存仅保存短期消息 UI 状态与待确认 delivery ID，绝不保存 JWT，也不作为服务端历史。
 
 ## 6. 状态、错误和空态
 
@@ -89,7 +89,7 @@ src/
 
 ## 7. 后续演进建议
 
-1. 后端增加一次性、短时有效的 chat connection ticket，或切换为 HttpOnly cookie，随后实现 WS/SSE 接收、ACK 重试队列和断线恢复。
+1. 为聊天补充服务端历史、离线补偿与更完整的 ACK 重试队列。
 2. 增加用户 profile/me 接口，替换当前从 JWT `sub` 推导的简化身份展示。
 3. Markdown 后端增加更新、删除和草稿接口，再扩展编辑器为完整生命周期。
 4. 引入 Vitest、MSW 与 Playwright，覆盖 refresh 轮换、路由权限、字段 adapter 和核心用户流。

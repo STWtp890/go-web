@@ -1,33 +1,50 @@
 import { computed, onScopeDispose, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { authApi } from '@/api/auth'
+import { apiRequest } from '@/api/client'
 import { managerApi } from '@/api/manager'
-import type { SessionScope, TokenPair } from '@/types/api'
-import { clearTokenPair, decodeJwtPayload, readTokenPair, subscribeSessionChanges, writeTokenPair } from '@/utils/session-vault'
+import type { SessionScope } from '@/types/api'
+import { notifySessionChange, subscribeSessionChanges } from '@/utils/session-events'
 
 function createSessionStore(scope: SessionScope) {
-  const tokenPair = ref<TokenPair | null>(readTokenPair(scope))
-  const isAuthenticated = computed(() => Boolean(tokenPair.value?.accessToken))
-  const claims = computed(() => tokenPair.value ? decodeJwtPayload(tokenPair.value.accessToken) : null)
-  const subject = computed(() => String(claims.value?.sub ?? ''))
-  const expiresAt = computed(() => Number(claims.value?.exp ?? 0))
+  const status = ref<'unknown' | 'authenticated' | 'unauthenticated'>('unknown')
+  const isAuthenticated = computed(() => status.value === 'authenticated')
+  const subject = ref('')
 
-  function setSession(pair: TokenPair) {
-    writeTokenPair(scope, pair)
-    tokenPair.value = pair
+  function setSession() {
+    status.value = 'authenticated'
+    notifySessionChange(scope, 'signed-in')
   }
 
   function clearSession() {
-    clearTokenPair(scope)
-    tokenPair.value = null
+    status.value = 'unauthenticated'
+    subject.value = ''
+    notifySessionChange(scope, 'signed-out')
   }
 
-  const unsubscribe = subscribeSessionChanges((changedScope) => {
-    if (changedScope === scope) tokenPair.value = readTokenPair(scope)
+  async function restore(force = false): Promise<boolean> {
+    if (!force && isAuthenticated.value) return true
+    const probePath = scope === 'user'
+      ? '/api/v1/protected/markdown/mine?page=1&pageSize=1'
+      : '/api/v1/protected/manager/requests?status=pending&page=1&pageSize=1'
+    try {
+      await apiRequest(probePath, { scope })
+      status.value = 'authenticated'
+      return true
+    } catch {
+      status.value = 'unauthenticated'
+      return false
+    }
+  }
+
+  const unsubscribe = subscribeSessionChanges((event) => {
+    if (event.scope !== scope) return
+    status.value = event.type === 'signed-in' ? 'authenticated' : 'unauthenticated'
+    if (event.type === 'signed-out') subject.value = ''
   })
   onScopeDispose(unsubscribe)
 
-  return { tokenPair, isAuthenticated, claims, subject, expiresAt, setSession, clearSession }
+  return { isAuthenticated, subject, setSession, clearSession, restore }
 }
 
 export const useUserSessionStore = defineStore('user-session', () => {

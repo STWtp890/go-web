@@ -1,50 +1,44 @@
-# Gin 后端应用配置
+# Docker Compose configuration. The service names resolve through the Compose
+# network; production deployments should provide their own configuration and
+# JWT key pair instead.
 server:
   port: 8080
-  mode: debug          # debug | release | test
+  mode: release
   read_timeout: 30s
   write_timeout: 30s
 
-# PostgreSQL 配置 (auth/markdown/chat 共用)
 postgres:
-  host: 127.0.0.1
-  port: 15432
+  host: postgres
+  port: 5432
   user: postgres
   password: "postgres"
   dbname: gin_demo
   max_idle_conns: 10
   max_open_conns: 100
 
-# Redis 配置
 redis:
-  host: 127.0.0.1
-  port: 16379
+  host: redis
+  port: 6379
   password: ""
   db: 0
 
 custom:
-  # JWT 配置 (RS256 非对称加密)
   jwt:
     issuer: "gin-backend"
     private_key_path: "configs/rsa_private.pem"
     public_key_path: "configs/rsa_public.pem"
-    access_expire_hours: 24     # Access Token 有效期 (小时)
-    refresh_expire_hours: 168   # Refresh Token 有效期 (小时, 7 天)
-
-  # 浏览器 HttpOnly 会话 Cookie。开发环境允许 HTTP；生产务必 secure: true，
-  # 并替换 csrf_secret 为部署专用随机值。
+    access_expire_hours: 24
+    refresh_expire_hours: 168
+  # Compose 本地联调配置；生产配置应启用 secure 并提供独立 CSRF 密钥。
   cookie:
     secure: false
     domain: ""
     same_site: lax
     csrf_secret: "development-only-change-before-production"
-
-  # CORS 配置
   cors:
     allow_origins:
-      - "http://localhost:5173"
-      - "http://localhost:3000"
       - "http://localhost:15173"
+      - "http://localhost:8080"
     allow_methods:
       - GET
       - POST
@@ -60,10 +54,8 @@ custom:
       - Content-Length
     allow_credentials: true
     max_age: 12h
-
-  # 上传文件配置
   upload:
-    max_size: 10485760    # 10MB
+    max_size: 10485760
     allow_exts:
       - .jpg
       - .jpeg
@@ -73,7 +65,7 @@ custom:
     path: storage/uploads
 
 log:
-  level: info           # debug | info | warn | error
-  format: text          # text | json
-  output: stdout        # stdout | file
+  level: info
+  format: text
+  output: stdout
   file_path: storage/logs/app.log

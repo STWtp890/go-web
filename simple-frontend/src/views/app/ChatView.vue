@@ -1,45 +1,268 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { CheckCheck, CircleAlert, LogOut, MessageCircle, Radio, RefreshCw, Send, UserPlus, Users } from '@lucide/vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { CheckCheck, CircleAlert, LogOut, MessageCircle, Plus, Radio, RefreshCw, Send, UserPlus, Users, WifiOff } from '@lucide/vue'
+import { useRouter } from 'vue-router'
 import { chatApi } from '@/api/chat'
-import { getApiError } from '@/api/client'
+import { API_BASE, getApiError } from '@/api/client'
 import EmptyState from '@/components/EmptyState.vue'
+import { useChatSocket, type ChatConnectionState } from '@/composables/useChatSocket'
+import { useUserSessionStore } from '@/stores/session'
 import { useToastStore } from '@/stores/toast'
 import type { SentMessage } from '@/types/domain'
 import { formatRelativeDate } from '@/utils/format'
 
-const HISTORY_KEY = 'paperplane:sent-message-history'
-const toast = useToastStore()
+const HISTORY_KEY = 'paperplane:chat-history-v2'
+const PENDING_ACK_KEY = 'paperplane:chat-pending-acks-v2'
+const MAX_MESSAGES = 150
 
-const mode = ref<'private' | 'group'>('private')
-const recipient = ref('')
+type ConversationKind = 'private' | 'group'
+
+interface Conversation {
+  id: string
+  kind: ConversationKind
+  title: string
+  updatedAt: number
+  preview: string
+  unread: number
+}
+
+const router = useRouter()
+const toast = useToastStore()
+const session = useUserSessionStore()
+
+// Conversation state
+const messages = ref<SentMessage[]>([])
+const groups = ref<string[]>([])
+const members = ref<string[]>([])
+const activeConversationId = ref('')
+const unreadByConversation = ref<Record<string, number>>({})
+const newPeerId = ref('')
+const groupIdToJoin = ref('')
 const content = ref('')
 const sending = ref(false)
-const errorMessage = ref('')
-const messages = ref<SentMessage[]>([])
-
-const groups = ref<string[]>([])
-const groupsLoading = ref(false)
-const groupIdToJoin = ref('')
 const joining = ref(false)
-const selectedGroup = ref('')
-const members = ref<string[]>([])
+const groupsLoading = ref(false)
 const membersLoading = ref(false)
+const errorMessage = ref('')
 
-const currentTarget = computed(() => mode.value === 'group' ? selectedGroup.value : recipient.value.trim())
-const canSend = computed(() => Boolean(currentTarget.value && content.value.trim() && !sending.value))
-const visibleMessages = computed(() => messages.value.filter((message) => message.groupType === mode.value))
+// Delivery acknowledgement state. IDs contain no credential material.
+const pendingAcknowledgements = ref<string[]>([])
+let acknowledgementInFlight = false
 
-function persistMessages() {
-  sessionStorage.setItem(HISTORY_KEY, JSON.stringify(messages.value.slice(0, 50)))
+function privateConversationId(userId: string): string {
+  return `private:${userId}`
+}
+
+function groupConversationId(groupId: string): string {
+  return `group:${groupId}`
+}
+
+function conversationIdForMessage(message: SentMessage): string {
+  if (message.groupType === 'group') return groupConversationId(message.to)
+  return privateConversationId(message.direction === 'received' ? (message.from ?? message.to) : message.to)
+}
+
+function targetFromConversation(conversationId: string): { kind: ConversationKind; target: string } | null {
+  const separator = conversationId.indexOf(':')
+  if (separator < 1) return null
+  const kind = conversationId.slice(0, separator)
+  const target = conversationId.slice(separator + 1)
+  return (kind === 'private' || kind === 'group') && target ? { kind, target } : null
+}
+
+const activeTarget = computed(() => targetFromConversation(activeConversationId.value))
+const conversationMessages = computed(() => messages.value
+  .filter((message) => conversationIdForMessage(message) === activeConversationId.value)
+  .slice()
+  .sort((left, right) => left.createdAt - right.createdAt))
+
+const conversations = computed<Conversation[]>(() => {
+  const groupIds = new Set(groups.value)
+  const privateIds = new Set<string>()
+  messages.value.forEach((message) => {
+    if (message.groupType === 'group') groupIds.add(message.to)
+    else privateIds.add(message.direction === 'received' ? (message.from ?? message.to) : message.to)
+  })
+  const active = activeTarget.value
+  if (active?.kind === 'private') privateIds.add(active.target)
+  if (active?.kind === 'group') groupIds.add(active.target)
+
+  const all = [
+    ...[...privateIds].filter(Boolean).map((id) => makeConversation('private', id)),
+    ...[...groupIds].filter(Boolean).map((id) => makeConversation('group', id)),
+  ]
+  return all.sort((left, right) => right.updatedAt - left.updatedAt || left.title.localeCompare(right.title, 'zh-CN'))
+})
+
+const activeConversation = computed(() => conversations.value.find((item) => item.id === activeConversationId.value) ?? null)
+const canSend = computed(() => Boolean(activeTarget.value && content.value.trim() && !sending.value))
+
+function makeConversation(kind: ConversationKind, target: string): Conversation {
+  const id = kind === 'group' ? groupConversationId(target) : privateConversationId(target)
+  const latest = messages.value
+    .filter((message) => conversationIdForMessage(message) === id)
+    .slice()
+    .sort((left, right) => right.createdAt - left.createdAt)[0]
+  return {
+    id,
+    kind,
+    title: kind === 'group' ? target : `用户 #${target}`,
+    updatedAt: latest?.createdAt ?? 0,
+    preview: latest?.content ?? (kind === 'group' ? '群组实时对话' : '开始一段新对话'),
+    unread: unreadByConversation.value[id] ?? 0,
+  }
+}
+
+function persistConversationState() {
+  sessionStorage.setItem(HISTORY_KEY, JSON.stringify(messages.value.slice(-MAX_MESSAGES)))
+  sessionStorage.setItem(PENDING_ACK_KEY, JSON.stringify(pendingAcknowledgements.value))
+}
+
+function selectConversation(conversationId: string) {
+  activeConversationId.value = conversationId
+  if (unreadByConversation.value[conversationId]) {
+    const next = { ...unreadByConversation.value }
+    delete next[conversationId]
+    unreadByConversation.value = next
+  }
+}
+
+function startPrivateConversation() {
+  const userId = newPeerId.value.trim()
+  if (!userId) return
+  selectConversation(privateConversationId(userId))
+  newPeerId.value = ''
+}
+
+function chatWebSocketURL(): string {
+  const base = API_BASE || window.location.origin
+  const url = new URL('/api/v1/protected/chat/ws', base)
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  return url.toString()
+}
+
+function enqueueAcknowledgement(deliveryId: string) {
+  if (pendingAcknowledgements.value.includes(deliveryId)) return
+  pendingAcknowledgements.value = [...pendingAcknowledgements.value, deliveryId]
+  persistConversationState()
+}
+
+async function flushAcknowledgements() {
+  if (acknowledgementInFlight || !pendingAcknowledgements.value.length) return
+  acknowledgementInFlight = true
+  try {
+    for (const deliveryId of [...pendingAcknowledgements.value]) {
+      try {
+        await chatApi.acknowledge(deliveryId)
+        pendingAcknowledgements.value = pendingAcknowledgements.value.filter((id) => id !== deliveryId)
+      } catch {
+        // Keep it for the next reconnect/online event. Acknowledgement is idempotent.
+        break
+      }
+    }
+  } finally {
+    acknowledgementInFlight = false
+    persistConversationState()
+  }
+}
+
+function isKnownDelivery(deliveryId: string): boolean {
+  return messages.value.some((message) => message.deliveryIds.includes(deliveryId))
+}
+
+function isGroupEchoOfSentMessage(groupId: string, body: string, timestamp: number): SentMessage | undefined {
+  return messages.value.find((message) =>
+    message.direction === 'sent'
+    && message.groupType === 'group'
+    && message.to === groupId
+    && message.content === body
+    && Math.abs(message.createdAt - timestamp) < 30,
+  )
+}
+
+function receiveMessage(raw: string) {
+  try {
+    const frame = JSON.parse(raw) as {
+      metadata?: { deliveryId?: string; type?: string; groupType?: ConversationKind; from?: string; to?: string; timestamp?: number }
+      content?: string
+    }
+    const metadata = frame.metadata
+    if (
+      metadata?.type !== 'text'
+      || (metadata.groupType !== 'private' && metadata.groupType !== 'group')
+      || !metadata.from
+      || !metadata.to
+      || typeof frame.content !== 'string'
+    ) return
+
+    const deliveryId = metadata.deliveryId
+    if (deliveryId) enqueueAcknowledgement(deliveryId)
+    if (deliveryId && isKnownDelivery(deliveryId)) {
+      void flushAcknowledgements()
+      return
+    }
+
+    const receivedAt = metadata.timestamp || Math.floor(Date.now() / 1000)
+    const echoedMessage = metadata.groupType === 'group' ? isGroupEchoOfSentMessage(metadata.to, frame.content, receivedAt) : undefined
+    if (echoedMessage) {
+      if (deliveryId && !echoedMessage.deliveryIds.includes(deliveryId)) {
+        messages.value = messages.value.map((message) => message.localId === echoedMessage.localId
+          ? { ...message, deliveryIds: [...message.deliveryIds, deliveryId] }
+          : message)
+      }
+      persistConversationState()
+      void flushAcknowledgements()
+      return
+    }
+
+    const incoming: SentMessage = {
+      localId: deliveryId ?? crypto.randomUUID(),
+      direction: 'received',
+      from: metadata.from,
+      to: metadata.to,
+      groupType: metadata.groupType,
+      content: frame.content,
+      createdAt: receivedAt,
+      deliveryIds: deliveryId ? [deliveryId] : [],
+      status: 'received',
+    }
+    const conversationId = conversationIdForMessage(incoming)
+    messages.value = [...messages.value, incoming].slice(-MAX_MESSAGES)
+    if (conversationId !== activeConversationId.value) {
+      unreadByConversation.value = {
+        ...unreadByConversation.value,
+        [conversationId]: (unreadByConversation.value[conversationId] ?? 0) + 1,
+      }
+    }
+    persistConversationState()
+    void flushAcknowledgements()
+  } catch {
+    // Ignore malformed frames. The server emits only chat wire JSON frames.
+  }
+}
+
+const { connectionState, connect, retryNow } = useChatSocket({
+  getURL: chatWebSocketURL,
+  ensureSession: () => session.restore(true),
+  onMessage: receiveMessage,
+  onConnected: () => { void flushAcknowledgements() },
+  onUnauthenticated: () => {
+    toast.show({ tone: 'info', title: '会话已失效', message: '实时连接已安全关闭，请重新登录。' })
+    void router.replace({ name: 'login', query: { redirect: '/app/chat' } })
+  },
+})
+
+const connectionLabel: Record<ChatConnectionState, string> = {
+  connecting: '正在建立安全连接',
+  connected: '实时连接已建立',
+  reconnecting: '正在恢复连接',
+  disconnected: '会话已断开',
 }
 
 async function loadGroups() {
   groupsLoading.value = true
   try {
     groups.value = await chatApi.myGroups()
-    if (selectedGroup.value && !groups.value.includes(selectedGroup.value)) selectedGroup.value = ''
-    if (!selectedGroup.value && groups.value.length) selectedGroup.value = groups.value[0] ?? ''
   } catch (error) {
     toast.show({ tone: 'error', title: '无法加载群组', message: getApiError(error).message })
   } finally {
@@ -48,14 +271,19 @@ async function loadGroups() {
 }
 
 async function loadMembers() {
-  if (!selectedGroup.value) {
+  const target = activeTarget.value
+  if (target?.kind !== 'group') {
     members.value = []
     return
   }
   membersLoading.value = true
-  try { members.value = await chatApi.members(selectedGroup.value) }
-  catch (error) { toast.show({ tone: 'error', title: '无法加载成员', message: getApiError(error).message }) }
-  finally { membersLoading.value = false }
+  try {
+    members.value = await chatApi.members(target.target)
+  } catch (error) {
+    toast.show({ tone: 'error', title: '无法加载成员', message: getApiError(error).message })
+  } finally {
+    membersLoading.value = false
+  }
 }
 
 async function joinGroup() {
@@ -65,119 +293,148 @@ async function joinGroup() {
   try {
     const result = await chatApi.join(groupId)
     groupIdToJoin.value = ''
-    selectedGroup.value = result.groupId
     await loadGroups()
-    toast.show({ tone: 'success', title: `已加入群组 ${result.groupId}`, message: result.supplement.length ? `收到 ${result.supplement.length} 条窗口补发` : '现在可以发送群消息了' })
+    selectConversation(groupConversationId(result.groupId))
+    toast.show({ tone: 'success', title: `已加入群组 ${result.groupId}`, message: result.supplement.length ? `已收到 ${result.supplement.length} 条窗口消息` : '现在可以开始群组实时对话。' })
   } catch (error) {
     toast.show({ tone: 'error', title: '加入失败', message: getApiError(error).message })
-  } finally { joining.value = false }
+  } finally {
+    joining.value = false
+  }
 }
 
 async function leaveGroup(groupId: string) {
   try {
     await chatApi.leave(groupId)
-    selectedGroup.value = ''
-    members.value = []
-    await loadGroups()
+    groups.value = groups.value.filter((id) => id !== groupId)
+    if (activeConversationId.value === groupConversationId(groupId)) selectConversation('')
     toast.show({ tone: 'success', title: `已退出群组 ${groupId}` })
   } catch (error) {
     toast.show({ tone: 'error', title: '退出失败', message: getApiError(error).message })
   }
 }
 
-async function sendMessage() {
-  if (!canSend.value) return
-  const messageContent = content.value.trim()
-  const target = currentTarget.value
-  sending.value = true
-  errorMessage.value = ''
+async function sendMessage(message: SentMessage) {
   try {
     const response = await chatApi.send({
-      metadata: { type: 'text', groupType: mode.value, to: target },
-      content: messageContent,
+      metadata: { type: 'text', groupType: message.groupType, to: message.to },
+      content: message.content,
     })
-    messages.value.unshift({
-      localId: crypto.randomUUID(), to: target, groupType: mode.value, content: messageContent,
-      createdAt: Math.floor(Date.now() / 1000), deliveryIds: response.deliveryIds, status: 'accepted',
-    })
-    persistMessages()
-    content.value = ''
-    toast.show({ tone: 'success', title: '消息已被服务端接受', message: `生成 ${response.deliveryIds.length} 个投递记录` })
+    messages.value = messages.value.map((item) => item.localId === message.localId
+      ? { ...item, deliveryIds: response.deliveryIds, status: 'accepted' }
+      : item)
   } catch (error) {
     const apiError = getApiError(error)
     errorMessage.value = apiError.message
-    messages.value.unshift({
-      localId: crypto.randomUUID(), to: target, groupType: mode.value, content: messageContent,
-      createdAt: Math.floor(Date.now() / 1000), deliveryIds: [], status: 'failed',
-    })
-    persistMessages()
-  } finally { sending.value = false }
+    messages.value = messages.value.map((item) => item.localId === message.localId ? { ...item, status: 'failed' } : item)
+  } finally {
+    persistConversationState()
+  }
 }
 
-watch(selectedGroup, () => { void loadMembers() })
+async function sendActiveMessage() {
+  const target = activeTarget.value
+  const body = content.value.trim()
+  if (!target || !body || sending.value) return
+  sending.value = true
+  errorMessage.value = ''
+  const message: SentMessage = {
+    localId: crypto.randomUUID(),
+    direction: 'sent',
+    to: target.target,
+    groupType: target.kind,
+    content: body,
+    createdAt: Math.floor(Date.now() / 1000),
+    deliveryIds: [],
+    status: 'sending',
+  }
+  messages.value = [...messages.value, message].slice(-MAX_MESSAGES)
+  content.value = ''
+  persistConversationState()
+  await sendMessage(message)
+  sending.value = false
+}
+
+async function retryMessage(message: SentMessage) {
+  if (message.status !== 'failed' || sending.value) return
+  sending.value = true
+  errorMessage.value = ''
+  messages.value = messages.value.map((item) => item.localId === message.localId ? { ...item, status: 'sending' } : item)
+  await sendMessage({ ...message, status: 'sending' })
+  sending.value = false
+}
+
+function restoreLocalConversationState() {
+  try {
+    const storedMessages = JSON.parse(sessionStorage.getItem(HISTORY_KEY) ?? '[]')
+    if (Array.isArray(storedMessages)) messages.value = storedMessages.filter(isChatMessage).slice(-MAX_MESSAGES)
+    const storedAcknowledgements = JSON.parse(sessionStorage.getItem(PENDING_ACK_KEY) ?? '[]')
+    if (Array.isArray(storedAcknowledgements)) pendingAcknowledgements.value = storedAcknowledgements.filter((id): id is string => typeof id === 'string')
+  } catch {
+    messages.value = []
+    pendingAcknowledgements.value = []
+  }
+}
+
+function isChatMessage(value: unknown): value is SentMessage {
+  if (!value || typeof value !== 'object') return false
+  const message = value as Partial<SentMessage>
+  return typeof message.localId === 'string'
+    && (message.direction === 'sent' || message.direction === 'received')
+    && (message.groupType === 'private' || message.groupType === 'group')
+    && typeof message.to === 'string'
+    && typeof message.content === 'string'
+    && typeof message.createdAt === 'number'
+    && Array.isArray(message.deliveryIds)
+    && (message.status === 'sending' || message.status === 'accepted' || message.status === 'failed' || message.status === 'received')
+}
+
+function handleNetworkReturn() {
+  retryNow()
+  void flushAcknowledgements()
+}
+
+watch(activeConversationId, () => { void loadMembers() })
+
 onMounted(() => {
-  try { messages.value = JSON.parse(sessionStorage.getItem(HISTORY_KEY) ?? '[]') as SentMessage[] } catch { messages.value = [] }
+  restoreLocalConversationState()
   void loadGroups()
+  void flushAcknowledgements()
+  connect()
+  window.addEventListener('online', handleNetworkReturn)
 })
+
+onBeforeUnmount(() => window.removeEventListener('online', handleNetworkReturn))
 </script>
 
 <template>
   <div class="page chat-page">
-    <header class="page-header">
-      <div><span class="page-kicker">MESSAGING</span><h1><MessageCircle :size="27" />消息中心</h1><p>发送私信或群消息，管理你已加入的群组。</p></div>
-      <div class="connection-chip connection-chip--limited"><Radio :size="15" /><span>HTTP 通道可用</span></div>
+    <header class="page-header chat-page__header">
+      <div><span class="page-kicker">REAL-TIME MESSAGING</span><h1><MessageCircle :size="27" />消息</h1><p>通过安全的 HttpOnly Cookie 建立实时收件通道。</p></div>
+      <div class="connection-chip" :class="{ 'connection-chip--limited': connectionState !== 'connected' }"><Radio :size="15" /><span>{{ connectionLabel[connectionState] }}</span><button v-if="connectionState !== 'connected'" type="button" class="icon-button" aria-label="立即重连" @click="retryNow"><RefreshCw :size="15" /></button></div>
     </header>
 
-    <aside class="capability-notice">
-      <CircleAlert :size="20" />
-      <div><strong>实时收件暂不可用</strong><p>当前后端要求在 WS/SSE 握手中携带 Authorization，而浏览器原生接口无法设置该请求头。这里仅展示本次浏览器会话内的发送记录，不会伪装成完整聊天历史。</p></div>
-    </aside>
+    <aside class="capability-notice chat-page__notice"><CircleAlert :size="20" /><div><strong>实时接收 · 可靠投递</strong><p>收到消息后，页面会先写入对话状态，再用 CSRF 保护的请求确认投递。发送使用可返回 delivery ID 的可靠接口，已连接的对方会即时收到消息。</p></div></aside>
 
-    <div class="chat-layout">
-      <section class="chat-compose card">
-        <div class="segmented-control" aria-label="消息类型">
-          <button type="button" :class="{ active: mode === 'private' }" @click="mode = 'private'">私信</button>
-          <button type="button" :class="{ active: mode === 'group' }" @click="mode = 'group'">群消息</button>
+    <div class="realtime-chat">
+      <aside class="conversation-rail card">
+        <div class="conversation-rail__heading"><div><span>INBOX</span><h2>对话</h2></div><span>{{ conversations.length }}</span></div>
+        <form class="new-chat-form" @submit.prevent="startPrivateConversation"><input v-model.trim="newPeerId" aria-label="接收用户 ID" placeholder="输入用户 ID，开始私聊" /><button type="submit" class="icon-button" aria-label="创建私聊"><Plus :size="18" /></button></form>
+        <div class="conversation-rail__list">
+          <p v-if="groupsLoading" class="conversation-rail__loading">正在同步群组…</p>
+          <template v-else-if="conversations.length"><div v-for="conversation in conversations" :key="conversation.id" class="conversation-row"><button type="button" class="conversation-item" :class="{ active: activeConversationId === conversation.id }" @click="selectConversation(conversation.id)"><span class="conversation-item__avatar" :class="`conversation-item__avatar--${conversation.kind}`"><Users v-if="conversation.kind === 'group'" :size="17" /><MessageCircle v-else :size="17" /></span><span class="conversation-item__content"><strong>{{ conversation.title }}</strong><small>{{ conversation.preview }}</small></span><span class="conversation-item__meta"><time>{{ conversation.updatedAt ? formatRelativeDate(conversation.updatedAt) : '' }}</time><i v-if="conversation.unread">{{ conversation.unread > 9 ? '9+' : conversation.unread }}</i></span></button><button v-if="conversation.kind === 'group'" type="button" class="conversation-row__leave" :aria-label="`退出群组 ${conversation.title}`" @click="leaveGroup(conversation.title)"><LogOut :size="14" /></button></div></template>
+          <EmptyState v-else title="开始一段对话" description="输入用户 ID 发起私聊，或加入一个预置群组。" />
         </div>
+        <form class="join-group-form" @submit.prevent="joinGroup"><span><UserPlus :size="15" />加入预置群组</span><div><input v-model.trim="groupIdToJoin" aria-label="预置群组 ID" placeholder="群组 ID" /><button type="submit" class="button button--soft button--small" :disabled="joining">{{ joining ? '加入中' : '加入' }}</button></div></form>
+      </aside>
 
-        <form class="message-form" @submit.prevent="sendMessage">
-          <label v-if="mode === 'private'" class="field"><span>接收用户 ID</span><input v-model.trim="recipient" placeholder="例如：12" required /></label>
-          <label v-else class="field"><span>目标群组</span><select v-model="selectedGroup" required><option value="" disabled>选择已加入的群组</option><option v-for="group in groups" :key="group" :value="group">{{ group }}</option></select></label>
-          <label class="field"><span>消息内容 <small>{{ content.length.toLocaleString() }} / 49,152 bytes</small></span><textarea v-model="content" rows="7" maxlength="49152" placeholder="输入一条文本消息…" required /></label>
-          <p v-if="errorMessage" class="form-error" role="alert">{{ errorMessage }}</p>
-          <button type="submit" class="button button--primary button--full" :disabled="!canSend"><Send :size="17" />{{ sending ? '正在发送…' : '发送消息' }}</button>
-        </form>
-
-        <div v-if="mode === 'group' && selectedGroup" class="member-panel">
-          <div><span><Users :size="16" />群组成员</span><button type="button" class="icon-button" aria-label="刷新成员" @click="loadMembers"><RefreshCw :size="15" /></button></div>
-          <p v-if="membersLoading">正在加载…</p>
-          <div v-else class="member-list"><span v-for="member in members" :key="member">#{{ member }}</span><small v-if="!members.length">暂无成员</small></div>
-        </div>
-      </section>
-
-      <section class="chat-history card">
-        <div class="card-heading"><div><span>SENT THIS SESSION</span><h2>发送记录</h2></div><span>{{ visibleMessages.length }} 条</span></div>
-        <div v-if="visibleMessages.length" class="message-list">
-          <article v-for="message in visibleMessages" :key="message.localId" class="sent-message" :class="{ 'sent-message--failed': message.status === 'failed' }">
-            <div class="sent-message__meta"><span>发往 {{ message.groupType === 'group' ? '群组' : '用户' }} <strong>#{{ message.to }}</strong></span><span>{{ formatRelativeDate(message.createdAt) }}</span></div>
-            <p>{{ message.content }}</p>
-            <footer><CheckCheck v-if="message.status === 'accepted'" :size="15" /><CircleAlert v-else :size="15" />{{ message.status === 'accepted' ? `服务端已接受 · ${message.deliveryIds.length} 个投递 ID` : '发送失败' }}</footer>
-          </article>
-        </div>
-        <EmptyState v-else title="还没有发送记录" description="本页只保留当前浏览器会话内发出的消息。" />
-      </section>
-
-      <section class="group-manager card">
-        <div class="card-heading"><div><span>YOUR GROUPS</span><h2>我的群组</h2></div><button type="button" class="icon-button" aria-label="刷新群组" @click="loadGroups"><RefreshCw :size="16" /></button></div>
-        <form class="join-form" @submit.prevent="joinGroup"><input v-model.trim="groupIdToJoin" placeholder="输入预置群组 ID" aria-label="群组 ID" /><button class="button button--soft" type="submit" :disabled="joining"><UserPlus :size="16" />{{ joining ? '加入中' : '加入' }}</button></form>
-        <p v-if="groupsLoading" class="muted">正在加载群组…</p>
-        <div v-else-if="groups.length" class="group-list">
-          <button v-for="group in groups" :key="group" type="button" :class="{ active: selectedGroup === group }" @click="mode = 'group'; selectedGroup = group">
-            <span><Users :size="17" /><strong>{{ group }}</strong></span>
-            <span class="group-list__actions"><small>{{ selectedGroup === group ? '当前' : '选择' }}</small><i role="button" tabindex="0" title="退出群组" @click.stop="leaveGroup(group)" @keydown.enter.stop="leaveGroup(group)"><LogOut :size="14" /></i></span>
-          </button>
-        </div>
-        <p v-else class="muted">尚未加入任何群组。群组需由应用或管理员预置。</p>
+      <section class="thread card">
+        <template v-if="activeConversation && activeTarget">
+          <header class="thread__header"><div><span class="thread__eyebrow">{{ activeConversation.kind === 'group' ? 'GROUP CONVERSATION' : 'PRIVATE CONVERSATION' }}</span><h2>{{ activeConversation.title }}</h2></div><div v-if="activeConversation.kind === 'group'" class="thread__members"><Users :size="16" /><span>{{ membersLoading ? '加载成员…' : `${members.length} 位成员` }}</span><button type="button" class="icon-button" aria-label="刷新成员" @click="loadMembers"><RefreshCw :size="15" /></button></div></header>
+          <div class="thread__messages" aria-live="polite"><div v-if="!conversationMessages.length" class="thread__blank"><MessageCircle :size="30" /><p>这段对话刚刚开始。说点什么吧。</p></div><article v-for="message in conversationMessages" :key="message.localId" class="message-bubble" :class="[`message-bubble--${message.direction}`, { 'message-bubble--failed': message.status === 'failed' }]"><span v-if="message.direction === 'received'" class="message-bubble__sender">用户 #{{ message.from }}</span><p>{{ message.content }}</p><footer><time>{{ formatRelativeDate(message.createdAt) }}</time><span v-if="message.status === 'sending'">发送中</span><span v-else-if="message.status === 'accepted'">已接受</span><span v-else-if="message.status === 'received' && message.deliveryIds.some((id) => pendingAcknowledgements.includes(id))">等待确认</span><span v-else-if="message.status === 'received'"><CheckCheck :size="13" />已确认</span><button v-else type="button" @click="retryMessage(message)">重试</button></footer></article></div>
+          <form class="thread__composer" @submit.prevent="sendActiveMessage"><textarea v-model="content" rows="3" maxlength="49152" :placeholder="`发送给 ${activeConversation.title}`" @keydown.ctrl.enter.prevent="sendActiveMessage" /><div><span>{{ content.length.toLocaleString() }} / 49,152 · Ctrl + Enter 发送</span><button type="submit" class="button button--primary" :disabled="!canSend"><Send :size="17" />{{ sending ? '发送中…' : '发送' }}</button></div><p v-if="errorMessage" class="form-error" role="alert">{{ errorMessage }}</p></form>
+        </template>
+        <EmptyState v-else title="选择一个对话" description="从左侧继续已有对话，或输入用户 ID 新建私聊。"><WifiOff :size="20" /></EmptyState>
       </section>
     </div>
   </div>

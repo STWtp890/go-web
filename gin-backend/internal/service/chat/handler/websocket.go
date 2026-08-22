@@ -2,12 +2,10 @@ package handler
 
 import (
 	"net/http"
-	"slices"
 
 	eror "gin-backend/internal/common/base/errors"
 	"gin-backend/internal/common/base/responses"
 	"gin-backend/internal/common/service/jwt"
-	"gin-backend/internal/config"
 	logic "gin-backend/internal/service/chat/logic"
 
 	"github.com/gin-gonic/gin"
@@ -18,8 +16,7 @@ var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		origin := r.Header.Get("Origin")
-		return origin == "" || slices.Contains(config.CustomConfig().CORS.AllowOrigins, origin)
+		return browserOriginAllowed(r)
 	},
 }
 

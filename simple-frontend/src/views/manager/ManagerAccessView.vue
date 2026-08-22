@@ -31,8 +31,8 @@ async function submit() {
       await router.replace({ name: 'manager-login' })
       return
     }
-    const result = await managerApi.login({ username: username.value.trim(), password: password.value })
-    session.setSession(result.data)
+    await managerApi.login({ username: username.value.trim(), password: password.value })
+    session.setSession()
     toast.show({ tone: 'success', title: '管理员身份验证成功' })
     await router.replace(typeof route.query.redirect === 'string' ? route.query.redirect : '/manager/requests')
   } catch (error) {

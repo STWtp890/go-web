@@ -12,9 +12,9 @@
 在本目录执行：
 
 ```bash
-docker compose up -d
-docker compose ps
-docker compose exec redis redis-cli ping
+docker compose -f ../../docket-compose.yaml up -d redis
+docker compose -f ../../docket-compose.yaml ps redis
+docker compose -f ../../docket-compose.yaml exec redis redis-cli ping
 ```
 
 默认仅映射到 `127.0.0.1:16379`，与 `gin-backend/configs/config.yaml` 相匹配：
@@ -32,13 +32,13 @@ redis:
 停止容器但保留数据：
 
 ```bash
-docker compose down
+docker compose -f ../../docket-compose.yaml stop redis
 ```
 
 如需删除本 Redis 的命名数据卷：
 
 ```bash
-docker compose down -v
+docker compose -f ../../docket-compose.yaml rm -sfv redis
 ```
 
 ## 生产要求

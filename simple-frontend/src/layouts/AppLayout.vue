@@ -56,8 +56,8 @@ async function logout() {
       </div>
 
       <div class="sidebar__profile">
-        <span class="avatar">{{ getInitials(session.subject) }}</span>
-        <div><strong>用户 #{{ session.subject || '—' }}</strong><span>普通用户</span></div>
+        <span class="avatar">{{ getInitials(session.subject || '用户') }}</span>
+        <div><strong>{{ session.subject ? `用户 #${session.subject}` : '已登录用户' }}</strong><span>普通用户</span></div>
         <button type="button" class="icon-button" aria-label="退出登录" @click="logout"><LogOut :size="17" /></button>
       </div>
     </aside>
