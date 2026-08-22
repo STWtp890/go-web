@@ -13,7 +13,7 @@ import (
 // WebSocketLogic 处理 WebSocket 连接的全生命周期
 // 经 Hub 的 NewWebSocketChannel 创建并注册 (Bridge 提供接口, 创建即注册)
 func WebSocketLogic(ctx context.Context, subject, sessionID string, conn *websocket.Conn) {
-	h := chat.WebSocketHub()
+	h := chat.Hub()
 	if h == nil {
 		return
 	}

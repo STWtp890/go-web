@@ -13,7 +13,7 @@ import (
 const offlineFetchLimit = 100
 
 // flushOffline 接入后异步补发私聊离线消息 (仅删除已成功投递, 连接断开时剩余保留)
-func (b *MessageBridge) flushOffline(ctx context.Context, subject string, uc *client.UserChannel, lastEventID string) {
+func (b *MessageBridge) flushOffline(ctx context.Context, subject string, uc *client.UserChannel) {
 	if b.messages == nil {
 		return
 	}
@@ -22,7 +22,7 @@ func (b *MessageBridge) flushOffline(ctx context.Context, subject string, uc *cl
 		slog.Warn("可靠投递存储未初始化")
 		return
 	}
-	rows, err := ds.FetchPending(ctx, subject, offlineFetchLimit, lastEventID)
+	rows, err := ds.FetchPending(ctx, subject, offlineFetchLimit, "")
 	if err != nil {
 		slog.Warn("拉取离线消息失败", slog.String("subject", subject), slog.String("error", err.Error()))
 		return

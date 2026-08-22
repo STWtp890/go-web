@@ -13,7 +13,7 @@
 ## 1. 现状盘点
 
 | 项 | 现状 | 来源 |
-|---|---|---|
+| --- | --- | --- |
 | 连接 | 单实例 PostgreSQL `gin_demo`，`PostgreSQLManager` 注册模式（ServiceAuth/ServiceMarkdown），chat 复用 ServiceMarkdown | `internal/common/base/connection/postgresql/` |
 | 驱动 | `gorm.io/driver/postgres v1.6.2` + `gorm.io/gorm v1.31.2` | `gin-backend/go.mod` |
 | 消息表 | `chat_messages`：`id`(PK 自增)、`group_type`、`from_id`、`to_id`(复合索引)、`payload`(text)、`created_at`/`updated_at`(int64)、`deleted_at`(gorm.DeletedAt 软删) | `internal/model/orm/chat/message.go` |
@@ -45,6 +45,7 @@ flowchart LR
 ```
 
 改造后收益：
+
 - **分区裁剪**：`FetchGroupHistory`/`FetchOffline` 只扫描命中的 chunk，历史越长优势越大；
 - **自动压缩**：7 天前的 chunk 压缩（segmentby=to_id），历史消息存储成本大幅下降，查询仍走压缩感知索引；
 - **保留/归档**（可选，默认关闭）：`add_retention_policy` 按时间淘汰，或保留全量（业务默认）；
@@ -59,6 +60,7 @@ flowchart LR
 TimescaleDB 要求 `shared_preload_libraries` 含 `timescaledb`，且扩展二进制已安装。根目录的 `docket-compose.yaml` 已设置此参数；其他部署方式可按实际环境三选一：
 
 **方式 A（推荐）：基于 timescale 官方镜像 + 装 pg_search**
+
 ```dockerfile
 # Dockerfile（示例, 版本需与 pg_search 支持矩阵匹配）
 FROM timescale/timescaledb:2.17.2-pg17
@@ -68,6 +70,7 @@ CMD ["postgres", "-c", "shared_preload_libraries=timescaledb,pg_search"]
 ```
 
 **方式 B：继续用 paradedb/paradedb 镜像 + 装 timescaledb**
+
 ```dockerfile
 FROM paradedb/paradedb:latest
 # 安装 timescaledb（Timescale 提供 apt 源, 见 TimescaleDB 文档）
@@ -86,6 +89,7 @@ CMD ["postgres", "-c", "shared_preload_libraries=pg_search,timescaledb"]
 关键决策与步骤：
 
 **① 时间列选择：保留 `created_at`（bigint, Unix 秒）**
+
 - TimescaleDB 官方支持整数时间列，`created_at` 由 GORM `autoCreateTime` 写入，**模型零类型变更**；
 - 备选 `timestamptz` 更符合时序习惯，但需把模型 `int64 → time.Time`，波及 JSON 序列化、store 转换、缓存 DTO，侵入大，不推荐现阶段做；
 - chunk 间隔：`86400`（1 天），按消息量可调（目标每个 chunk 数百万行）。
@@ -95,25 +99,29 @@ TimescaleDB 强制：hypertable 的 `PRIMARY KEY`/`UNIQUE` 必须包含分区列
 解决：重建为复合主键 `(created_at, id)`（脚本第 2 步幂等处理，兼容"新表已复合键"与"旧表单键"两种情况）。
 
 **③ 转换**
+
 ```sql
 SELECT create_hypertable('chat_messages',
        by_range('created_at', 86400),
        if_not_exists => TRUE, migrate_data => TRUE);
 ```
+
 - `migrate_data => TRUE`：已有数据搬入（转换期间持锁，大表低峰执行 + 先备份）；
 - `if_not_exists => TRUE`：重复执行幂等。
 
 **④ 覆盖索引**
+
 ```sql
 CREATE INDEX IF NOT EXISTS idx_message_to_type_time
   ON chat_messages (to_id, group_type, created_at DESC, id DESC);
 ```
+
 分区裁剪后，群历史/离线拉取在 chunk 内索引扫描即完成排序，无需回表。
 
 ### 阶段 2：代码适配（Go）
 
 | 文件 | 改动 | 说明 |
-|---|---|---|
+| --- | --- | --- |
 | `internal/model/orm/chat/message.go` | 拆出 `TimeFiled`，`CreatedAt` 加 `gorm:"primaryKey"`（复合主键 `(id, created_at)`） | **不要改全局 `orm.TimeFiled`**（users/markdowns/groups 等会全变复合主键）；chat 模型独立声明字段 |
 | `internal/service/chat/store/message.go` `DeleteByIDs` | `Delete(&Message{}, ids)` → `Where("id IN ?", ids).Delete(&Message{})` | 复合主键下 GORM 不再支持按单主键 slice 删除 |
 | `internal/service/chat/store/message.go` 读路径 | **可选**：`Order("id DESC")` → `Order("created_at DESC, id DESC")` | `id` 与 `created_at` 在单进程写入下单调一致，当前不改也正确；显式对齐时间列可消除跨时钟漂移/批量导入的不一致隐患 |
@@ -124,6 +132,7 @@ CREATE INDEX IF NOT EXISTS idx_message_to_type_time
 ### 阶段 3：压缩策略（可选但推荐）
 
 脚本第 5 步已含：
+
 ```sql
 ALTER TABLE chat_messages SET (
   timescaledb.compress,
@@ -132,12 +141,14 @@ ALTER TABLE chat_messages SET (
 );
 SELECT add_compression_policy('chat_messages', INTERVAL '7 days', if_not_exists => TRUE);
 ```
+
 - `segmentby` 只能用低基数列；`to_id`（用户/群 ID）合适，`payload` 等高基数/变长列不允许；
 - 压缩后旧 chunk 查询走压缩感知索引，行为对上层透明。
 
 ### 阶段 4：连续聚合（未来可选）
 
 消息量/活跃度分析就绪（需要时再启用，当前不建）：
+
 ```sql
 CREATE MATERIALIZED VIEW messages_hourly
 WITH (timescaledb.continuous) AS
@@ -146,6 +157,7 @@ SELECT to_id, time_bucket(86400, created_at) AS bucket, count(*)
  GROUP BY to_id, bucket
 WITH NO DATA;
 ```
+
 配合 `add_continuous_aggregate_policy` 自动刷新。
 
 ---
@@ -188,6 +200,7 @@ func migrateChat(conf *config.Config) error {
 ```
 
 要点：
+
 - **扩展缺失时优雅降级**：仅警告并跳过转换，服务仍可运行（普通表语义不变），避免部署升级与代码发布耦合；
 - **幂等**：`create_hypertable if_not_exists` + `CREATE INDEX IF NOT EXISTS` + 主键重建的 `DO` 块；
 - 执行顺序：**先 `AutoMigrate` 建表，再转 hypertable**（新环境依赖此顺序）。
@@ -197,7 +210,7 @@ func migrateChat(conf *config.Config) error {
 ## 5. 回滚方案
 
 | 场景 | 操作 |
-|---|---|
+| --- | --- |
 | 扩展未装/转换失败 | 普通表语义不变，直接回滚代码，无影响 |
 | 需要撤销 hypertable | ①停服务 → ②备份 → ③`ALTER TABLE chat_messages SET (timescaledb.compress = 'off')`（若已压缩）→ ④用 `pg_dump` 导出/新建普通表导入 → ⑤删除 hypertable |
 | 压缩策略关闭 | `SELECT remove_compression_policy('chat_messages', if_exists => TRUE)` |

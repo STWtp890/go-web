@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 )
 
-// UserChannel 用户级连接通道: 统一封装 SSE / WebSocket 连接的消息投递
+// UserChannel 用户级连接通道: 封装 WebSocket 连接的消息投递
 //   - msgCh: 类型化消息投递队列 (Online 协程消费并经 client.Send 发送)
 //
 // 并发安全: mu 保护 msgCh 的写入与关闭, 避免 Push/Offline 竞态 (send-on-closed)
@@ -17,7 +17,7 @@ type UserChannel struct {
 	alive   atomic.Bool
 	msgCh   chan message.Message // 类型化消息通道 (投递队列)
 	done    chan struct{}        // Offline 后关闭，供 HTTP Handler 结束长连接
-	client  Client               // 底层连接 (SSE / WebSocket)
+	client  Client               // 底层 WebSocket 连接
 }
 
 // NewUserChannel 创建用户通道
@@ -84,5 +84,5 @@ func (uc *UserChannel) SessionID() string { return uc.session }
 // Alive 返回是否存活
 func (uc *UserChannel) Alive() bool { return uc.alive.Load() }
 
-// Done 在连接被 Offline 时关闭。WS/SSE HTTP 生命周期通过它及时返回。
+// Done 在连接被 Offline 时关闭，供 WebSocket Handler 及时结束。
 func (uc *UserChannel) Done() <-chan struct{} { return uc.done }

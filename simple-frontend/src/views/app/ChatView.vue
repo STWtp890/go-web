@@ -8,7 +8,7 @@ import EmptyState from '@/components/EmptyState.vue'
 import { useChatSocket, type ChatConnectionState } from '@/composables/useChatSocket'
 import { useUserSessionStore } from '@/stores/session'
 import { useToastStore } from '@/stores/toast'
-import type { SentMessage } from '@/types/domain'
+import type { ChatMessageInput, SentMessage } from '@/types/domain'
 import { formatRelativeDate } from '@/utils/format'
 
 const HISTORY_KEY = 'paperplane:chat-history-v2'
@@ -95,7 +95,7 @@ const conversations = computed<Conversation[]>(() => {
 })
 
 const activeConversation = computed(() => conversations.value.find((item) => item.id === activeConversationId.value) ?? null)
-const canSend = computed(() => Boolean(activeTarget.value && content.value.trim() && !sending.value))
+const canSend = computed(() => Boolean(activeTarget.value && content.value.trim() && !sending.value && connectionState.value === 'connected'))
 
 function makeConversation(kind: ConversationKind, target: string): Conversation {
   const id = kind === 'group' ? groupConversationId(target) : privateConversationId(target)
@@ -183,10 +183,28 @@ function isGroupEchoOfSentMessage(groupId: string, body: string, timestamp: numb
 function receiveMessage(raw: string) {
   try {
     const frame = JSON.parse(raw) as {
-      metadata?: { deliveryId?: string; type?: string; groupType?: ConversationKind; from?: string; to?: string; timestamp?: number }
+      metadata?: { deliveryId?: string; clientMessageId?: string; type?: string; groupType?: ConversationKind; from?: string; to?: string; timestamp?: number }
       content?: string
     }
     const metadata = frame.metadata
+    if ((metadata?.type === 'ack' || metadata?.type === 'error') && metadata.clientMessageId) {
+      let deliveryIds: string[] = []
+      let message = '消息发送失败'
+      try {
+        const content = JSON.parse(frame.content ?? '{}') as { deliveryIds?: unknown; message?: unknown }
+        if (Array.isArray(content.deliveryIds)) deliveryIds = content.deliveryIds.filter((id): id is string => typeof id === 'string')
+        if (typeof content.message === 'string') message = content.message
+      } catch {
+        // Malformed control payloads are treated as a generic send failure.
+      }
+      const status = metadata.type === 'ack' ? 'accepted' : 'failed'
+      messages.value = messages.value.map((item) => item.localId === metadata.clientMessageId
+        ? { ...item, deliveryIds, status }
+        : item)
+      if (status === 'failed') errorMessage.value = message
+      persistConversationState()
+      return
+    }
     if (
       metadata?.type !== 'text'
       || (metadata.groupType !== 'private' && metadata.groupType !== 'group')
@@ -207,7 +225,7 @@ function receiveMessage(raw: string) {
     if (echoedMessage) {
       if (deliveryId && !echoedMessage.deliveryIds.includes(deliveryId)) {
         messages.value = messages.value.map((message) => message.localId === echoedMessage.localId
-          ? { ...message, deliveryIds: [...message.deliveryIds, deliveryId] }
+          ? { ...message, deliveryIds: [...message.deliveryIds, deliveryId], status: 'accepted' }
           : message)
       }
       persistConversationState()
@@ -241,7 +259,7 @@ function receiveMessage(raw: string) {
   }
 }
 
-const { connectionState, connect, retryNow } = useChatSocket({
+const { connectionState, connect, retryNow, send: sendSocketMessage } = useChatSocket({
   getURL: chatWebSocketURL,
   ensureSession: () => session.restore(true),
   onMessage: receiveMessage,
@@ -314,22 +332,16 @@ async function leaveGroup(groupId: string) {
   }
 }
 
-async function sendMessage(message: SentMessage) {
-  try {
-    const response = await chatApi.send({
-      metadata: { type: 'text', groupType: message.groupType, to: message.to },
-      content: message.content,
-    })
-    messages.value = messages.value.map((item) => item.localId === message.localId
-      ? { ...item, deliveryIds: response.deliveryIds, status: 'accepted' }
-      : item)
-  } catch (error) {
-    const apiError = getApiError(error)
-    errorMessage.value = apiError.message
-    messages.value = messages.value.map((item) => item.localId === message.localId ? { ...item, status: 'failed' } : item)
-  } finally {
-    persistConversationState()
+function sendMessage(message: SentMessage) {
+  const frame: ChatMessageInput = {
+    metadata: { clientMessageId: message.localId, type: 'text', groupType: message.groupType, to: message.to },
+    content: message.content,
   }
+  if (!sendSocketMessage(JSON.stringify(frame))) {
+    errorMessage.value = '实时连接尚未建立，请重连后重试。'
+    messages.value = messages.value.map((item) => item.localId === message.localId ? { ...item, status: 'failed' } : item)
+  }
+  persistConversationState()
 }
 
 async function sendActiveMessage() {
@@ -351,7 +363,7 @@ async function sendActiveMessage() {
   messages.value = [...messages.value, message].slice(-MAX_MESSAGES)
   content.value = ''
   persistConversationState()
-  await sendMessage(message)
+  sendMessage(message)
   sending.value = false
 }
 
@@ -360,7 +372,7 @@ async function retryMessage(message: SentMessage) {
   sending.value = true
   errorMessage.value = ''
   messages.value = messages.value.map((item) => item.localId === message.localId ? { ...item, status: 'sending' } : item)
-  await sendMessage({ ...message, status: 'sending' })
+  sendMessage({ ...message, status: 'sending' })
   sending.value = false
 }
 
@@ -410,11 +422,11 @@ onBeforeUnmount(() => window.removeEventListener('online', handleNetworkReturn))
 <template>
   <div class="page chat-page">
     <header class="page-header chat-page__header">
-      <div><span class="page-kicker">REAL-TIME MESSAGING</span><h1><MessageCircle :size="27" />消息</h1><p>通过安全的 HttpOnly Cookie 建立实时收件通道。</p></div>
+      <div><span class="page-kicker">REAL-TIME MESSAGING</span><h1><MessageCircle :size="27" />消息</h1><p>通过安全的 HttpOnly Cookie 建立实时双向通道。</p></div>
       <div class="connection-chip" :class="{ 'connection-chip--limited': connectionState !== 'connected' }"><Radio :size="15" /><span>{{ connectionLabel[connectionState] }}</span><button v-if="connectionState !== 'connected'" type="button" class="icon-button" aria-label="立即重连" @click="retryNow"><RefreshCw :size="15" /></button></div>
     </header>
 
-    <aside class="capability-notice chat-page__notice"><CircleAlert :size="20" /><div><strong>实时接收 · 可靠投递</strong><p>收到消息后，页面会先写入对话状态，再用 CSRF 保护的请求确认投递。发送使用可返回 delivery ID 的可靠接口，已连接的对方会即时收到消息。</p></div></aside>
+    <aside class="capability-notice chat-page__notice"><CircleAlert :size="20" /><div><strong>实时收发 · 可靠投递</strong><p>消息通过同一条 WebSocket 发送与接收；服务端持久化后返回 ACK，收件方处理完成后再通过受 CSRF 保护的接口确认投递。</p></div></aside>
 
     <div class="realtime-chat">
       <aside class="conversation-rail card">

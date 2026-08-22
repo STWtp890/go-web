@@ -8,16 +8,12 @@ import (
 )
 
 // HandleSessionRevoked 关闭本应用实例中与撤销事件精确匹配的聊天连接。
-// WS 与 SSE Hub 共用同一个 MessageBridge，因此只需撤销一次。
 func HandleSessionRevoked(_ context.Context, event sessionevent.SessionRevokedEvent) error {
 	if event.Type != sessionevent.EventSessionRevoked || event.PrincipalType != sessionevent.PrincipalUser {
 		return nil
 	}
 
-	h := WebSocketHub()
-	if h == nil {
-		h = SSEHub()
-	}
+	h := Hub()
 	if h == nil {
 		return nil
 	}

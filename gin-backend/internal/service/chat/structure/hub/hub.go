@@ -3,7 +3,6 @@ package hub
 import (
 	"context"
 	"fmt"
-	"net/http"
 
 	"gin-backend/internal/service/chat/store"
 	"gin-backend/internal/service/chat/structure/bridge"
@@ -15,7 +14,7 @@ import (
 )
 
 // Hub 聊天连接入口薄壳: 注入维护 MessageBridge
-// 连接创建 (New*Channel) 由 Bridge 提供接口, Hub 侧调用; 生命周期与投递委托 bridge
+// WebSocket 连接创建由 Bridge 提供接口, Hub 侧调用; 生命周期与投递委托 bridge
 type Hub struct {
 	bridge *bridge.MessageBridge
 }
@@ -36,14 +35,6 @@ func (h *Hub) NewWebSocketChannel(ctx context.Context, subject, sessionID string
 		return nil
 	}
 	return h.bridge.NewWebSocketChannel(ctx, subject, sessionID, conn)
-}
-
-// NewSSEChannel 创建 SSE 用户通道并注册 (Bridge 提供接口, Hub 侧调用)
-func (h *Hub) NewSSEChannel(ctx context.Context, subject, sessionID, lastEventID string, w http.ResponseWriter) *client.UserChannel {
-	if h.bridge == nil {
-		return nil
-	}
-	return h.bridge.NewSSEChannel(ctx, subject, sessionID, lastEventID, w)
 }
 
 // Publish 入站消息投递入口 (委托 bridge)

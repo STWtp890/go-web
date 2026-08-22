@@ -232,26 +232,22 @@ flowchart LR
 
 ## 5. Chat：连接、消息与群
 
-### 5.1 先选传输方式
+### 5.1 单一实时传输
 
-| 能力 | WebSocket `GET /api/v1/protected/chat/ws` | SSE `GET /api/v1/protected/chat/sse` + HTTP POST |
-| --- | --- | --- |
-| 收消息 | 双向帧通道 | 单向事件流 |
-| 发消息 | 支持消息 wire JSON | `POST /api/v1/protected/chat/messages`（或兼容别名 `/api/v1/protected/chat/sse/messages`） |
-| 断线行为 | 服务端 ping/pong；旧会话会被关闭 | 事件流断开；旧会话会被关闭 |
-| 浏览器直接可用性 | 可用：浏览器自动携带 HttpOnly access Cookie | 可用：`new EventSource(url, { withCredentials: true })` |
+Chat 只使用 `GET /api/v1/protected/chat/ws`：消息收发和服务端 ACK 均在同一条 WebSocket 上完成。服务端通过 ping/pong 保活，会话被撤销时主动关闭对应连接。
 
-**当前浏览器契约**：两个连接入口会从 HttpOnly Cookie `pp_user_at` 读取 access JWT；浏览器原生 WebSocket/SSE 会在握手中自动携带该 Cookie。后端不接受 Bearer 凭据，前端不应将 JWT 传入 URL、`Sec-WebSocket-Protocol` 或尝试为原生对象设置 Authorization。
+**当前浏览器契约**：WebSocket 握手从 HttpOnly Cookie `pp_user_at` 读取 access JWT；浏览器会自动携带该 Cookie。后端不接受 Bearer 凭据，前端不应将 JWT 传入 URL 或 `Sec-WebSocket-Protocol`。
 
 Cookie 鉴权的 HTTP 写操作需要 `X-CSRF-Token`；详细迁移步骤、Cookie 作用域和错误处理见 [httpOnlyCookieMigration.md](./httpOnlyCookieMigration.md)。
 
 ### 5.2 消息 wire 格式
 
-`POST /api/v1/protected/chat/messages` 和 `/sse/messages` 的 body：
+WebSocket 客户端发送的 wire JSON：
 
 ```json
 {
   "metadata": {
+    "clientMessageId": "客户端生成的唯一 ID",
     "type": "text",
     "groupType": "private",
     "to": "接收用户 ID"
@@ -262,29 +258,30 @@ Cookie 鉴权的 HTTP 写操作需要 `X-CSRF-Token`；详细迁移步骤、Cook
 
 | 字段 | 要求 | 说明 |
 | --- | --- | --- |
+| `metadata.clientMessageId` | 建议必填 | 用于将服务端 ACK/错误与本地消息匹配，最长 128 字节 |
 | `metadata.type` | 固定 `text` | 其他类型为 `400` |
 | `metadata.groupType` | `private` 或 `group` | private 的 `to` 是用户 ID；group 的 `to` 是群 ID |
 | `metadata.to` | 必填 | 不可为空 |
 | `metadata.from`、`timestamp` | 客户端不要传或视为无效 | 服务端从 token 覆盖 sender，并写入服务端时间 |
-| `content` | 非空，最多 48 KiB | 整个 HTTP 请求体上限为 64 KiB |
+| `content` | 非空，最多 48 KiB | 聊天正文 |
 
-成功响应：
+服务端完成持久化后在 WebSocket 回送 ACK 控制帧：
 
 ```json
-{ "success": true, "data": { "message": "消息已接受", "deliveryIds": ["uuid"] } }
+{
+  "metadata": {
+    "clientMessageId": "客户端生成的唯一 ID",
+    "type": "ack",
+    "groupType": "private",
+    "from": "server",
+    "to": "发送者 ID",
+    "timestamp": 0
+  },
+  "content": "{\"deliveryIds\":[\"uuid\"]}"
+}
 ```
 
-`deliveryIds` 是每个接收者的专属投递 ID；群消息可能返回多个 ID。群发送者必须已经是群成员，否则 `403`。
-
-SSE 收到的帧如下，事件名为 `text`；`id` 对应 delivery ID：
-
-```text
-id: <deliveryId>
-event: text
-data: {"metadata":{"deliveryId":"...","type":"text","groupType":"private","from":"1","to":"2","timestamp":0},"content":"你好"}
-```
-
-当前实现会读取 `Last-Event-ID`，但持久化补发尚未实现；不能把它当作可靠断点续传。
+`deliveryIds` 是每个接收者的专属投递 ID；群消息可能返回多个 ID。群发送者必须已经是群成员，否则收到 `type=error` 的控制帧。
 
 ### 5.3 投递确认
 
@@ -362,4 +359,4 @@ GET /healthz  # 存活：{ data: { status: "ok", service: "gin-backend" } }
 GET /readyz   # PostgreSQL、Redis、聊天 Hub 都可用时为 200
 ```
 
-当前代码已具备：用户与管理员 Cookie-only 认证、单有效会话、refresh 轮换、登出、CSRF、Markdown 的公开/私有访问控制、聊天 WebSocket/SSE Cookie 握手与群列表接口。管理员审批仍需要已有管理员账号；部署环境联调仍应覆盖实时连接、CORS 与 Cookie 属性。
+当前代码已具备：用户与管理员 Cookie-only 认证、单有效会话、refresh 轮换、登出、CSRF、Markdown 的公开/私有访问控制、聊天 WebSocket Cookie 握手与群列表接口。管理员审批仍需要已有管理员账号；部署环境联调仍应覆盖实时连接、CORS 与 Cookie 属性。

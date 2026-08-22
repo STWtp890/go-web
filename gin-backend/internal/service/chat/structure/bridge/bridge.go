@@ -4,13 +4,12 @@ package bridge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"log/slog"
-	"net/http"
+	"time"
 
 	"gin-backend/internal/service/chat/store"
 	"gin-backend/internal/service/chat/types/client"
-	sseclient "gin-backend/internal/service/chat/types/client/sse"
 	wsclient "gin-backend/internal/service/chat/types/client/websocket"
 	"gin-backend/internal/service/chat/types/constant"
 	"gin-backend/internal/service/chat/types/group"
@@ -55,7 +54,7 @@ func (b *MessageBridge) NewWebSocketChannel(ctx context.Context, subject, sessio
 	ws.SetOnStop(func() { b.Detach(subject, uc) })
 	ws.Init(inCh, outCh, errCh)
 
-	// 入站消费: 反序列化 + 覆盖 From + 回投 Publish (WS → WS/SSE 互通)
+	// 入站消费: 反序列化 + 覆盖服务端可信字段 + 回投 Publish。
 	go func() {
 		for data := range inCh {
 			m, err := message.Unmarshal(data)
@@ -64,11 +63,25 @@ func (b *MessageBridge) NewWebSocketChannel(ctx context.Context, subject, sessio
 			}
 			origin := m.ToOrigin()
 			origin.MetaData.From = subject
+			origin.MetaData.Timestamp = time.Now().Unix()
 			built, err := message.FromOrigin(origin)
 			if err != nil {
 				continue
 			}
-			_, _ = b.Publish(ctx, built)
+			deliveries, err := b.Publish(ctx, built)
+			if err != nil {
+				uc.Push(controlMessage(origin, subject, constant.TypeError, map[string]any{
+					"message": "消息发送失败",
+				}))
+				continue
+			}
+			deliveryIDs := make([]string, 0, len(deliveries))
+			for _, delivery := range deliveries {
+				deliveryIDs = append(deliveryIDs, delivery.DeliveryID)
+			}
+			uc.Push(controlMessage(origin, subject, constant.TypeAck, map[string]any{
+				"deliveryIds": deliveryIDs,
+			}))
 		}
 	}()
 
@@ -76,29 +89,27 @@ func (b *MessageBridge) NewWebSocketChannel(ctx context.Context, subject, sessio
 	b.userClients.Attach(subject, uc)
 
 	// 接入后异步补发 (懒加载接入): 私聊离线 + 用户所属群
-	go b.flushOffline(ctx, subject, uc, "")
+	go b.flushOffline(ctx, subject, uc)
 	go b.joinUserGroups(ctx, subject, uc)
 	return uc
 }
 
-// NewSSEChannel 创建 SSE 用户通道并注册 (Bridge 提供接口, 创建即注册)
-// 接入后异步补发: 私聊离线消息 + 群成员/群历史懒加载 (不阻塞连接建立)
-func (b *MessageBridge) NewSSEChannel(ctx context.Context, subject, sessionID, lastEventID string, w http.ResponseWriter) *client.UserChannel {
-	se, err := sseclient.NewSSEClient(ctx, w)
-	if err != nil {
-		slog.Warn("SSE 连接创建失败", slog.String("subject", subject), slog.String("error", err.Error()))
-		return nil
-	}
-	uc := client.NewUserChannel(subject, sessionID, se)
-	// 心跳停止 (连接异常/超时/主动关闭) → 触发连接清理 (Detach → Offline → Close)
-	se.SetOnStop(func() { b.Detach(subject, uc) })
-	uc.Online()
-	b.userClients.Attach(subject, uc)
-
-	// 接入后异步补发 (懒加载接入): 私聊离线 + 用户所属群
-	go b.flushOffline(ctx, subject, uc, lastEventID)
-	go b.joinUserGroups(ctx, subject, uc)
-	return uc
+// controlMessage 构造不经持久化和业务投递链路的 WebSocket 控制帧。
+// ClientMessageID 让浏览器可以将 ACK/错误与本地消息精确关联。
+func controlMessage(request message.OriginMessageJson, subject, messageType string, payload any) message.Message {
+	data, _ := json.Marshal(payload)
+	control, _ := message.FromOrigin(message.OriginMessageJson{
+		MetaData: message.MetaData{
+			ClientMessageID: request.MetaData.ClientMessageID,
+			MessageType:     messageType,
+			GroupType:       request.MetaData.GroupType,
+			From:            "server",
+			To:              subject,
+			Timestamp:       time.Now().Unix(),
+		},
+		ContentBody: string(data),
+	})
+	return control
 }
 
 // Attach 注册用户通道 (委托)

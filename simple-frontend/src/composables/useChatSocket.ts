@@ -80,6 +80,16 @@ export function useChatSocket(options: UseChatSocketOptions) {
     void reconnect()
   }
 
+  function send(payload: string): boolean {
+    if (socket?.readyState !== WebSocket.OPEN) return false
+    try {
+      socket.send(payload)
+      return true
+    } catch {
+      return false
+    }
+  }
+
   function disconnect() {
     disposed = true
     cancelReconnect()
@@ -95,5 +105,6 @@ export function useChatSocket(options: UseChatSocketOptions) {
     connect,
     disconnect,
     retryNow,
+    send,
   }
 }

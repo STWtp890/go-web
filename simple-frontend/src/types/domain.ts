@@ -22,7 +22,7 @@ export interface CreateMarkdownInput {
 }
 
 export interface ChatMessageInput {
-  metadata: { type: 'text'; groupType: 'private' | 'group'; to: string }
+  metadata: { clientMessageId: string; type: 'text'; groupType: 'private' | 'group'; to: string }
   content: string
 }
 

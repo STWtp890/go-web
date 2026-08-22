@@ -11,7 +11,7 @@ import (
 
 // JoinGroupLogic 申请加入聊天室 (先写 DB 后入内存, 原子; 返回窗口消息供补发)
 func JoinGroupLogic(ctx context.Context, subject, groupID string) ([]msg.Message, error) {
-	h := chat.WebSocketHub()
+	h := chat.Hub()
 	if h == nil {
 		return nil, errors.New("chat Hub 未初始化")
 	}
@@ -20,7 +20,7 @@ func JoinGroupLogic(ctx context.Context, subject, groupID string) ([]msg.Message
 
 // LeaveGroupLogic 退出聊天室
 func LeaveGroupLogic(ctx context.Context, subject, groupID string) error {
-	h := chat.WebSocketHub()
+	h := chat.Hub()
 	if h == nil {
 		return errors.New("chat Hub 未初始化")
 	}
@@ -30,7 +30,7 @@ func LeaveGroupLogic(ctx context.Context, subject, groupID string) error {
 // IsGroupMemberLogic 判断用户是否群成员 (内存查询, 供鉴权)
 // 群模型在应用启动后初始化到内存, 发送前/查看前直接查内存
 func IsGroupMemberLogic(subject, groupID string) bool {
-	h := chat.WebSocketHub()
+	h := chat.Hub()
 	if h == nil {
 		return false
 	}
@@ -39,7 +39,7 @@ func IsGroupMemberLogic(subject, groupID string) bool {
 
 // GroupMembersLogic 群成员列表
 func GroupMembersLogic(ctx context.Context, groupID string) ([]string, error) {
-	h := chat.WebSocketHub()
+	h := chat.Hub()
 	if h == nil {
 		return nil, errors.New("chat Hub 未初始化")
 	}
@@ -48,7 +48,7 @@ func GroupMembersLogic(ctx context.Context, groupID string) ([]string, error) {
 
 // MyGroupsLogic 我的群列表
 func MyGroupsLogic(ctx context.Context, subject string) ([]string, error) {
-	h := chat.WebSocketHub()
+	h := chat.Hub()
 	if h == nil {
 		return nil, errors.New("chat Hub 未初始化")
 	}

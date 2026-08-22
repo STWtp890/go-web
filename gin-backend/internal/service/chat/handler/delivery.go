@@ -22,7 +22,7 @@ func AcknowledgeDeliveryHandler(c *gin.Context) {
 		responses.Fail(c, http.StatusBadRequest, eror.CodeValidationFailed, "缺少投递 ID")
 		return
 	}
-	h := chat.SSEHub()
+	h := chat.Hub()
 	if h == nil {
 		responses.Fail(c, http.StatusServiceUnavailable, eror.CodeServiceUnavail, "聊天服务暂不可用")
 		return

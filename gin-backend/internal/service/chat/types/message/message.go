@@ -1,4 +1,4 @@
-// Package message 定义聊天消息类型体系 (传输无关, 供 websocket/sse 等复用)
+// Package message 定义 WebSocket 聊天消息类型体系。
 //
 // 分层设计:
 //   - OriginMessageJson: Wire 层, 与 JSON 字节流一一对应的原始类型
@@ -15,12 +15,13 @@ import (
 
 // MetaData 代表消息的元数据
 type MetaData struct {
-	DeliveryID  string `json:"deliveryId,omitempty"`
-	MessageType string `json:"type"`      // 消息类型
-	GroupType   string `json:"groupType"` // 群组类型
-	From        string `json:"from"`      // 发送者标识
-	To          string `json:"to"`        // 接收者或群 ID
-	Timestamp   int64  `json:"timestamp"` // Unix 秒
+	DeliveryID      string `json:"deliveryId,omitempty"`
+	ClientMessageID string `json:"clientMessageId,omitempty"` // 客户端生成，用于匹配服务端 ACK
+	MessageType     string `json:"type"`                      // 消息类型
+	GroupType       string `json:"groupType"`                 // 群组类型
+	From            string `json:"from"`                      // 发送者标识
+	To              string `json:"to"`                        // 接收者或群 ID
+	Timestamp       int64  `json:"timestamp"`                 // Unix 秒
 }
 
 // OriginMessageJson 从传输层 JSON 解析出的原始消息类型 (Wire Format)
@@ -120,6 +121,9 @@ func ValidateIncoming(o OriginMessageJson) error {
 	}
 	if strings.TrimSpace(o.MetaData.To) == "" {
 		return fmt.Errorf("接收者不能为空")
+	}
+	if len(o.MetaData.ClientMessageID) > 128 {
+		return fmt.Errorf("客户端消息 ID 过长")
 	}
 	if strings.TrimSpace(o.ContentBody) == "" || len(o.ContentBody) > MaxContentBytes {
 		return fmt.Errorf("消息内容不能为空或过长")

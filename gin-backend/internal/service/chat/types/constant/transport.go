@@ -1,4 +1,4 @@
-// 传输层参数常量 (WebSocket / SSE 共用)
+// WebSocket 传输层参数常量。
 package constant
 
 const (

@@ -49,4 +49,4 @@ jwt:session:user:<uid>  (Hash, TTL = Refresh Token 有效期)
 
 ## 当前范围
 
-本文件描述普通用户 `auth` 链路；管理员在 `service/manager` 中使用独立 Cookie 与等价的 `sid` 会话校验。登录替换旧 SID 和成功登出会向 Redis Pub/Sub 写入 `session.revoked` 事件；Token 有效性仍以 Redis 会话状态为准。所有受保护 HTTP、WebSocket 与 SSE 路由均先经 Cookie JWT 鉴权。
+本文件描述普通用户 `auth` 链路；管理员在 `service/manager` 中使用独立 Cookie 与等价的 `sid` 会话校验。登录替换旧 SID 和成功登出会向 Redis Pub/Sub 写入 `session.revoked` 事件；Token 有效性仍以 Redis 会话状态为准。所有受保护 HTTP 与 WebSocket 路由均先经 Cookie JWT 鉴权。

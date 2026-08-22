@@ -104,7 +104,7 @@ func Ready(ctx context.Context) error {
 	if err := cli.Ping(ctx).Err(); err != nil {
 		return err
 	}
-	if chat.WebSocketHub() == nil || chat.SSEHub() == nil {
+	if chat.Hub() == nil {
 		return fmt.Errorf("chat hub 未初始化")
 	}
 	return nil
@@ -169,7 +169,7 @@ func Init(conf *config.Config) func() {
 	//   - 插件: deployments/postgresql/sql/plugin/
 	//   - 业务索引/时序配置: deployments/postgresql/sql/service/
 
-	// 业务模块级初始化: chat (WebSocket/SSE Hub)
+	// 业务模块级初始化: chat (WebSocket Hub)
 	// 约定: 各业务模块在 internal/service/{name}/init.go 提供 Init(conf) func()
 	chatCleanup := chat.Init(conf)
 

@@ -1,4 +1,4 @@
-// 用户连接注册表: subject → *UserChannel (WS/SSE 同表互通)
+// 用户 WebSocket 连接注册表: subject → *UserChannel
 package bridge
 
 import (
@@ -8,7 +8,6 @@ import (
 )
 
 // UserClientMap 用户连接注册表 (subject → *UserChannel), 并发安全
-// WS 与 SSE 连接注册进同一张表, 投递按 subject 查表 → 传输无关, 天然互通
 type UserClientMap struct {
 	mu sync.RWMutex
 	uc map[string]*client.UserChannel

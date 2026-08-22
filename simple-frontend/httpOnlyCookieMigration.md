@@ -39,7 +39,7 @@
 X-CSRF-Token: <与 pp_user_csrf 或 pp_manager_csrf 完全相同的值>
 ```
 
-该值是后端签名并绑定当前 `sid` 的双提交 Token。缺失或不匹配返回 `403` 与 `CSRF 校验失败`。`GET`、`HEAD`、`OPTIONS`，以及 WebSocket/SSE 建连不需要该头。
+该值是后端签名并绑定当前 `sid` 的双提交 Token。缺失或不匹配返回 `403` 与 `CSRF 校验失败`。`GET`、`HEAD`、`OPTIONS`，以及 WebSocket 建连不需要该头。
 
 Cookie 方式的 refresh 请求同样必须带 CSRF 头。
 
@@ -172,30 +172,13 @@ socket.onclose = (event) => {
 - 在 `Sec-WebSocket-Protocol` 中传 JWT；
 - 用前端可读 token 作为 WebSocket 鉴权兜底。
 
-### 5. 启用原生 SSE
+### 5. 通过 WebSocket 发送消息
 
-SSE 以 HTTP POST 发消息、EventSource 收消息：
-
-```ts
-const stream = new EventSource(`${API_BASE}/api/v1/protected/chat/sse`, {
-  withCredentials: true,
-})
-
-stream.addEventListener('text', async (event) => {
-  const message = JSON.parse((event as MessageEvent<string>).data)
-  // 先落入 UI 状态，再确认该投递
-  await apiRequest(`/api/v1/protected/chat/deliveries/${encodeURIComponent(message.metadata.deliveryId)}/ack`, {
-    method: 'POST',
-    scope: 'user',
-  })
-})
-```
-
-`EventSource` 会自动重连并携带 Cookie。当前服务端接受 `Last-Event-ID`，但后端持久化补发仍未实现，因此前端不可将其视为可靠离线补偿。
+聊天只保留 WebSocket 实时链路。页面在连接开启后直接发送 wire JSON，并通过 `clientMessageId` 匹配服务端持久化后返回的 ACK。delivery 处理确认仍使用受 CSRF 保护的 REST 接口。
 
 ### 6. 聊天页当前实现
 
-`src/views/app/ChatView.vue` 以“会话列表 + 对话线程”组织私聊和群聊，并通过原生 WebSocket 建立实时收件连接。发送仍使用 `POST /chat/messages`：这个接口返回每位接收者的 `deliveryId`，可保留服务端现有的可靠投递语义；已连接的接收者会立即通过 WebSocket 收到该消息。
+`src/views/app/ChatView.vue` 以“会话列表 + 对话线程”组织私聊和群聊，并通过原生 WebSocket 建立实时双向连接。发件方通过控制 ACK 获得每位接收者的 `deliveryId`，已连接的接收者会立即收到消息。
 
 `src/composables/useChatSocket.ts` 专门管理连接生命周期。它不读取或传递 JWT，仅接收 URL、会话复核和消息回调这些显式依赖。
 
@@ -214,7 +197,7 @@ stream.addEventListener('text', async (event) => {
 |---|---|
 | 保护 HTTP 接口 `401` | 单飞刷新一次，成功后重放；失败则退出当前 scope。 |
 | Cookie 写接口 `403 / CSRF 校验失败` | 不重试原请求；确认 CSRF Cookie 是否存在，必要时重新登录。 |
-| WS/SSE 首次连接失败 | 先执行刷新；刷新成功后退避重连，失败则退出。 |
+| WS 首次连接失败 | 先执行刷新；刷新成功后退避重连，失败则退出。 |
 | 另一端登录、登出或管理员撤销会话 | 后端 `sid` 校验会使会话失效；前端在下一次 HTTP 请求/重连时按 `401` 退出。 |
 | `Origin` 不在白名单 | 修正 Vite/部署域名与后端 CORS 配置，不能前端绕过。 |
 
@@ -225,7 +208,7 @@ stream.addEventListener('text', async (event) => {
 3. 登录、刷新、登出、路由守卫与聊天 WebSocket 已改为 Cookie 会话。
 4. 后端 Bearer 兼容与登录响应中的 Token 字段已删除。
 
-仍需在目标部署环境执行跨标签登出、过期刷新、WS/SSE 断线重连和 CSRF 失败的端到端回归。
+仍需在目标部署环境执行跨标签登出、过期刷新、WebSocket 断线重连和 CSRF 失败的端到端回归。
 
 ## 联调验收
 

@@ -70,7 +70,7 @@ src/
 
 ### Chat 的明确边界
 
-当前后端通过 HttpOnly Cookie 鉴权 WebSocket/SSE 握手。前端因此：
+当前 chat 后端通过 HttpOnly Cookie 鉴权 WebSocket 握手。前端因此：
 
 - 不把 access token 放入 URL；
 - 使用原生 WebSocket 建立实时收件，并在会话有效时退避重连；
