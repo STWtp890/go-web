@@ -10,10 +10,10 @@ import { useDeliveryAck } from '@/composables/useDeliveryAck'
 import { useUserSessionStore } from '@/stores/session'
 import { useToastStore } from '@/stores/toast'
 import type { ChatMessageInput, SentMessage } from '@/types/domain'
+import { CHAT_HISTORY_STORAGE_KEY, CHAT_PENDING_ACK_STORAGE_KEY, clearChatSessionStorage } from '@/utils/chat-storage'
 import { formatRelativeDate } from '@/utils/format'
+import { subscribeSessionChanges } from '@/utils/session-events'
 
-const HISTORY_KEY = 'paperplane:chat-history-v3'
-const PENDING_ACK_KEY = 'paperplane:chat-pending-acks-v2'
 const MAX_MESSAGES = 150
 
 type ConversationKind = 'private' | 'group'
@@ -46,8 +46,8 @@ const groupsLoading = ref(false)
 const membersLoading = ref(false)
 const errorMessage = ref('')
 
-const { pendingAcks, enqueueAck, flushAcks, restoreAcks } = useDeliveryAck({
-  storageKey: PENDING_ACK_KEY,
+const { pendingAcks, enqueueAck, clearAcks, flushAcks, restoreAcks } = useDeliveryAck({
+  storageKey: CHAT_PENDING_ACK_STORAGE_KEY,
   sendAck: chatApi.ack,
 })
 
@@ -116,7 +116,29 @@ function makeConversation(kind: ConversationKind, target: string): Conversation 
 }
 
 function persistConversationState() {
-  sessionStorage.setItem(HISTORY_KEY, JSON.stringify(messages.value.slice(-MAX_MESSAGES)))
+  try {
+    sessionStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(messages.value.slice(-MAX_MESSAGES)))
+  } catch {
+    // The in-memory conversation remains usable when browser storage is unavailable.
+  }
+}
+
+function resetChatState() {
+  messages.value = []
+  groups.value = []
+  members.value = []
+  activeConversationId.value = ''
+  unreadByConversation.value = {}
+  clearAcks()
+  clearChatSessionStorage()
+}
+
+function markPendingSendsUnknown() {
+  if (!messages.value.some((message) => message.status === 'sending')) return
+  messages.value = messages.value.map((message) => message.status === 'sending'
+    ? { ...message, status: 'unknown' }
+    : message)
+  persistConversationState()
 }
 
 function selectConversation(conversationId: string) {
@@ -237,6 +259,7 @@ const { connectionState, connect, retryNow, send: sendSocketMessage } = useChatS
   ensureSession: () => session.restore(true),
   onMessage: receiveMessage,
   onConnected: () => { void flushAcks() },
+  onDisconnected: markPendingSendsUnknown,
   onUnauthenticated: () => {
     toast.show({ tone: 'info', title: '会话已失效', message: '实时连接已安全关闭，请重新登录。' })
     void router.replace({ name: 'login', query: { redirect: '/app/chat' } })
@@ -350,8 +373,14 @@ async function retryMessage(message: SentMessage) {
 
 function restoreLocalConversationState() {
   try {
-    const storedMessages = JSON.parse(sessionStorage.getItem(HISTORY_KEY) ?? '[]')
-    if (Array.isArray(storedMessages)) messages.value = storedMessages.filter(isChatMessage).slice(-MAX_MESSAGES)
+    const storedMessages = JSON.parse(sessionStorage.getItem(CHAT_HISTORY_STORAGE_KEY) ?? '[]')
+    if (Array.isArray(storedMessages)) {
+      messages.value = storedMessages
+        .filter(isChatMessage)
+        .map((message) => message.status === 'sending' ? { ...message, status: 'unknown' as const } : message)
+        .slice(-MAX_MESSAGES)
+      persistConversationState()
+    }
   } catch {
     messages.value = []
   }
@@ -368,7 +397,7 @@ function isChatMessage(value: unknown): value is SentMessage {
     && typeof message.createdAt === 'number'
     && (message.messageId === undefined || typeof message.messageId === 'number')
     && (message.deliveryId === undefined || typeof message.deliveryId === 'string')
-    && (message.status === 'sending' || message.status === 'accepted' || message.status === 'failed' || message.status === 'received')
+    && (message.status === 'sending' || message.status === 'accepted' || message.status === 'unknown' || message.status === 'failed' || message.status === 'received')
 }
 
 function handleNetworkReturn() {
@@ -377,6 +406,12 @@ function handleNetworkReturn() {
 }
 
 watch(activeConversationId, () => { void loadMembers() })
+
+const unsubscribeSessionChanges = subscribeSessionChanges((event) => {
+  if (event.scope !== 'user') return
+  resetChatState()
+  if (event.type === 'signed-in') void loadGroups()
+})
 
 onMounted(() => {
   restoreLocalConversationState()
@@ -387,7 +422,10 @@ onMounted(() => {
   window.addEventListener('online', handleNetworkReturn)
 })
 
-onBeforeUnmount(() => window.removeEventListener('online', handleNetworkReturn))
+onBeforeUnmount(() => {
+  unsubscribeSessionChanges()
+  window.removeEventListener('online', handleNetworkReturn)
+})
 </script>
 
 <template>
@@ -414,7 +452,7 @@ onBeforeUnmount(() => window.removeEventListener('online', handleNetworkReturn))
       <section class="thread card">
         <template v-if="activeConversation && activeTarget">
           <header class="thread__header"><div><span class="thread__eyebrow">{{ activeConversation.kind === 'group' ? 'GROUP CONVERSATION' : 'PRIVATE CONVERSATION' }}</span><h2>{{ activeConversation.title }}</h2></div><div v-if="activeConversation.kind === 'group'" class="thread__members"><Users :size="16" /><span>{{ membersLoading ? '加载成员…' : `${members.length} 位成员` }}</span><button type="button" class="icon-button" aria-label="刷新成员" @click="loadMembers"><RefreshCw :size="15" /></button></div></header>
-          <div class="thread__messages" aria-live="polite"><div v-if="!conversationMessages.length" class="thread__blank"><MessageCircle :size="30" /><p>这段对话刚刚开始。说点什么吧。</p></div><article v-for="message in conversationMessages" :key="message.localId" class="message-bubble" :class="[`message-bubble--${message.direction}`, { 'message-bubble--failed': message.status === 'failed' }]"><span v-if="message.direction === 'received'" class="message-bubble__sender">用户 #{{ message.from }}</span><p>{{ message.content }}</p><footer><time>{{ formatRelativeDate(message.createdAt) }}</time><span v-if="message.status === 'sending'">发送中</span><span v-else-if="message.status === 'accepted'">已接受</span><span v-else-if="message.status === 'received' && message.deliveryId && pendingAcks.includes(message.deliveryId)">ACK 待提交</span><span v-else-if="message.status === 'received'"><CheckCheck :size="13" />应用已处理</span><button v-else type="button" @click="retryMessage(message)">重试</button></footer></article></div>
+          <div class="thread__messages" aria-live="polite"><div v-if="!conversationMessages.length" class="thread__blank"><MessageCircle :size="30" /><p>这段对话刚刚开始。说点什么吧。</p></div><article v-for="message in conversationMessages" :key="message.localId" class="message-bubble" :class="[`message-bubble--${message.direction}`, { 'message-bubble--failed': message.status === 'failed' }]"><span v-if="message.direction === 'received'" class="message-bubble__sender">用户 #{{ message.from }}</span><p>{{ message.content }}</p><footer><time>{{ formatRelativeDate(message.createdAt) }}</time><span v-if="message.status === 'sending'">发送中</span><span v-else-if="message.status === 'accepted'">已接受</span><span v-else-if="message.status === 'unknown'" title="连接断开前未收到服务端 accepted，不能确认消息是否已持久化">发送结果未知</span><span v-else-if="message.status === 'received' && message.deliveryId && pendingAcks.includes(message.deliveryId)">ACK 待提交</span><span v-else-if="message.status === 'received'"><CheckCheck :size="13" />应用已处理</span><button v-else type="button" @click="retryMessage(message)">重试</button></footer></article></div>
           <form class="thread__composer" @submit.prevent="sendActiveMessage"><textarea v-model="content" rows="3" maxlength="49152" :placeholder="`发送给 ${activeConversation.title}`" @keydown.ctrl.enter.prevent="sendActiveMessage" /><div><span>{{ content.length.toLocaleString() }} / 49,152 · Ctrl + Enter 发送</span><button type="submit" class="button button--primary" :disabled="!canSend"><Send :size="17" />{{ sending ? '发送中…' : '发送' }}</button></div><p v-if="errorMessage" class="form-error" role="alert">{{ errorMessage }}</p></form>
         </template>
         <EmptyState v-else title="选择一个对话" description="从左侧继续已有对话，或输入用户 ID 新建私聊。"><WifiOff :size="20" /></EmptyState>

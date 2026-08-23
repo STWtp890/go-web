@@ -36,7 +36,7 @@ export interface SentMessage {
   groupType: 'private' | 'group'
   content: string
   createdAt: number
-  status: 'sending' | 'accepted' | 'failed' | 'received'
+  status: 'sending' | 'accepted' | 'unknown' | 'failed' | 'received'
 }
 
 export interface RegistrationRequest {

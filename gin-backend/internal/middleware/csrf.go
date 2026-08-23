@@ -23,7 +23,7 @@ func CSRFProtection(csrfCookieName string) gin.HandlerFunc {
 		mapClaims, valid := claims.(jwtlib.MapClaims)
 		sid, hasSID := jwt.SessionIDFromClaims(mapClaims)
 		if !ok || !valid || !hasSID || !sessioncookie.ValidateCSRF(c, csrfCookieName, sid) {
-			responses.Fail(c, http.StatusForbidden, eror.CodeForbidden, "CSRF 校验失败")
+			responses.AbortFail(c, http.StatusForbidden, eror.CodeForbidden, "CSRF 校验失败")
 			return
 		}
 		c.Next()

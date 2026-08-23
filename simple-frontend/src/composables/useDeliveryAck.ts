@@ -14,6 +14,7 @@ export function useDeliveryAck(options: UseDeliveryAckOptions) {
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE
   const pendingAcks = ref<string[]>([])
   let flushPromise: Promise<void> | null = null
+  let queueGeneration = 0
 
   function persistAcks() {
     try {
@@ -39,8 +40,19 @@ export function useDeliveryAck(options: UseDeliveryAckOptions) {
     persistAcks()
   }
 
+  function clearAcks() {
+    queueGeneration += 1
+    pendingAcks.value = []
+    try {
+      sessionStorage.removeItem(options.storageKey)
+    } catch {
+      // The in-memory queue has still been cleared for the old user session.
+    }
+  }
+
   function flushAcks(): Promise<void> {
     if (flushPromise) return flushPromise
+    const flushGeneration = queueGeneration
     flushPromise = (async () => {
       while (pendingAcks.value.length) {
         const batch = pendingAcks.value.slice(0, batchSize)
@@ -49,12 +61,14 @@ export function useDeliveryAck(options: UseDeliveryAckOptions) {
         } catch {
           return
         }
+        if (flushGeneration !== queueGeneration) return
         const completed = new Set(batch)
         pendingAcks.value = pendingAcks.value.filter((id) => !completed.has(id))
         persistAcks()
       }
     })().finally(() => {
       flushPromise = null
+      if (flushGeneration !== queueGeneration && pendingAcks.value.length) void flushAcks()
     })
     return flushPromise
   }
@@ -62,6 +76,7 @@ export function useDeliveryAck(options: UseDeliveryAckOptions) {
   return {
     pendingAcks: readonly(pendingAcks),
     enqueueAck,
+    clearAcks,
     flushAcks,
     restoreAcks,
   }

@@ -1,5 +1,5 @@
 # Run the complete local stack with:
-#   docker compose -f docket-compose.yaml up -d --build
+#   docker compose -f docker-compose.yaml up -d --build --wait
 services:
   postgres:
     build:
@@ -78,6 +78,13 @@ services:
     depends_on:
       gin-backend:
         condition: service_healthy
+    healthcheck:
+      # This checks Nginx and its same-origin proxy to the healthy backend.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
     restart: unless-stopped
 
 volumes:

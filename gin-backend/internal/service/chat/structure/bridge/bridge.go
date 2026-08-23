@@ -54,6 +54,14 @@ func (b *MessageBridge) OpenConnection(ctx context.Context, subject, sessionID s
 		for data := range conn.Incoming() {
 			m, err := message.Unmarshal(data)
 			if err != nil {
+				request := bestEffortControlRequest(data)
+				if !uc.Push(controlMessage(request, subject, constant.TypeError, map[string]any{
+					"code":    "INVALID_MESSAGE",
+					"message": "消息格式或参数无效",
+				})) {
+					b.Detach(subject, uc)
+					return
+				}
 				continue
 			}
 			origin := m.ToOrigin()
@@ -61,6 +69,13 @@ func (b *MessageBridge) OpenConnection(ctx context.Context, subject, sessionID s
 			origin.MetaData.Timestamp = time.Now().Unix()
 			built, err := message.FromOrigin(origin)
 			if err != nil {
+				if !uc.Push(controlMessage(origin, subject, constant.TypeError, map[string]any{
+					"code":    "INVALID_MESSAGE",
+					"message": "消息格式或参数无效",
+				})) {
+					b.Detach(subject, uc)
+					return
+				}
 				continue
 			}
 			deliveries, err := b.publish(ctx, built)
@@ -87,15 +102,30 @@ func (b *MessageBridge) OpenConnection(ctx context.Context, subject, sessionID s
 	return uc
 }
 
+// bestEffortControlRequest 从失败的入站数据中尽量保留 clientMessageId，
+// 并将非法或缺失的 groupType 归一化，保证错误控制帧本身始终可序列化。
+func bestEffortControlRequest(raw []byte) message.OriginMessageJson {
+	var request message.OriginMessageJson
+	_ = json.Unmarshal(raw, &request)
+	if request.MetaData.GroupType != constant.GroupPrivate && request.MetaData.GroupType != constant.GroupGroup {
+		request.MetaData.GroupType = constant.GroupPrivate
+	}
+	return request
+}
+
 // controlMessage 构造不经持久化和业务投递链路的 WebSocket 控制帧。
 // ClientMessageID 让浏览器可以将 accepted/error 与本地消息精确关联。
 func controlMessage(request message.OriginMessageJson, subject, messageType string, payload any) message.Message {
 	data, _ := json.Marshal(payload)
+	groupType := request.MetaData.GroupType
+	if groupType != constant.GroupPrivate && groupType != constant.GroupGroup {
+		groupType = constant.GroupPrivate
+	}
 	control, _ := message.FromOrigin(message.OriginMessageJson{
 		MetaData: message.MetaData{
 			ClientMessageID: request.MetaData.ClientMessageID,
 			MessageType:     messageType,
-			GroupType:       request.MetaData.GroupType,
+			GroupType:       groupType,
 			From:            "server",
 			To:              subject,
 			Timestamp:       time.Now().Unix(),

@@ -4,6 +4,7 @@ import { authApi } from '@/api/auth'
 import { apiRequest } from '@/api/client'
 import { managerApi } from '@/api/manager'
 import type { SessionScope } from '@/types/api'
+import { clearChatSessionStorage } from '@/utils/chat-storage'
 import { notifySessionChange, subscribeSessionChanges } from '@/utils/session-events'
 
 function createSessionStore(scope: SessionScope) {
@@ -39,6 +40,7 @@ function createSessionStore(scope: SessionScope) {
 
   const unsubscribe = subscribeSessionChanges((event) => {
     if (event.scope !== scope) return
+    if (scope === 'user') clearChatSessionStorage()
     status.value = event.type === 'signed-in' ? 'authenticated' : 'unauthenticated'
     if (event.type === 'signed-out') subject.value = ''
   })

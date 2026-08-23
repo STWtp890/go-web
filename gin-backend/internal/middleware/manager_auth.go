@@ -22,25 +22,25 @@ func ManagerAuthRequired(conf *config.Config) gin.HandlerFunc {
 		// 1. 提取 JWT Token
 		tokenStr := sessioncookie.AccessToken(c, sessioncookie.ManagerAccessCookie)
 		if tokenStr == "" {
-			responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "无效的Token")
+			responses.AbortFail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "无效的Token")
 			return
 		}
 
 		// 2. 解析 JWT Token
 		jwtToken, err := jwt.ParseToken(tokenStr, config.CustomConfig().JWT.GetPublicKey(), jwt.TokenUseAccess)
 		if err != nil {
-			responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "Token解析失败")
+			responses.AbortFail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "Token解析失败")
 			return
 		}
 
 		// 3. 校验 claims 与角色
 		claims, ok := jwtToken.Claims.(jwtlib.MapClaims)
 		if !ok || !jwtToken.Valid {
-			responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "Token claims 无效")
+			responses.AbortFail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "Token claims 无效")
 			return
 		}
 		if role, _ := claims["role"].(string); role != "manager" {
-			responses.Fail(c, http.StatusForbidden, eror.CodeForbidden, "非管理员, 无权访问")
+			responses.AbortFail(c, http.StatusForbidden, eror.CodeForbidden, "非管理员, 无权访问")
 			return
 		}
 
@@ -49,17 +49,17 @@ func ManagerAuthRequired(conf *config.Config) gin.HandlerFunc {
 		sub, err := claims.GetSubject()
 		sid, hasSID := jwt.SessionIDFromClaims(claims)
 		if err != nil || sub == "" || !hasSID {
-			responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "会话已失效，请重新登录")
+			responses.AbortFail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "会话已失效，请重新登录")
 			return
 		}
 		active, err := jwt.IsManagerSessionActive(c.Request.Context(), sub, sid)
 		if err != nil {
 			slog.Error("manager_session_check_failed", slog.String("error", err.Error()))
-			responses.Fail(c, http.StatusServiceUnavailable, eror.CodeServiceUnavail, "认证服务暂不可用")
+			responses.AbortFail(c, http.StatusServiceUnavailable, eror.CodeServiceUnavail, "认证服务暂不可用")
 			return
 		}
 		if !active {
-			responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "会话已失效，请重新登录")
+			responses.AbortFail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "会话已失效，请重新登录")
 			return
 		}
 

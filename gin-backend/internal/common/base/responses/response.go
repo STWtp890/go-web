@@ -63,6 +63,13 @@ func Fail(c *gin.Context, status int, code, message string) {
 	})
 }
 
+// AbortFail 终止当前 Gin handler chain 并返回统一失败响应。
+// 鉴权、授权等中间件必须使用该函数，避免仅 return 当前中间件后继续执行业务 Handler。
+func AbortFail(c *gin.Context, status int, code, message string) {
+	c.Abort()
+	Fail(c, status, code, message)
+}
+
 // FailAppError 根据 AppError 返回错误响应
 func FailAppError(c *gin.Context, err error) {
 	if appErr, ok := err.(interface {

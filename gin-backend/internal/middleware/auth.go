@@ -20,14 +20,14 @@ func AuthRequired(conf *config.Config) gin.HandlerFunc {
 		// 1. 提取 JWT Token
 		tokenStr := sessioncookie.AccessToken(c, sessioncookie.UserAccessCookie)
 		if tokenStr == "" {
-			responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "无效的Token")
+			responses.AbortFail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "无效的Token")
 			return
 		}
 
 		// 2.1 解析 JWT Token
 		jwtToken, err := jwt.ParseToken(tokenStr, config.CustomConfig().JWT.GetPublicKey(), jwt.TokenUseAccess)
 		if err != nil {
-			responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "Token解析失败")
+			responses.AbortFail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "Token解析失败")
 			return
 		}
 
@@ -35,23 +35,23 @@ func AuthRequired(conf *config.Config) gin.HandlerFunc {
 		// 旧 Access Token 无需逐个加入黑名单也会立即失效。
 		claims, ok := jwtToken.Claims.(jwtlib.MapClaims)
 		if !ok {
-			responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "Token解析失败")
+			responses.AbortFail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "Token解析失败")
 			return
 		}
 		sub, err := claims.GetSubject()
 		sid, hasSID := jwt.SessionIDFromClaims(claims)
 		if err != nil || sub == "" || !hasSID {
-			responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "会话已失效，请重新登录")
+			responses.AbortFail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "会话已失效，请重新登录")
 			return
 		}
 		active, err := jwt.IsUserSessionActive(c.Request.Context(), sub, sid)
 		if err != nil {
 			slog.Error("jwt_session_check_failed", slog.String("error", err.Error()))
-			responses.Fail(c, http.StatusServiceUnavailable, eror.CodeServiceUnavail, "认证服务暂不可用")
+			responses.AbortFail(c, http.StatusServiceUnavailable, eror.CodeServiceUnavail, "认证服务暂不可用")
 			return
 		}
 		if !active {
-			responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "会话已失效，请重新登录")
+			responses.AbortFail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "会话已失效，请重新登录")
 			return
 		}
 

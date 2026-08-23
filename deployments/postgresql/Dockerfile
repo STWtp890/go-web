@@ -11,7 +11,7 @@
 #     (pg_search 无 jammy 包, 实测 404) → 两者均不适用,
 #     故基于 postgres:17-bookworm 自行 apt 装配
 #   - 扩展来源: timescaledb (packagecloud Debian) + pgvector (PGDG) + pg_search (GitHub .deb)
-#   - shared_preload_libraries 需含 timescaledb,pg_search (见 ../../docket-compose.yaml)
+#   - shared_preload_libraries 需含 timescaledb,pg_search (见 ../../docker-compose.yaml)
 # ============================================================
 FROM postgres:17-bookworm
 

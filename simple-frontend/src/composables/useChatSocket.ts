@@ -7,6 +7,7 @@ interface UseChatSocketOptions {
   ensureSession: () => Promise<boolean>
   onMessage: (payload: string) => void
   onConnected?: () => void
+  onDisconnected?: () => void
   onUnauthenticated?: () => void
 }
 
@@ -69,6 +70,7 @@ export function useChatSocket(options: UseChatSocketOptions) {
       if (disposed) return
       connectionState.value = 'reconnecting'
       scheduleReconnect()
+      options.onDisconnected?.()
     }
   }
 

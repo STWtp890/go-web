@@ -29,7 +29,7 @@ func WebSocketLogic(ctx context.Context, subject, sessionID string, conn client.
 		_ = conn.Close()
 		return
 	}
-	
+
 	defer service.Detach(subject, uc)
 	if !sessionStillActive(ctx, subject, sessionID) {
 		service.Detach(subject, uc)
