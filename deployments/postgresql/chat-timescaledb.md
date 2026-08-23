@@ -237,7 +237,7 @@ func migrateChat(conf *config.Config) error {
 - [ ] `timescaledb_information.hypertables` 含 `chat_messages`
 - [ ] `EXPLAIN ANALYZE` 群历史查询：仅扫描命中的 chunk，走 `idx_message_to_type_time`，无回表排序
 - [ ] 发私聊消息 → 断线重连 → 离线补发正常（软删 `deleted_at` 语义不变）
-- [ ] 群聊历史窗口补发正常
+- [ ] 私聊与群聊均从 pending delivery 重放，群历史窗口不会重复补发
 - [ ] `DeleteByIDs` 软删正常（复合主键适配后）
 - [ ] 压缩策略生效：7 天后旧 chunk `compression_status = 'Compressed'`
 - [ ] `automigrate -only chat` 重复执行幂等（第二次无报错）

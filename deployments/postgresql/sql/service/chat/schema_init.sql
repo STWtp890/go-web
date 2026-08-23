@@ -34,15 +34,15 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 CREATE INDEX IF NOT EXISTS idx_message_to_type ON chat_messages (to_id, group_type);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_from_id ON chat_messages (from_id);
 
--- P0/P1 可靠投递能力（原 001_p0p1_reliability.sql 的 chat 部分）。
+-- 应用层 ACK 可靠投递：表中只保留尚未被接收端应用成功处理的 pending delivery。
 CREATE TABLE IF NOT EXISTS chat_message_deliveries (
     delivery_id        uuid PRIMARY KEY,
     message_id         bigint      NOT NULL,
     message_created_at bigint      NOT NULL,
     recipient_id       varchar(64) NOT NULL,
-    delivered_at       bigint,
-    acknowledged_at    bigint,
     created_at         bigint      NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_delivery_recipient_message
+    ON chat_message_deliveries (recipient_id, message_id, message_created_at);
 CREATE INDEX IF NOT EXISTS idx_delivery_pending
-    ON chat_message_deliveries (recipient_id, acknowledged_at, created_at);
+    ON chat_message_deliveries (recipient_id, created_at, delivery_id);

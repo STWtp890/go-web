@@ -7,6 +7,7 @@ import (
 	"gin-backend/internal/common/base/responses"
 	"gin-backend/internal/common/service/jwt"
 	logic "gin-backend/internal/service/chat/logic"
+	chatclient "gin-backend/internal/service/chat/types/client"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -47,6 +48,7 @@ func WebSocketHandler(c *gin.Context) {
 	}
 	conn.SetReadLimit(64 * 1024)
 
-	// 传递实际 WebSocket Connection 至 Logic 层 (阻塞直至连接关闭)
-	logic.WebSocketLogic(c.Request.Context(), sub, sessionID, conn)
+	// Handler 负责将具体协议连接适配为聊天模块使用的 Connection 接口。
+	transport := chatclient.NewWebSocketClient(c.Request.Context(), conn)
+	logic.WebSocketLogic(c.Request.Context(), sub, sessionID, transport)
 }

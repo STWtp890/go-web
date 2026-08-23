@@ -234,7 +234,7 @@ flowchart LR
 
 ### 5.1 单一实时传输
 
-Chat 只使用 `GET /api/v1/protected/chat/ws`：消息收发和服务端 ACK 均在同一条 WebSocket 上完成。服务端通过 ping/pong 保活，会话被撤销时主动关闭对应连接。
+Chat 使用 `GET /api/v1/protected/chat/ws` 完成消息收发和发送方 `accepted`；接收端应用处理 ACK 使用受 CSRF 保护的批量 REST 接口。服务端通过 ping/pong 保活，会话被撤销时主动关闭对应连接。
 
 **当前浏览器契约**：WebSocket 握手从 HttpOnly Cookie `pp_user_at` 读取 access JWT；浏览器会自动携带该 Cookie。后端不接受 Bearer 凭据，前端不应将 JWT 传入 URL 或 `Sec-WebSocket-Protocol`。
 
@@ -258,45 +258,51 @@ WebSocket 客户端发送的 wire JSON：
 
 | 字段 | 要求 | 说明 |
 | --- | --- | --- |
-| `metadata.clientMessageId` | 建议必填 | 用于将服务端 ACK/错误与本地消息匹配，最长 128 字节 |
+| `metadata.clientMessageId` | 建议必填 | 用于将服务端 accepted/错误与本地消息匹配，最长 128 字节 |
 | `metadata.type` | 固定 `text` | 其他类型为 `400` |
 | `metadata.groupType` | `private` 或 `group` | private 的 `to` 是用户 ID；group 的 `to` 是群 ID |
 | `metadata.to` | 必填 | 不可为空 |
 | `metadata.from`、`timestamp` | 客户端不要传或视为无效 | 服务端从 token 覆盖 sender，并写入服务端时间 |
 | `content` | 非空，最多 48 KiB | 聊天正文 |
 
-服务端完成持久化后在 WebSocket 回送 ACK 控制帧：
+服务端完成持久化后向发送方回送 accepted 控制帧：
 
 ```json
 {
   "metadata": {
     "clientMessageId": "客户端生成的唯一 ID",
-    "type": "ack",
+    "type": "accepted",
     "groupType": "private",
     "from": "server",
     "to": "发送者 ID",
     "timestamp": 0
   },
-  "content": "{\"deliveryIds\":[\"uuid\"]}"
+  "content": "{\"messageId\":42}"
 }
 ```
 
-`deliveryIds` 是每个接收者的专属投递 ID；群消息可能返回多个 ID。群发送者必须已经是群成员，否则收到 `type=error` 的控制帧。
+`accepted` 只表示服务端已持久化消息，不表示接收端已经处理，更不表示用户已读。发送方只获得消息 ID；接收者专属的 `deliveryId` 只随接收消息帧发送给对应接收者。群发送者必须已经是群成员，否则收到 `type=error` 的控制帧。
 
 ### 5.3 投递确认
 
-`POST /api/v1/protected/chat/deliveries/:deliveryId/ack`
+`POST /api/v1/protected/chat/deliveries/ack`
 
-- 仅消息接收者可确认自己的投递。
-- 成功返回 `204 No Content`；重复确认保持幂等，也返回 `204`。
-- 不存在或不属于当前用户的投递返回 `404`。
-- 前端应在消息已落入本地状态/持久化缓存后确认，网络失败时保留 delivery ID 以便重试。
+```json
+{
+  "deliveryIds": ["uuid-1", "uuid-2"]
+}
+```
+
+- 每批 1～100 个 ID；服务端只删除认证用户自己的 pending delivery。
+- 成功返回 `204 No Content`；重复、不存在或属于其他用户的 ID 同样返回 `204`，避免泄露并保持幂等。
+- 前端必须在消息完成校验、去重并写入应用状态后确认；网络失败时保留 delivery ID 以便重试。
+- ACK 只表示接收端应用处理成功，不包含已读回执语义。
 
 ### 5.4 群关系接口
 
 | 接口 | 用途 | 成功 data | 典型失败 |
 | --- | --- | --- | --- |
-| `POST /api/v1/protected/chat/groups/:groupId/join` | 加入预置聊天室 | `{ groupId, memberId, supplement }` | 不存在 `404` |
+| `POST /api/v1/protected/chat/groups/:groupId/join` | 加入预置聊天室 | `{ groupId, memberId }` | 不存在 `404` |
 | `POST /api/v1/protected/chat/groups/:groupId/leave` | 退出当前群 | `{ groupId, memberId }` | 非成员 `403` |
 | `GET /api/v1/protected/chat/groups/mine` | 我的群 ID 列表 | `{ groups: string[] }` | 服务未就绪 `503` |
 | `GET /api/v1/protected/chat/groups/:groupId/members` | 查看成员 ID 列表 | `{ groupId, members: string[] }` | 非成员 `403`、群不存在/不可用 |

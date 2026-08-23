@@ -25,9 +25,7 @@ type MessageDelivery struct {
 	MessageID        uint   `json:"message_id" gorm:"not null;index"`
 	MessageCreatedAt int64  `json:"message_created_at" gorm:"not null;index"`
 	RecipientID      string `json:"recipient_id" gorm:"size:64;not null;index:idx_delivery_pending,priority:1"`
-	DeliveredAt      *int64 `json:"delivered_at"`
-	AcknowledgedAt   *int64 `json:"acknowledged_at" gorm:"index:idx_delivery_pending,priority:2"`
-	CreatedAt        int64  `json:"created_at" gorm:"autoCreateTime:true;index:idx_delivery_pending,priority:3"`
+	CreatedAt        int64  `json:"created_at" gorm:"autoCreateTime:true;index:idx_delivery_pending,priority:2"`
 }
 
 func (*MessageDelivery) TableName() string { return "chat_message_deliveries" }

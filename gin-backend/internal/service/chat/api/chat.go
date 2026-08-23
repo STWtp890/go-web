@@ -14,7 +14,7 @@ func SetRouteGroup(protected *gin.RouterGroup) {
 	// 保护路由组: /api/v1/protected/chat
 	chatProtected := protected.Group("chat")
 	chatProtected.GET("/ws", handler.WebSocketHandler) // GET /api/v1/protected/chat/ws
-	chatProtected.POST("/deliveries/:deliveryId/ack", handler.AcknowledgeDeliveryHandler)
+	chatProtected.POST("/deliveries/ack", handler.AckDeliveryHandler)
 
 	// 群 (应用级聊天室): 用户不能自建群/删群 (由应用/管理员创建), 可申请加入/退出聊天室
 	chatProtected.POST("/groups/:groupId/join", handler.JoinGroupHandler)      // POST /api/v1/protected/chat/groups/:groupId/join (申请加入聊天室)

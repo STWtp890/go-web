@@ -17,7 +17,9 @@ func (b *MessageBridge) deliverToUser(ctx context.Context, m message.Message) ([
 		return nil, err
 	}
 	if uc := b.userClients.Get(m.To()); uc != nil {
-		uc.Push(deliveries[0].Message)
+		if !uc.Push(deliveries[0].Message) {
+			b.Detach(m.To(), uc)
+		}
 	}
 	return deliveries, nil
 }
@@ -26,12 +28,13 @@ func (b *MessageBridge) deliverToUser(ctx context.Context, m message.Message) ([
 // 权限模型: 群消息发送需"在群" (群成员, 隐含在库); 群模型启动初始化到内存 (EnsureAllLoaded)
 // 非成员/群不存在直接拒绝 (防越权)
 func (b *MessageBridge) deliverToGroup(ctx context.Context, m message.Message) ([]store.Delivery, error) {
-	// 发送前校验: 仅群成员可发 (内存查询); 群不存在/非成员均拒绝
+	// 群成员发送校验
 	if b.groupMgr == nil || !b.groupMgr.IsMember(m.To(), m.From()) {
 		slog.Warn("群消息发送被拒绝: 非群成员或群不存在",
 			slog.String("group", m.To()), slog.String("from", m.From()))
 		return nil, ErrNotGroupMember
 	}
+
 	s := b.groupMgr.Groups().Router(m.To())
 	if !s.Loaded() {
 		b.groupMgr.EnsureLoaded(ctx, m.To(), s)
@@ -44,7 +47,9 @@ func (b *MessageBridge) deliverToGroup(ctx context.Context, m message.Message) (
 	s.Push(m)
 	for _, delivery := range deliveries {
 		if uc := b.userClients.Get(delivery.RecipientID); uc != nil {
-			uc.Push(delivery.Message)
+			if !uc.Push(delivery.Message) {
+				b.Detach(delivery.RecipientID, uc)
+			}
 		}
 	}
 	return deliveries, nil

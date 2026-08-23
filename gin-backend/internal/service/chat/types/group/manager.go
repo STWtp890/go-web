@@ -60,30 +60,30 @@ func (m *Manager) CreateGroup(ctx context.Context, name, ownerID string) (string
 	return groupID, nil
 }
 
-// JoinGroup 加入群: 校验群存在 → 落库 + 同步内存; 返回窗口消息供接入方补发
+// JoinGroup 加入群: 校验群存在 → 落库 + 同步内存。
 // :Return
-// - `[]message.Message` 群最近消息窗口 (调用方可补发给该成员)
 // - `error` ErrGroupNotFound / ErrGroupServiceUnavailable / 落库失败
-func (m *Manager) JoinGroup(ctx context.Context, groupID, memberID string) ([]message.Message, error) {
+func (m *Manager) JoinGroup(ctx context.Context, groupID, memberID string) error {
 	if m.groupsStore == nil {
-		return nil, ErrGroupServiceUnavailable
+		return ErrGroupServiceUnavailable
 	}
 	exists, err := m.groupsStore.GroupExists(ctx, groupID)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if !exists {
-		return nil, ErrGroupNotFound
+		return ErrGroupNotFound
 	}
 	if err := m.groupsStore.Join(ctx, groupID, memberID); err != nil {
-		return nil, err
+		return err
 	}
-	// 同步内存: 未加载则懒加载 (含群历史窗口), 再 Join 返回窗口补发
+	// 同步内存；历史窗口不参与可靠投递，pending delivery 是唯一重放来源。
 	s := m.groups.Router(groupID)
 	if !s.Loaded() {
 		m.EnsureLoaded(ctx, groupID, s)
 	}
-	return s.Join(memberID), nil
+	s.Join(memberID)
+	return nil
 }
 
 // LeaveGroup 退出群: 落库 + 同步内存

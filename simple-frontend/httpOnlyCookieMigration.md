@@ -174,22 +174,22 @@ socket.onclose = (event) => {
 
 ### 5. 通过 WebSocket 发送消息
 
-聊天只保留 WebSocket 实时链路。页面在连接开启后直接发送 wire JSON，并通过 `clientMessageId` 匹配服务端持久化后返回的 ACK。delivery 处理确认仍使用受 CSRF 保护的 REST 接口。
+聊天只保留 WebSocket 实时链路。页面在连接开启后直接发送 wire JSON，并通过 `clientMessageId` 匹配服务端持久化后返回的 `accepted`。应用层 delivery ACK 仍使用受 CSRF 保护的批量 REST 接口。
 
 ### 6. 聊天页当前实现
 
-`src/views/app/ChatView.vue` 以“会话列表 + 对话线程”组织私聊和群聊，并通过原生 WebSocket 建立实时双向连接。发件方通过控制 ACK 获得每位接收者的 `deliveryId`，已连接的接收者会立即收到消息。
+`src/views/app/ChatView.vue` 以“会话列表 + 对话线程”组织私聊和群聊，并通过原生 WebSocket 建立实时双向连接。发件方通过 `accepted` 获得服务端消息 ID；接收者专属的 `deliveryId` 只发送给对应接收端应用。
 
 `src/composables/useChatSocket.ts` 专门管理连接生命周期。它不读取或传递 JWT，仅接收 URL、会话复核和消息回调这些显式依赖。
 
 1. 页面挂载时建立 WS；
 2. 收到 `text` 消息后先落入对应私聊/群聊线程，非当前线程增加未读数；
-3. 写入 UI 状态后将 `deliveryId` 放入待确认队列，并调用 ACK；失败时保留该 ID，连接恢复或浏览器重新联网后幂等重试；
-4. 自己发送的群消息会经 WS 回显，前端按目标、内容和短时间窗口去重，避免同一条消息显示两次；
+3. 消息完成校验、按 `deliveryId` 去重并写入应用状态后，将 ID 放入 ACK 队列；批量确认失败时保留并在网络恢复后幂等重试；
+4. 自己发送的群消息会经 WS 回显，前端按 `clientMessageId` 精确关联，避免同一条消息显示两次；
 5. 组件卸载时关闭连接和退避计时器；
 6. 连接中断时按指数退避重连，每次重连前都用受保护请求复核会话；复核失败则清理展示态并跳转登录页。
 
-聊天页面仅把短期 UI 记录和待 ACK 的 delivery ID 放入 `sessionStorage`，不将其当作服务端历史，也不保存 access / refresh JWT 或其他认证凭据。
+`src/composables/useDeliveryAck.ts` 独立管理短期 ACK 队列。ACK 表示应用成功处理，不等同于用户已读。聊天页面仅把短期 UI 记录和待 ACK 的 delivery ID 放入 `sessionStorage`，不将其当作服务端历史，也不保存 access / refresh JWT 或其他认证凭据。
 
 ## 错误处理约定
 

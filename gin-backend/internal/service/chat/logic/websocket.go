@@ -6,25 +6,33 @@ import (
 
 	"gin-backend/internal/common/service/jwt"
 	"gin-backend/internal/service/chat"
-
-	"github.com/gorilla/websocket"
+	"gin-backend/internal/service/chat/types/client"
 )
 
 // WebSocketLogic 处理 WebSocket 连接的全生命周期
-// 经 Hub 的 NewWebSocketChannel 创建并注册 (Bridge 提供接口, 创建即注册)
-func WebSocketLogic(ctx context.Context, subject, sessionID string, conn *websocket.Conn) {
-	h := chat.Hub()
-	if h == nil {
+// 经聊天服务创建并注册用户通道。
+func WebSocketLogic(ctx context.Context, subject, sessionID string, conn client.Connection) {
+	service := chat.Service()
+	if service == nil {
+		_ = conn.Close()
 		return
 	}
 
-	uc := h.NewWebSocketChannel(ctx, subject, sessionID, conn)
-	if uc == nil {
+	// 在注册连接和启动 pending 重放前再次确认会话，缩小鉴权与协议升级之间的竞态窗口。
+	if !sessionStillActive(ctx, subject, sessionID) {
+		_ = conn.Close()
 		return
 	}
-	defer h.Detach(subject, uc)
+
+	uc := service.OpenConnection(ctx, subject, sessionID, conn)
+	if uc == nil {
+		_ = conn.Close()
+		return
+	}
+	
+	defer service.Detach(subject, uc)
 	if !sessionStillActive(ctx, subject, sessionID) {
-		h.Detach(subject, uc)
+		service.Detach(subject, uc)
 		return
 	}
 

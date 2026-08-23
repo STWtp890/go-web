@@ -1,9 +1,10 @@
 package client
 
 import (
-	"gin-backend/internal/service/chat/types/message"
 	"sync"
 	"sync/atomic"
+
+	"gin-backend/internal/service/chat/types/message"
 )
 
 // UserChannel 用户级连接通道: 封装 WebSocket 连接的消息投递
@@ -11,13 +12,15 @@ import (
 //
 // 并发安全: mu 保护 msgCh 的写入与关闭, 避免 Push/Offline 竞态 (send-on-closed)
 type UserChannel struct {
-	mu      sync.Mutex
-	subject string
-	session string
-	alive   atomic.Bool
-	msgCh   chan message.Message // 类型化消息通道 (投递队列)
-	done    chan struct{}        // Offline 后关闭，供 HTTP Handler 结束长连接
-	client  Client               // 底层 WebSocket 连接
+	mu           sync.Mutex
+	subject      string
+	session      string
+	alive        atomic.Bool
+	replaying    bool
+	replayBuffer []message.Message
+	msgCh        chan message.Message // 类型化消息通道 (投递队列)
+	done         chan struct{}        // Offline 后关闭，供 HTTP Handler 结束长连接
+	client       Client               // 封装底层 WebSocket 连接
 }
 
 // NewUserChannel 创建用户通道
@@ -41,7 +44,7 @@ func (uc *UserChannel) Online() {
 				return
 			}
 			if err := uc.client.Send(m); err != nil {
-				uc.alive.Store(false)
+				uc.Offline()
 				return
 			}
 		}
@@ -67,6 +70,54 @@ func (uc *UserChannel) Push(m message.Message) bool {
 	if !uc.alive.Load() {
 		return false
 	}
+	if uc.replaying {
+		if len(uc.replayBuffer) >= cap(uc.msgCh) {
+			return false
+		}
+		uc.replayBuffer = append(uc.replayBuffer, m)
+		return true
+	}
+	return uc.pushLocked(m)
+}
+
+// BeginReplay 在连接注册前开启重放门闩；实时消息会暂存到 replayBuffer。
+func (uc *UserChannel) BeginReplay() {
+	uc.mu.Lock()
+	defer uc.mu.Unlock()
+	uc.replaying = true
+	uc.replayBuffer = uc.replayBuffer[:0]
+}
+
+// PushReplay 将持久层恢复出的 pending delivery 直接写入出站队列。
+func (uc *UserChannel) PushReplay(m message.Message) bool {
+	uc.mu.Lock()
+	defer uc.mu.Unlock()
+	if !uc.alive.Load() {
+		return false
+	}
+	return uc.pushLocked(m)
+}
+
+// FinishReplay 依序排空重放期间到达的实时消息并切换到 live 状态。
+func (uc *UserChannel) FinishReplay() bool {
+	uc.mu.Lock()
+	defer uc.mu.Unlock()
+	if !uc.alive.Load() { // 连接已下线
+		return false
+	}
+	for _, m := range uc.replayBuffer {
+		if !uc.pushLocked(m) {
+			uc.replaying = false
+			uc.replayBuffer = nil
+			return false
+		}
+	}
+	uc.replaying = false
+	uc.replayBuffer = nil
+	return true
+}
+
+func (uc *UserChannel) pushLocked(m message.Message) bool {
 	select {
 	case uc.msgCh <- m:
 		return true

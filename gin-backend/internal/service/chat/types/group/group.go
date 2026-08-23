@@ -46,12 +46,11 @@ func (s *GroupState) ReplaceMembers(members []string) {
 	s.loaded.Store(true)
 }
 
-// Join 加入群: 返回最近消息 (上线/加入补发)
-func (s *GroupState) Join(subject string) []message.Message {
+// Join 加入群；可靠投递补发由 pending delivery 负责，不返回历史窗口。
+func (s *GroupState) Join(subject string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.members[subject] = struct{}{}
-	return s.window.Snapshot()
 }
 
 // Leave 离开群

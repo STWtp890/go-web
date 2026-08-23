@@ -89,7 +89,7 @@ src/
 
 ## 7. 后续演进建议
 
-1. 为聊天补充服务端历史、离线补偿与更完整的 ACK 重试队列。
+1. 为聊天补充独立的服务端历史查询；离线补偿与批量应用层 ACK 已由 pending delivery 链路负责。
 2. 增加用户 profile/me 接口，替换当前从 JWT `sub` 推导的简化身份展示。
 3. Markdown 后端增加更新、删除和草稿接口，再扩展编辑器为完整生命周期。
 4. 引入 Vitest、MSW 与 Playwright，覆盖 refresh 轮换、路由权限、字段 adapter 和核心用户流。

@@ -104,8 +104,8 @@ func Ready(ctx context.Context) error {
 	if err := cli.Ping(ctx).Err(); err != nil {
 		return err
 	}
-	if chat.Hub() == nil {
-		return fmt.Errorf("chat hub 未初始化")
+	if chat.Service() == nil {
+		return fmt.Errorf("chat service 未初始化")
 	}
 	return nil
 }

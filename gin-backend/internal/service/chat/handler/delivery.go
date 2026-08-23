@@ -8,32 +8,47 @@ import (
 	"gin-backend/internal/service/chat"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
-// AcknowledgeDeliveryHandler 确认消息已被客户端处理；重复确认保持幂等。
-func AcknowledgeDeliveryHandler(c *gin.Context) {
+const maxAckBatchSize = 100
+
+type ackDeliveryRequest struct {
+	DeliveryIDs []string `json:"deliveryIds" binding:"required,min=1,max=100"`
+}
+
+// AckDeliveryHandler 批量确认消息已被客户端应用处理；重复 ACK 保持幂等。
+func AckDeliveryHandler(c *gin.Context) {
 	subject, ok := currentSubject(c)
 	if !ok {
 		responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "无效的Token")
 		return
 	}
-	id := c.Param("deliveryId")
-	if id == "" {
-		responses.Fail(c, http.StatusBadRequest, eror.CodeValidationFailed, "缺少投递 ID")
+	var req ackDeliveryRequest
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.DeliveryIDs) > maxAckBatchSize {
+		responses.Fail(c, http.StatusBadRequest, eror.CodeValidationFailed, "deliveryIds 必须包含 1 到 100 个投递 ID")
 		return
 	}
-	h := chat.Hub()
-	if h == nil {
+	deliveryIDs := make([]string, 0, len(req.DeliveryIDs))
+	seen := make(map[string]struct{}, len(req.DeliveryIDs))
+	for _, id := range req.DeliveryIDs {
+		if _, err := uuid.Parse(id); err != nil {
+			responses.Fail(c, http.StatusBadRequest, eror.CodeValidationFailed, "投递 ID 格式无效")
+			return
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		deliveryIDs = append(deliveryIDs, id)
+	}
+	service := chat.Service()
+	if service == nil {
 		responses.Fail(c, http.StatusServiceUnavailable, eror.CodeServiceUnavail, "聊天服务暂不可用")
 		return
 	}
-	ok, err := h.Bridge().Acknowledge(c.Request.Context(), subject, id)
-	if err != nil {
+	if err := service.Ack(c.Request.Context(), subject, deliveryIDs); err != nil {
 		responses.Fail(c, http.StatusServiceUnavailable, eror.CodeServiceUnavail, "确认服务暂不可用")
-		return
-	}
-	if !ok {
-		responses.Fail(c, http.StatusNotFound, eror.CodeNotFound, "投递不存在")
 		return
 	}
 	c.Status(http.StatusNoContent)

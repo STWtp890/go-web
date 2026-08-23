@@ -16,7 +16,8 @@ import (
 // MetaData 代表消息的元数据
 type MetaData struct {
 	DeliveryID      string `json:"deliveryId,omitempty"`
-	ClientMessageID string `json:"clientMessageId,omitempty"` // 客户端生成，用于匹配服务端 ACK
+	MessageID       uint   `json:"messageId,omitempty"`
+	ClientMessageID string `json:"clientMessageId,omitempty"` // 客户端生成，用于匹配服务端 accepted/error
 	MessageType     string `json:"type"`                      // 消息类型
 	GroupType       string `json:"groupType"`                 // 群组类型
 	From            string `json:"from"`                      // 发送者标识
@@ -34,7 +35,7 @@ type OriginMessageJson struct {
 
 // Message 具体消息类型的统一接口, 是消息桥 (MessageBridge) 内部传递与持久化的载体
 type Message interface {
-	Type() string                // 消息类型: text / system / ack / error
+	Type() string                // 消息类型: text / system / accepted / error
 	GroupType() string           // 群组类型: private / group
 	From() string                // 发送者标识
 	To() string                  // 接收者标识 或 群聊群 ID

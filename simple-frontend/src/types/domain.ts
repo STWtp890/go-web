@@ -28,13 +28,14 @@ export interface ChatMessageInput {
 
 export interface SentMessage {
   localId: string
+  messageId?: number
+  deliveryId?: string
   direction: 'sent' | 'received'
   from?: string
   to: string
   groupType: 'private' | 'group'
   content: string
   createdAt: number
-  deliveryIds: string[]
   status: 'sending' | 'accepted' | 'failed' | 'received'
 }
 

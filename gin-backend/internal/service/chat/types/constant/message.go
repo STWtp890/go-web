@@ -2,10 +2,10 @@
 package constant
 
 const (
-	TypeText   = "text"   // 文本消息
-	TypeSystem = "system" // 系统通知（上线/下线/入群）
-	TypeAck    = "ack"    // 服务端收到确认
-	TypeError  = "error"  // 错误消息
+	TypeText     = "text"     // 文本消息
+	TypeSystem   = "system"   // 系统通知（上线/下线/入群）
+	TypeAccepted = "accepted" // 服务端已持久化发送方提交的消息
+	TypeError    = "error"    // 错误消息
 )
 
 // 群组类型

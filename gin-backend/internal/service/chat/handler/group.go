@@ -16,7 +16,7 @@ import (
 
 // JoinGroupHandler 申请加入聊天室: POST /api/v1/protected/chat/groups/:groupId/join
 // 权限: 在库 (AuthRequired 校验 token → 系统注册用户) 即可申请, 加入后转变为"在群"
-// 响应: {groupId, memberId, supplement:[窗口消息补发]}
+// 响应: {groupId, memberId}
 func JoinGroupHandler(c *gin.Context) {
 	subject, ok := currentSubject(c)
 	if !ok {
@@ -29,7 +29,7 @@ func JoinGroupHandler(c *gin.Context) {
 		return
 	}
 
-	window, err := logic.JoinGroupLogic(c.Request.Context(), subject, groupID)
+	err := logic.JoinGroupLogic(c.Request.Context(), subject, groupID)
 	if err != nil {
 		if errors.Is(err, group.ErrGroupNotFound) {
 			responses.Fail(c, http.StatusNotFound, eror.CodeNotFound, "聊天室不存在")
@@ -43,9 +43,8 @@ func JoinGroupHandler(c *gin.Context) {
 		return
 	}
 	responses.OK(c, gin.H{
-		"groupId":    groupID,
-		"memberId":   subject,
-		"supplement": window,
+		"groupId":  groupID,
+		"memberId": subject,
 	})
 }
 
