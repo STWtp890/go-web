@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package rag.v1;
+
+option go_package = "mixin-search/gen/rag/v1;ragv1";
+
+service RAGService {
+  rpc IngestDocument(IngestDocumentRequest) returns (IngestDocumentResponse);
+  rpc Search(SearchRequest) returns (SearchResponse);
+}
+
+message IngestDocumentRequest {
+  string document_id = 1;
+  string filename = 2;
+  string title = 3;
+  bytes content = 4;
+  int32 chunk_size = 5;
+  int32 overlap = 6;
+}
+
+message IngestDocumentResponse {
+  string document_id = 1;
+  int32 chunk_count = 2;
+}
+
+message SearchRequest {
+  string query = 1;
+  int32 top_k = 2;
+}
+
+message SearchResponse {
+  string query = 1;
+  repeated SearchHit hits = 2;
+}
+
+message SearchHit {
+  Chunk chunk = 1;
+  double rrf_score = 2;
+  int32 dense_rank = 3;
+  int32 sparse_rank = 4;
+  double dense_score = 5;
+  double sparse_score = 6;
+}
+
+message Chunk {
+  string id = 1;
+  string document_id = 2;
+  string title = 3;
+  string content = 4;
+  int32 position = 5;
+  string format = 6;
+  string source = 7;
+  string section = 8;
+}

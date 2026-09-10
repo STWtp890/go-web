@@ -17,7 +17,7 @@ docker compose -f ../../docker-compose.yaml ps redis
 docker compose -f ../../docker-compose.yaml exec redis redis-cli ping
 ```
 
-默认仅映射到 `127.0.0.1:16379`，与 `gin-backend/configs/config.yaml` 相匹配：
+默认仅映射到 `127.0.0.1:16379`，与 `apps/gin-backend/configs/config.yaml` 相匹配：
 
 ```yaml
 redis:

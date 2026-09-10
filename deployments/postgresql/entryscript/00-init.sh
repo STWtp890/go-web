@@ -28,6 +28,9 @@ psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /sql/plugin/tim
 echo "[init] service/markdown/search_setup.sql (BM25 index)"
 psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /sql/service/markdown/search_setup.sql
 
+echo "[init] plugin/bm25_only_verify.sql"
+psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /sql/plugin/bm25_only_verify.sql
+
 echo "[init] service/chat/timescaledb_setup.sql (hypertable)"
 psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /sql/service/chat/timescaledb_setup.sql
 

@@ -15,7 +15,7 @@
 | 项 | 现状 | 来源 |
 | --- | --- | --- |
 | 连接 | 单实例 PostgreSQL `gin_demo`，`PostgreSQLManager` 注册模式（ServiceAuth/ServiceMarkdown），chat 复用 ServiceMarkdown | `internal/common/base/connection/postgresql/` |
-| 驱动 | `gorm.io/driver/postgres v1.6.2` + `gorm.io/gorm v1.31.2` | `gin-backend/go.mod` |
+| 驱动 | `gorm.io/driver/postgres v1.6.2` + `gorm.io/gorm v1.31.2` | `apps/gin-backend/go.mod` |
 | 消息表 | `chat_messages`：`id`(PK 自增)、`group_type`、`from_id`、`to_id`(复合索引)、`payload`(text)、`created_at`/`updated_at`(int64)、`deleted_at`(gorm.DeletedAt 软删) | `internal/model/orm/chat/message.go` |
 | 读路径 | `FetchOffline`（to_id+private, `ORDER BY id ASC LIMIT 100`）；`FetchGroupHistory`（to_id+group, `ORDER BY id DESC LIMIT 100` 反转） | `internal/service/chat/store/message.go` |
 | 写路径 | 投递热路径同步 `Save`（INSERT） | `structure/bridge/deliver.go` |

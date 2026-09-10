@@ -1,0 +1,16 @@
+.git
+.gitignore
+.vscode
+.idea
+
+README.md
+storage
+bin
+tmp
+temp
+
+*.log
+*.out
+*.test
+*.exe
+coverage*

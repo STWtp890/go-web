@@ -32,16 +32,25 @@ try {
         docker compose -f $composeFile config --quiet
     }
 
-    Push-Location 'gin-backend'
+    Push-Location 'apps/gin-backend'
     try {
         $env:GOCACHE = $verificationGoCache
-        Invoke-CheckedCommand 'Run Go tests' { go test ./... }
+        Invoke-CheckedCommand 'Run gin-backend Go tests' { go test ./... }
     }
     finally {
         Pop-Location
     }
 
-    Push-Location 'simple-frontend'
+    Push-Location 'apps/mixin-search'
+    try {
+        $env:GOCACHE = $verificationGoCache
+        Invoke-CheckedCommand 'Run mixin-search Go tests' { go test ./... }
+    }
+    finally {
+        Pop-Location
+    }
+
+    Push-Location 'apps/simple-frontend'
     try {
         Invoke-CheckedCommand 'Run Vue and TypeScript checks' { npm run type-check }
         Invoke-CheckedCommand 'Build the production frontend' { npm run build }
@@ -58,6 +67,10 @@ try {
 
     Invoke-CheckedCommand 'Deploy and wait for the Compose stack' {
         docker @composeArguments
+    }
+
+    Invoke-CheckedCommand 'Verify PostgreSQL BM25-only search boundary' {
+        docker compose -f $composeFile exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d gin_demo -f /sql/plugin/bm25_only_verify.sql
     }
 
     Write-Host "`n==> Verify HTTP entry points"

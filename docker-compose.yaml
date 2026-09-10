@@ -45,14 +45,14 @@ services:
 
   gin-backend:
     build:
-      context: ./gin-backend
+      context: ./apps/gin-backend
       dockerfile: Dockerfile
     image: gin-backend:local
     container_name: gin-backend
     ports:
       - "8080:8080"
     volumes:
-      - ./gin-backend/configs/config.docker.yaml:/app/configs/config.yaml:ro
+      - ./apps/gin-backend/configs/config.docker.yaml:/app/configs/config.yaml:ro
       - backend-storage:/app/storage
     depends_on:
       postgres:
@@ -69,7 +69,7 @@ services:
 
   simple-frontend:
     build:
-      context: ./simple-frontend
+      context: ./apps/simple-frontend
       dockerfile: Dockerfile
     image: simple-frontend:local
     container_name: simple-frontend
