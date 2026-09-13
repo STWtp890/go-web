@@ -6,7 +6,6 @@ services:
       context: ./deployments/postgresql
       dockerfile: Dockerfile
     image: gin-postgres:local
-    container_name: gin-backend-postgres
     ports:
       - "127.0.0.1:15432:5432"
     environment:
@@ -17,6 +16,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./deployments/postgresql/sql:/sql:ro
+      - ./deployments/postgresql:/database:ro
       - ./deployments/postgresql/entryscript:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d gin_demo"]
@@ -28,7 +28,6 @@ services:
 
   redis:
     image: redis:7.4-alpine
-    container_name: gin-backend-redis
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
     ports:
       - "127.0.0.1:16379:6379"
@@ -47,8 +46,9 @@ services:
     build:
       context: ./apps/gin-backend
       dockerfile: Dockerfile
+      args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
     image: gin-backend:local
-    container_name: gin-backend
     ports:
       - "8080:8080"
     volumes:
@@ -72,7 +72,6 @@ services:
       context: ./apps/simple-frontend
       dockerfile: Dockerfile
     image: simple-frontend:local
-    container_name: simple-frontend
     ports:
       - "15173:80"
     depends_on:

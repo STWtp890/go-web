@@ -1,36 +1,153 @@
 syntax = "proto3";
 
-package rag.v1;
+package mixin_search.v1;
 
-option go_package = "mixin-search/gen/rag/v1;ragv1";
+option go_package = "packages/gen/mixin-search/v1;mixinsearchv1";
 
+// RAGService is the document-index boundary used by go-web.
+// User identity, membership and document lifecycle remain owned by go-web.
 service RAGService {
-  rpc IngestDocument(IngestDocumentRequest) returns (IngestDocumentResponse);
-  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc IndexDocumentVersion(IndexDocumentVersionRequest) returns (IndexDocumentVersionResponse);
+  rpc ActivateDocumentVersion(ActivateDocumentVersionRequest) returns (ActivateDocumentVersionResponse);
+  rpc UpdateDocumentAccess(UpdateDocumentAccessRequest) returns (UpdateDocumentAccessResponse);
+  rpc DeleteDocumentVersion(DeleteDocumentVersionRequest) returns (DeleteDocumentVersionResponse);
+  rpc DeleteDocument(DeleteDocumentRequest) returns (DeleteDocumentResponse);
+  rpc GetDocumentVersionState(GetDocumentVersionStateRequest) returns (GetDocumentVersionStateResponse);
+  rpc SearchDocuments(SearchDocumentsRequest) returns (SearchDocumentsResponse);
 }
 
-message IngestDocumentRequest {
+enum DocumentIndexStatus {
+  DOCUMENT_INDEX_STATUS_UNSPECIFIED = 0;
+  DOCUMENT_INDEX_STATUS_INDEXED = 1;
+  DOCUMENT_INDEX_STATUS_ACTIVE = 2;
+}
+
+message DocumentVersionRef {
   string document_id = 1;
-  string filename = 2;
-  string title = 3;
-  bytes content = 4;
-  int32 chunk_size = 5;
-  int32 overlap = 6;
+  string version_id = 2;
 }
 
-message IngestDocumentResponse {
+message DocumentVersionState {
+  DocumentVersionRef ref = 1;
+  string owner_space_id = 2;
+  DocumentIndexStatus status = 3;
+  uint64 activation_revision = 4;
+  uint64 access_revision = 5;
+  uint64 lifecycle_revision = 6;
+  int32 chunk_count = 7;
+  string content_sha256 = 8;
+}
+
+message DocumentAccessState {
   string document_id = 1;
-  int32 chunk_count = 2;
+  uint64 access_revision = 2;
+  uint64 lifecycle_revision = 3;
+  bool authenticated_public = 4;
+  repeated string granted_space_ids = 5;
 }
 
-message SearchRequest {
+// Repeating the same operation_id and natural key must be idempotent.
+// Indexing does not make the version searchable until activation succeeds.
+message IndexDocumentVersionRequest {
+  string operation_id = 1;
+  string document_id = 2;
+  string version_id = 3;
+  string owner_space_id = 4;
+  string filename = 5;
+  string title = 6;
+  bytes content = 7;
+  string content_sha256 = 8;
+  int32 chunk_size = 9;
+  int32 overlap = 10;
+  string source_uri = 11;
+  map<string, string> metadata = 12;
+  // Fences indexing against a newer document deletion.
+  uint64 lifecycle_revision = 13;
+}
+
+message IndexDocumentVersionResponse {
+  DocumentVersionState state = 1;
+}
+
+// activation_revision is allocated monotonically by go-web.
+// A lower revision must never replace a newer active version.
+message ActivateDocumentVersionRequest {
+  string operation_id = 1;
+  string document_id = 2;
+  string version_id = 3;
+  uint64 activation_revision = 4;
+  string expected_previous_version_id = 5;
+  // A greater value republishes a tombstoned document after its version is indexed.
+  uint64 lifecycle_revision = 6;
+}
+
+message ActivateDocumentVersionResponse {
+  DocumentVersionState state = 1;
+}
+
+// Replaces the complete access snapshot for a document. Membership and grants
+// are resolved by go-web; mixin-search only applies the supplied snapshot.
+message UpdateDocumentAccessRequest {
+  string operation_id = 1;
+  string document_id = 2;
+  uint64 access_revision = 3;
+  uint64 lifecycle_revision = 4;
+  bool authenticated_public = 5;
+  repeated string granted_space_ids = 6;
+}
+
+message UpdateDocumentAccessResponse {
+  DocumentAccessState state = 1;
+}
+
+message DeleteDocumentVersionRequest {
+  string operation_id = 1;
+  string document_id = 2;
+  string version_id = 3;
+  uint64 lifecycle_revision = 4;
+}
+
+message DeleteDocumentVersionResponse {
+  bool deleted = 1;
+  bool active_version_removed = 2;
+}
+
+message DeleteDocumentRequest {
+  string operation_id = 1;
+  string document_id = 2;
+  uint64 lifecycle_revision = 3;
+}
+
+message DeleteDocumentResponse {
+  bool tombstoned = 1;
+  uint64 lifecycle_revision = 2;
+}
+
+message GetDocumentVersionStateRequest {
+  string document_id = 1;
+  string version_id = 2;
+}
+
+message GetDocumentVersionStateResponse {
+  bool exists = 1;
+  DocumentVersionState state = 2;
+}
+
+// Search authorization is an OR across public access, intersection with an
+// allowed space, and an explicit allowed_document_ids match. Both allow-lists
+// may be empty; that limits results to authenticated-public documents.
+message SearchDocumentsRequest {
   string query = 1;
-  int32 top_k = 2;
+  repeated string allowed_space_ids = 2;
+  repeated string allowed_document_ids = 3;
+  // 0 uses the default (3); valid range is 0..100.
+  int32 top_k = 4;
 }
 
-message SearchResponse {
+message SearchDocumentsResponse {
   string query = 1;
   repeated SearchHit hits = 2;
+  bool truncated = 3;
 }
 
 message SearchHit {
@@ -45,10 +162,14 @@ message SearchHit {
 message Chunk {
   string id = 1;
   string document_id = 2;
-  string title = 3;
-  string content = 4;
-  int32 position = 5;
-  string format = 6;
-  string source = 7;
-  string section = 8;
+  string version_id = 3;
+  string owner_space_id = 4;
+  string title = 5;
+  string content = 6;
+  int32 position = 7;
+  string format = 8;
+  string source_uri = 9;
+  string section = 10;
+  string content_sha256 = 11;
+  map<string, string> metadata = 12;
 }

@@ -1,4 +1,4 @@
--- plugin/bm25_only_verify.sql — go-web Markdown 搜索边界验收
+-- plugin/bm25_only_verify.sql — go-web document 投影搜索边界验收
 --
 -- go-web 仅使用 pg_search 的 BM25/jieba 全文检索。pg_search 上游虽然依赖
 -- pgvector，但业务 schema 不允许出现 vector 列、向量索引或向量检索结构。
@@ -7,6 +7,7 @@ DO $$
 DECLARE
     vector_columns text;
     vector_indexes text;
+    obsolete_relations text;
 BEGIN
     IF NOT EXISTS (
         SELECT 1
@@ -26,12 +27,12 @@ BEGIN
           JOIN pg_namespace AS table_namespace
             ON table_namespace.oid = table_relation.relnamespace
          WHERE table_namespace.nspname = 'public'
-           AND table_relation.relname = 'markdowns'
-           AND index_relation.relname = 'idx_markdowns_paradedb'
+           AND table_relation.relname = 'document_search_projection'
+           AND index_relation.relname = 'idx_document_search_projection_bm25'
            AND index_state.indisvalid
            AND index_state.indisready
     ) THEN
-        RAISE EXCEPTION 'BM25 boundary violation: idx_markdowns_paradedb is missing or invalid';
+        RAISE EXCEPTION 'BM25 boundary violation: idx_document_search_projection_bm25 is missing or invalid';
     END IF;
 
     SELECT string_agg(
@@ -59,6 +60,22 @@ BEGIN
     IF vector_indexes IS NOT NULL THEN
         RAISE EXCEPTION 'BM25 boundary violation: vector indexes found: %', vector_indexes;
     END IF;
+
+    SELECT string_agg(relation_name, ', ' ORDER BY relation_name)
+      INTO obsolete_relations
+      FROM unnest(ARRAY[
+          'schema_migrations',
+          'markdowns',
+          'markdown_contents',
+          'index_outbox',
+          'document_index_states',
+          'idx_markdowns_paradedb'
+      ]) AS relation_name
+     WHERE to_regclass('public.' || relation_name) IS NOT NULL;
+
+    IF obsolete_relations IS NOT NULL THEN
+        RAISE EXCEPTION 'development baseline violation: obsolete relations found: %', obsolete_relations;
+    END IF;
 END
 $$;
 
@@ -68,5 +85,5 @@ SELECT 'BM25_ONLY_OK' AS verification,
   FROM pg_extension AS extension_state
   JOIN pg_indexes AS index_state
     ON index_state.schemaname = 'public'
-   AND index_state.indexname = 'idx_markdowns_paradedb'
+   AND index_state.indexname = 'idx_document_search_projection_bm25'
  WHERE extension_state.extname = 'pg_search';

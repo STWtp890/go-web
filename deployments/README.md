@@ -1,28 +1,26 @@
-# gin-backend 依赖部署
+# 本地依赖与验证
 
-当前后端运行时依赖如下：
+当前后端运行时依赖 PostgreSQL 和 Redis；根目录 Compose 负责构建并启动 PostgreSQL、Redis、gin-backend 与 simple-frontend。Chat/ WebSocket schema 和源码保留，但服务、连接、路由和前端入口均未注册。mixin-search 不在根 Compose 中，也不接收正式 RPC 流量。
 
-| 依赖 | 作用 | 本地编排 |
+| 依赖 | 当前作用 | 宿主机端口 |
 | --- | --- | --- |
-| PostgreSQL | 用户、Markdown、聊天、管理员审批、BM25 全文搜索与时序数据 | [`../docker-compose.yaml`](../docker-compose.yaml) |
-| Redis | 会话 SID、缓存、Token 状态与会话撤销广播 | [`../docker-compose.yaml`](../docker-compose.yaml) |
+| PostgreSQL | 用户、管理员、版本化文档、BM25 投影；保留 Chat 表 | `127.0.0.1:15432` |
+| Redis | 会话 SID、缓存、Token 状态与会话撤销广播 | `127.0.0.1:16379` |
 
-本地开发通过根目录编排启动完整服务栈：
+## 开发启动
 
 ```bash
 docker compose -f docker-compose.yaml up -d --build --wait
 ```
 
-浏览器访问 `http://localhost:15173`。Compose 内的后端使用 `postgres`、`redis` 服务名连接依赖；宿主机仍可通过 `127.0.0.1:15432` 与 `127.0.0.1:16379` 连接数据库和 Redis。
+浏览器访问 `http://localhost:15173`。数据库结构仅在全新数据卷上由 `postgresql/entryscript/00-init.sh` 确定性创建；本仓库处于可丢弃数据的开发期，不维护已有数据库升级、迁移账本、备份恢复或旧 schema 兼容。结构改变后应删除开发卷并重新启动：
 
-尚未将对象存储、消息队列等写入部署清单，因为当前后端尚未实际依赖它们。
+```bash
+docker compose -f docker-compose.yaml down --volumes
+docker compose -f docker-compose.yaml up -d --build --wait
+```
 
-Markdown 检索仅由 PostgreSQL `pg_search` 提供 BM25 全文搜索。文档向量化、Embedding
-生成、向量存储与语义召回不属于 go-web，将由独立的 RAG + RPC 微服务负责。PostgreSQL
-镜像中可能存在 `pg_search` 自动拉取的 pgvector 运行时依赖，但 go-web 不创建或查询任何
-向量字段。
-
-## 构建、部署与验证链路
+## 合并验证
 
 在 Windows PowerShell 中从仓库根目录执行：
 
@@ -30,30 +28,22 @@ Markdown 检索仅由 PostgreSQL `pg_search` 提供 BM25 全文搜索。文档�
 .\deployments\verify.ps1
 ```
 
-脚本按以下顺序执行，任一步失败都会停止：
+脚本只使用一个随机命名、一次性的 Compose 环境，依次完成：
 
-1. `docker compose config --quiet`：验证 Compose 文件可解析。
-2. `go test ./...`：验证后端编译与单元测试。
-3. `npm run type-check`、`npm run build`：验证 Vue/TypeScript 与生产构建。
-4. `docker compose up -d --build --wait`：构建镜像并等待四个服务运行或健康。
-5. 执行 `plugin/bm25_only_verify.sql`：确认 BM25 索引有效，且业务 schema 没有向量列或向量索引。
-6. 请求前端首页、`/healthz` 与 `/readyz`：验证浏览器入口、Nginx 反向代理及后端依赖就绪。
+1. Compose 与 `mixin-search/v1` 生成代码检查；
+2. Vue/TypeScript 构建；
+3. 从空卷构建并启动完整栈；
+4. PostgreSQL 目标 schema、BM25-only 边界和管理员测试种子；
+5. 三个 Go module 的 `go test ./...` 与 `go vet ./...`；
+6. 认证、Documents、管理员、Nginx 代理、旧 Markdown 404 和 Chat 未注册的运行时 API 回归；
+7. HTTP 健康检查，并默认销毁容器和测试数据卷。
 
-已确认镜像无需重建时可以执行：
+镜像已确认无需重建时可使用 `-SkipImageBuild`；排查失败并希望保留临时环境时可使用 `-KeepEnvironment`。
+
+只验证 PostgreSQL 镜像和空库基线：
 
 ```powershell
-.\deployments\verify.ps1 -SkipImageBuild
+.\deployments\postgresql\verify-image.ps1 -UseCachedBase
 ```
 
-脚本默认保留已验证的服务。停止服务但保留数据卷：
-
-```bash
-docker compose -f docker-compose.yaml down
-```
-
-查看运行状态和日志：
-
-```bash
-docker compose -f docker-compose.yaml ps
-docker compose -f docker-compose.yaml logs --tail=100 gin-backend simple-frontend
-```
+此处的验证结论仅覆盖本地开发构建和功能正确性，不代表生产容量、升级或灾备能力。

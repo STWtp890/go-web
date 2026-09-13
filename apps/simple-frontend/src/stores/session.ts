@@ -26,7 +26,7 @@ function createSessionStore(scope: SessionScope) {
   async function restore(force = false): Promise<boolean> {
     if (!force && isAuthenticated.value) return true
     const probePath = scope === 'user'
-      ? '/api/v1/protected/markdown/mine?page=1&pageSize=1'
+      ? '/api/v1/protected/documents/mine?page=1&pageSize=1'
       : '/api/v1/protected/manager/requests?status=pending&page=1&pageSize=1'
     try {
       await apiRequest(probePath, { scope })

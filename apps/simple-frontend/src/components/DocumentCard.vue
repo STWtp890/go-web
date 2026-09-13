@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { ArrowUpRight, Clock3, Globe2, LockKeyhole } from '@lucide/vue'
-import type { MarkdownSummary } from '@/types/domain'
+import type { DocumentSummary } from '@/types/domain'
 import { formatRelativeDate } from '@/utils/format'
 
-interface Props { document: MarkdownSummary }
+interface Props { document: DocumentSummary }
 defineProps<Props>()
 </script>
 
 <template>
-  <RouterLink :to="{ name: 'markdown-detail', params: { markdownId: document.markdownId } }" class="document-card">
+  <RouterLink :to="{ name: 'document-detail', params: { documentId: document.documentId } }" class="document-card">
     <div class="document-card__top">
       <span class="visibility-pill" :class="`visibility-pill--${document.visibility}`">
         <Globe2 v-if="document.visibility === 'public'" :size="13" />
@@ -23,7 +23,7 @@ defineProps<Props>()
     </div>
     <footer>
       <span><Clock3 :size="14" />{{ formatRelativeDate(document.updatedAt) }}</span>
-      <span v-if="document.authorId">作者 #{{ document.authorId }}</span>
+      <span v-if="document.ownerId">作者 #{{ document.ownerId }}</span>
     </footer>
   </RouterLink>
 </template>

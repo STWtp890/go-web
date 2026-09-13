@@ -2,13 +2,13 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Compass, FilePlus2, Library, Search, X } from '@lucide/vue'
-import { markdownApi } from '@/api/markdown'
+import { documentApi } from '@/api/document'
 import { getApiError, isAbortError } from '@/api/client'
 import DocumentCard from '@/components/DocumentCard.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import PaginationControl from '@/components/PaginationControl.vue'
 import type { ApiMeta } from '@/types/api'
-import type { MarkdownSummary } from '@/types/domain'
+import type { DocumentSummary } from '@/types/domain'
 
 type LibraryMode = 'mine' | 'public' | 'search'
 interface Props { mode: LibraryMode }
@@ -18,7 +18,7 @@ const pageSize = 9
 
 const route = useRoute()
 const router = useRouter()
-const documents = ref<MarkdownSummary[]>([])
+const documents = ref<DocumentSummary[]>([])
 const meta = ref<ApiMeta>({ page: 1, per_page: 9, total: 0, total_pages: 0 })
 const loading = ref(false)
 const errorMessage = ref('')
@@ -66,10 +66,10 @@ async function load(page = 1) {
   documents.value = []
   try {
     const result = props.mode === 'mine'
-      ? await markdownApi.mine({ page, pageSize, signal: controller.signal })
+      ? await documentApi.mine({ page, pageSize, signal: controller.signal })
       : props.mode === 'public'
-        ? await markdownApi.public({ page, pageSize, signal: controller.signal })
-        : await markdownApi.search(keyword, { page, pageSize, signal: controller.signal })
+        ? await documentApi.public({ page, pageSize, signal: controller.signal })
+        : await documentApi.search(keyword, { page, pageSize, signal: controller.signal })
     documents.value = result.items
     meta.value = result.meta
   } catch (error) {
@@ -163,7 +163,7 @@ onBeforeUnmount(() => requestController?.abort())
     <p v-if="errorMessage" class="inline-error" role="alert">{{ errorMessage }} <button type="button" @click="load(meta.page)">重试</button></p>
 
     <div v-if="loading" class="document-grid"><div v-for="n in 6" :key="n" class="skeleton-card" /></div>
-    <div v-else-if="documents.length" class="document-grid"><DocumentCard v-for="document in documents" :key="document.markdownId" :document="document" /></div>
+    <div v-else-if="documents.length" class="document-grid"><DocumentCard v-for="document in documents" :key="document.documentId" :document="document" /></div>
     <EmptyState v-else-if="mode === 'search' && !activeSearchQuery" title="输入一个关键词" description="可以搜索你自己的标题、摘要和正文内容。" />
     <EmptyState v-else :title="mode === 'mine' ? '还没有文稿' : mode === 'public' ? '广场暂时很安静' : `没有找到“${activeSearchQuery}”`" :description="mode === 'mine' ? '写下第一篇内容，开始构建你的文字空间。' : mode === 'public' ? '还没有人公开分享作品。' : '换一个关键词，也许会有新的发现。'">
       <RouterLink v-if="mode === 'mine'" :to="{ name: 'editor' }" class="button button--soft">新建文稿</RouterLink>

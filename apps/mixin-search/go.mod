@@ -1,6 +1,6 @@
 module mixin-search
 
-go 1.26.5
+go 1.26.8
 
 require (
 	github.com/EndFirstCorp/doc2txt v0.0.0-20210522214125-5d2d4043bb03

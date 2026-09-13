@@ -1,9 +1,9 @@
 export type Visibility = 'public' | 'private'
 
-export interface MarkdownSummary {
+export interface DocumentSummary {
   id: number
-  markdownId: string
-  authorId: string
+  documentId: string
+  ownerId: string
   title: string
   summary: string
   visibility: Visibility
@@ -11,17 +11,17 @@ export interface MarkdownSummary {
   updatedAt: number
 }
 
-export interface MarkdownDetail extends Omit<MarkdownSummary, 'id' | 'authorId'> {
+export interface DocumentDetail extends Omit<DocumentSummary, 'id' | 'ownerId'> {
   content: string
 }
 
-export interface CreateMarkdownInput {
+export interface CreateDocumentInput {
   title: string
   content: string
   visibility: Visibility
 }
 
-export type UpdateMarkdownInput = CreateMarkdownInput
+export type UpdateDocumentInput = CreateDocumentInput
 
 export interface ChatMessageInput {
   metadata: { clientMessageId: string; type: 'text'; groupType: 'private' | 'group'; to: string }

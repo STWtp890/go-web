@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc -b && vite build",
+    "build": "npm run test:phase-boundary && vue-tsc -b && vite build",
+    "test:phase-boundary": "node scripts/verify-phase-boundary.mjs",
     "type-check": "vue-tsc -b",
     "preview": "vite preview"
   },

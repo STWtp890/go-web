@@ -9,8 +9,10 @@ const (
 	ServiceDefault = "default"
 	// ServiceAuth 认证业务连接 (PostgreSQL / Redis)
 	ServiceAuth = "auth"
-	// ServiceMarkdown 文档业务连接 (PostgreSQL)
-	ServiceMarkdown = "markdown"
+	// ServiceDocument 新文档领域连接 (PostgreSQL)
+	ServiceDocument = "document"
+	// ServiceChat 实时通讯独立连接；当前不注册。
+	ServiceChat = "chat"
 	// ServiceCache 实体缓存专用连接 (Redis, 与 token 状态隔离)
 	ServiceCache = "cache"
 )

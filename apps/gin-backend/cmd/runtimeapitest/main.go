@@ -67,14 +67,14 @@ func main() {
 	flag.StringVar(&baseURL, "base-url", "http://127.0.0.1:8080", "backend base URL")
 	flag.StringVar(&frontendURL, "frontend-url", "http://127.0.0.1:15173", "frontend/Nginx base URL")
 	flag.StringVar(&runID, "run-id", time.Now().Format("20060102_150405"), "unique fixture suffix")
-	flag.StringVar(&groupID, "group-id", "", "pre-created chat group fixture")
+	flag.StringVar(&groupID, "group-id", "", "optional legacy Chat group fixture; unused while Chat is disconnected")
 	flag.StringVar(&bootstrapUser, "bootstrap-manager", "", "pre-created active manager username")
 	flag.StringVar(&bootstrapPass, "bootstrap-password", "", "pre-created active manager password")
 	flag.StringVar(&reportDir, "report-dir", "../deployments/test-results", "report output directory")
 	flag.Parse()
 
-	if groupID == "" || bootstrapUser == "" || bootstrapPass == "" {
-		fmt.Fprintln(os.Stderr, "group-id, bootstrap-manager and bootstrap-password are required")
+	if bootstrapUser == "" || bootstrapPass == "" {
+		fmt.Fprintln(os.Stderr, "bootstrap-manager and bootstrap-password are required")
 		os.Exit(2)
 	}
 
@@ -286,13 +286,13 @@ func arrayContainsString(v any, wanted string) bool {
 	return false
 }
 
-func listContainsMarkdown(v any, wanted string) bool {
+func listContainsDocument(v any, wanted string) bool {
 	items, ok := v.([]any)
 	if !ok {
 		return false
 	}
 	for _, item := range items {
-		if asString(nested(item, "markdown_id")) == wanted || asString(nested(item, "markdownId")) == wanted {
+		if asString(nested(item, "documentId")) == wanted {
 			return true
 		}
 	}
@@ -352,8 +352,8 @@ func (t *tester) run(bootstrapUser, bootstrapPass string) {
 
 	public := newSession(t.baseURL)
 	unauth := newSession(t.baseURL)
-	r, err := unauth.do(http.MethodGet, "/api/v1/protected/markdown/mine", nil, "", false)
-	t.requestResult("未登录访问保护接口", "GET /api/v1/protected/markdown/mine", 401, r, err, bodyCode(r) == "UNAUTHORIZED", "code="+bodyCode(r))
+	r, err := unauth.do(http.MethodGet, "/api/v1/protected/documents/mine", nil, "", false)
+	t.requestResult("未登录访问保护接口", "GET /api/v1/protected/documents/mine", 401, r, err, bodyCode(r) == "UNAUTHORIZED", "code="+bodyCode(r))
 
 	r, err = public.do(http.MethodPost, "/api/v1/public/auth/register", map[string]any{"email": "bad", "password": "123", "nickname": "x"}, "", false)
 	t.requestResult("用户注册参数校验", "POST /api/v1/public/auth/register", 400, r, err, bodyCode(r) == "VALIDATION_FAILED", "code="+bodyCode(r))
@@ -378,53 +378,46 @@ func (t *tester) run(bootstrapUser, bootstrapPass string) {
 	cookieEvidence, cookieOK := inspectCookieHeaders(r.header.Values("Set-Cookie"), "pp_user")
 	t.requestResult("用户 Cookie-only 登录与属性", "POST /api/v1/public/auth/login", 200, r, err, cookieOK, cookieEvidence)
 
-	oldWS, oldWSResp, oldWSErr := dialWS(userAOld, "/api/v1/protected/chat/ws", "http://localhost:15173")
-	oldWSStatus := statusOf(oldWSResp)
-	t.add("旧会话 WebSocket 建连", "GET /api/v1/protected/chat/ws", "HTTP 101", fmt.Sprintf("HTTP %d", oldWSStatus), oldWSErr == nil && oldWSStatus == 101, errorText(oldWSErr))
-
-	accessToken := userAOld.cookieValue("/api/v1/protected/markdown/mine", "pp_user_at")
-	r, err = manualRequest(t.baseURL, http.MethodGet, "/api/v1/protected/markdown/mine", "", "", "Bearer "+accessToken, nil)
-	t.requestResult("Bearer 凭据不替代 Cookie", "GET /api/v1/protected/markdown/mine", 401, r, err, bodyCode(r) == "UNAUTHORIZED", "Authorization ignored; code="+bodyCode(r))
+	accessToken := userAOld.cookieValue("/api/v1/protected/documents/mine", "pp_user_at")
+	r, err = manualRequest(t.baseURL, http.MethodGet, "/api/v1/protected/documents/mine", "", "", "Bearer "+accessToken, nil)
+	t.requestResult("Bearer 凭据不替代 Cookie", "GET /api/v1/protected/documents/mine", 401, r, err, bodyCode(r) == "UNAUTHORIZED", "Authorization ignored; code="+bodyCode(r))
 
 	csrfMissingTitle := "csrf-missing-" + t.runID
 	csrfInvalidTitle := "csrf-invalid-" + t.runID
-	r, err = userAOld.do(http.MethodPost, "/api/v1/protected/markdown/upload", map[string]any{"title": csrfMissingTitle, "content": "csrf"}, "pp_user_csrf", false)
-	t.requestResult("写接口缺少 CSRF", "POST /api/v1/protected/markdown/upload", 403, r, err, bodyCode(r) == "FORBIDDEN", "code="+bodyCode(r))
-	r, err = manualRequest(t.baseURL, http.MethodPost, "/api/v1/protected/markdown/upload", userAOldCookie(userAOld, "/api/v1/protected/markdown/upload"), "invalid-csrf", "", map[string]any{"title": csrfInvalidTitle, "content": "csrf"})
-	t.requestResult("写接口错误 CSRF", "POST /api/v1/protected/markdown/upload", 403, r, err, bodyCode(r) == "FORBIDDEN", "code="+bodyCode(r))
-	r, err = userAOld.do(http.MethodGet, "/api/v1/protected/markdown/mine?page=1&pageSize=100", nil, "", false)
-	csrfList := nested(jsonMap(r.body), "data", "markdownList")
+	r, err = userAOld.do(http.MethodPost, "/api/v1/protected/documents", map[string]any{"title": csrfMissingTitle, "content": "csrf"}, "pp_user_csrf", false)
+	t.requestResult("写接口缺少 CSRF", "POST /api/v1/protected/documents", 403, r, err, bodyCode(r) == "FORBIDDEN", "code="+bodyCode(r))
+	r, err = manualRequest(t.baseURL, http.MethodPost, "/api/v1/protected/documents", userAOldCookie(userAOld, "/api/v1/protected/documents"), "invalid-csrf", "", map[string]any{"title": csrfInvalidTitle, "content": "csrf"})
+	t.requestResult("写接口错误 CSRF", "POST /api/v1/protected/documents", 403, r, err, bodyCode(r) == "FORBIDDEN", "code="+bodyCode(r))
+	r, err = userAOld.do(http.MethodGet, "/api/v1/protected/documents/mine?page=1&pageSize=100", nil, "", false)
+	csrfList := nested(jsonMap(r.body), "data", "documentList")
 	csrfBlocked := !listContainsTitle(csrfList, csrfMissingTitle) && !listContainsTitle(csrfList, csrfInvalidTitle)
-	t.requestResult("CSRF 拒绝不产生写入副作用", "GET /api/v1/protected/markdown/mine", 200, r, err, csrfBlocked, "missingPresent="+strconv.FormatBool(listContainsTitle(csrfList, csrfMissingTitle))+", invalidPresent="+strconv.FormatBool(listContainsTitle(csrfList, csrfInvalidTitle)))
+	t.requestResult("CSRF 拒绝不产生写入副作用", "GET /api/v1/protected/documents/mine", 200, r, err, csrfBlocked, "missingPresent="+strconv.FormatBool(listContainsTitle(csrfList, csrfMissingTitle))+", invalidPresent="+strconv.FormatBool(listContainsTitle(csrfList, csrfInvalidTitle)))
 
 	oldRefreshCookies, oldRefreshCSRF := userAOld.cookieHeader("/api/v1/public/auth/refresh", "pp_user_rt", "pp_user_csrf")
 	userA := newSession(t.baseURL)
 	r, err = userA.do(http.MethodPost, "/api/v1/public/auth/login", map[string]any{"email": emailA, "password": password}, "", false)
 	t.requestResult("同用户新登录建立新 sid", "POST /api/v1/public/auth/login", 200, r, err, true, "new session created")
 
-	r, err = userAOld.do(http.MethodGet, "/api/v1/protected/markdown/mine", nil, "", false)
-	t.requestResult("新登录使旧 Access 失效", "GET /api/v1/protected/markdown/mine", 401, r, err, bodyCode(r) == "UNAUTHORIZED", "code="+bodyCode(r))
+	r, err = userAOld.do(http.MethodGet, "/api/v1/protected/documents/mine", nil, "", false)
+	t.requestResult("新登录使旧 Access 失效", "GET /api/v1/protected/documents/mine", 401, r, err, bodyCode(r) == "UNAUTHORIZED", "code="+bodyCode(r))
 	r, err = manualRequest(t.baseURL, http.MethodPost, "/api/v1/public/auth/refresh", oldRefreshCookies, oldRefreshCSRF, "", nil)
 	t.requestResult("新登录使旧 Refresh 失效", "POST /api/v1/public/auth/refresh", 401, r, err, bodyCode(r) == "UNAUTHORIZED", "code="+bodyCode(r))
-	closed := waitWSClosed(oldWS, 3*time.Second)
-	t.add("新登录主动关闭旧 sid WebSocket", "GET /api/v1/protected/chat/ws", "connection closed", boolState(closed), closed, "session.revoked observed by live connection")
 
 	rotatedCookies, rotatedCSRF := userA.cookieHeader("/api/v1/public/auth/refresh", "pp_user_rt", "pp_user_csrf")
 	r, err = userA.do(http.MethodPost, "/api/v1/public/auth/refresh", nil, "pp_user_csrf", true)
 	t.requestResult("用户 Refresh 轮换", "POST /api/v1/public/auth/refresh", 200, r, err, true, "token pair rotated")
 	r, err = manualRequest(t.baseURL, http.MethodPost, "/api/v1/public/auth/refresh", rotatedCookies, rotatedCSRF, "", nil)
 	t.requestResult("用户旧 Refresh 防重放", "POST /api/v1/public/auth/refresh", 401, r, err, bodyCode(r) == "UNAUTHORIZED", "code="+bodyCode(r))
-	r, err = userA.do(http.MethodGet, "/api/v1/protected/markdown/mine", nil, "", false)
-	t.requestResult("Refresh 后 Access 可用", "GET /api/v1/protected/markdown/mine", 200, r, err, true, "current sid remains active")
+	r, err = userA.do(http.MethodGet, "/api/v1/protected/documents/mine", nil, "", false)
+	t.requestResult("Refresh 后 Access 可用", "GET /api/v1/protected/documents/mine", 200, r, err, true, "current sid remains active")
 
 	userB := newSession(t.baseURL)
 	r, err = userB.do(http.MethodPost, "/api/v1/public/auth/login", map[string]any{"email": emailB, "password": password}, "", false)
 	t.requestResult("用户 B 登录", "POST /api/v1/public/auth/login", 200, r, err, true, "cookie session established")
 
-	publicMarkdownID, privateMarkdownID := t.runMarkdown(userA, userB)
-	_ = publicMarkdownID
-	_ = privateMarkdownID
-	t.runChat(userA, userB, userAID, userBID)
+	publicDocumentID, privateDocumentID := t.runDocuments(userA, userB)
+	_ = publicDocumentID
+	_ = privateDocumentID
 	t.runManager(userA, bootstrapUser, bootstrapPass, managerApprove, managerReject, password)
 	t.runProxy(emailC, password)
 	t.runLogout(userA, userB)
@@ -468,94 +461,103 @@ func (t *tester) runCORSAndRouteSurface() {
 
 	s := newSession(t.baseURL)
 	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/protected/chat/ws"},
 		{http.MethodGet, "/api/v1/protected/chat/sse"},
 		{http.MethodPost, "/api/v1/protected/chat/messages"},
 		{http.MethodPost, "/api/v1/protected/chat/sse/messages"},
 		{http.MethodPost, "/api/v1/protected/chat/deliveries/00000000-0000-0000-0000-000000000000/ack"},
 	} {
 		r, err := s.do(tc.method, tc.path, map[string]any{}, "", false)
-		t.requestResult("已移除的 Chat 路由不可达", tc.method+" "+tc.path, 404, r, err, true, "WebSocket-only surface")
+		t.requestResult("已停用的 Chat 路由不可达", tc.method+" "+tc.path, 404, r, err, r.status == http.StatusNotFound, "code="+bodyCode(r))
+	}
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/protected/markdown/mine"},
+		{http.MethodPost, "/api/v1/protected/markdown/upload"},
+		{http.MethodGet, "/api/v1/protected/markdown/00000000-0000-0000-0000-000000000000"},
+	} {
+		r, err := s.do(tc.method, tc.path, map[string]any{}, "", false)
+		t.requestResult("旧 Markdown 路由不可达", tc.method+" "+tc.path, 404, r, err, r.status == http.StatusNotFound, "code="+bodyCode(r))
 	}
 }
 
-func (t *tester) runMarkdown(a, b *session) (string, string) {
+func (t *tester) runDocuments(a, b *session) (string, string) {
 	keyword := "orion" + strings.ReplaceAll(t.runID, "_", "")
-	r, err := a.do(http.MethodPost, "/api/v1/protected/markdown/upload", map[string]any{"title": "bad", "content": "bad", "visibility": "friends"}, "pp_user_csrf", true)
-	t.requestResult("Markdown 可见性校验", "POST /api/v1/protected/markdown/upload", 400, r, err, bodyCode(r) == "VALIDATION_FAILED", "code="+bodyCode(r))
+	r, err := a.do(http.MethodPost, "/api/v1/protected/documents", map[string]any{"title": "bad", "content": "bad", "visibility": "friends"}, "pp_user_csrf", true)
+	t.requestResult("Markdown 可见性校验", "POST /api/v1/protected/documents", 400, r, err, bodyCode(r) == "VALIDATION_FAILED", "code="+bodyCode(r))
 
-	r, err = a.do(http.MethodPost, "/api/v1/protected/markdown/upload", map[string]any{"title": keyword + " public", "content": "# " + keyword + "\npublic body", "visibility": "public"}, "pp_user_csrf", true)
-	publicID := asString(nested(jsonMap(r.body), "data", "markdownId"))
-	t.requestResult("创建公开 Markdown", "POST /api/v1/protected/markdown/upload", 201, r, err, publicID != "", "markdownId="+publicID)
+	r, err = a.do(http.MethodPost, "/api/v1/protected/documents", map[string]any{"title": keyword + " public", "content": "# " + keyword + "\npublic body", "visibility": "public"}, "pp_user_csrf", true)
+	publicID := asString(nested(jsonMap(r.body), "data", "documentId"))
+	t.requestResult("创建公开 Markdown", "POST /api/v1/protected/documents", 201, r, err, publicID != "", "documentId="+publicID)
 
-	r, err = a.do(http.MethodPost, "/api/v1/protected/markdown/upload", map[string]any{"title": keyword + " private", "content": "# " + keyword + "\nprivate body", "visibility": "private"}, "pp_user_csrf", true)
-	privateID := asString(nested(jsonMap(r.body), "data", "markdownId"))
-	t.requestResult("创建私有 Markdown", "POST /api/v1/protected/markdown/upload", 201, r, err, privateID != "", "markdownId="+privateID)
+	r, err = a.do(http.MethodPost, "/api/v1/protected/documents", map[string]any{"title": keyword + " private", "content": "# " + keyword + "\nprivate body", "visibility": "private"}, "pp_user_csrf", true)
+	privateID := asString(nested(jsonMap(r.body), "data", "documentId"))
+	t.requestResult("创建私有 Markdown", "POST /api/v1/protected/documents", 201, r, err, privateID != "", "documentId="+privateID)
 
-	r, err = a.do(http.MethodGet, "/api/v1/protected/markdown/mine?page=1&pageSize=10", nil, "", false)
-	mine := nested(jsonMap(r.body), "data", "markdownList")
+	r, err = a.do(http.MethodGet, "/api/v1/protected/documents/mine?page=1&pageSize=10", nil, "", false)
+	mine := nested(jsonMap(r.body), "data", "documentList")
 	metaOK := nested(jsonMap(r.body), "meta", "page") != nil && nested(jsonMap(r.body), "meta", "per_page") != nil
-	t.requestResult("我的 Markdown 分页", "GET /api/v1/protected/markdown/mine", 200, r, err, listContainsMarkdown(mine, publicID) && listContainsMarkdown(mine, privateID) && metaOK, "contains public/private and meta")
+	t.requestResult("我的 Markdown 分页", "GET /api/v1/protected/documents/mine", 200, r, err, listContainsDocument(mine, publicID) && listContainsDocument(mine, privateID) && metaOK, "contains public/private and meta")
 
-	r, err = a.do(http.MethodGet, "/api/v1/protected/markdown/public?page=1&pageSize=100", nil, "", false)
-	publicList := nested(jsonMap(r.body), "data", "markdownList")
-	t.requestResult("公开 Markdown 列表过滤", "GET /api/v1/protected/markdown/public", 200, r, err, listContainsMarkdown(publicList, publicID) && !listContainsMarkdown(publicList, privateID), "public visible; private absent")
+	r, err = a.do(http.MethodGet, "/api/v1/protected/documents/public?page=1&pageSize=100", nil, "", false)
+	publicList := nested(jsonMap(r.body), "data", "documentList")
+	t.requestResult("公开 Markdown 列表过滤", "GET /api/v1/protected/documents/public", 200, r, err, listContainsDocument(publicList, publicID) && !listContainsDocument(publicList, privateID), "public visible; private absent")
 
-	r, err = a.do(http.MethodGet, "/api/v1/protected/markdown/search?keyword="+url.QueryEscape(keyword)+"&page=1&pageSize=10", nil, "", false)
-	searchList := nested(jsonMap(r.body), "data", "markdownList")
-	t.requestResult("Markdown BM25 全文搜索", "GET /api/v1/protected/markdown/search", 200, r, err, listContainsMarkdown(searchList, publicID) && listContainsMarkdown(searchList, privateID), "unique keyword matched both owned documents")
+	r, err = a.do(http.MethodGet, "/api/v1/protected/documents/search?keyword="+url.QueryEscape(keyword)+"&page=1&pageSize=10", nil, "", false)
+	searchList := nested(jsonMap(r.body), "data", "documentList")
+	t.requestResult("Markdown BM25 全文搜索", "GET /api/v1/protected/documents/search", 200, r, err, listContainsDocument(searchList, publicID) && listContainsDocument(searchList, privateID), "unique keyword matched both owned documents")
 
-	r, err = a.do(http.MethodGet, "/api/v1/protected/markdown/search?keyword=%20%20", nil, "", false)
-	t.requestResult("Markdown 空搜索词校验", "GET /api/v1/protected/markdown/search", 400, r, err, bodyCode(r) == "VALIDATION_FAILED", "code="+bodyCode(r))
-	r, err = a.do(http.MethodGet, "/api/v1/protected/markdown/search?keyword="+url.QueryEscape(strings.Repeat("文", 101)), nil, "", false)
-	t.requestResult("Markdown 超长搜索词校验", "GET /api/v1/protected/markdown/search", 400, r, err, bodyCode(r) == "VALIDATION_FAILED", "code="+bodyCode(r))
-	r, err = a.do(http.MethodGet, "/api/v1/protected/markdown/mine?page=0&pageSize=101", nil, "", false)
-	t.requestResult("Markdown 分页边界校验", "GET /api/v1/protected/markdown/mine", 400, r, err, bodyCode(r) == "VALIDATION_FAILED", "code="+bodyCode(r))
+	r, err = a.do(http.MethodGet, "/api/v1/protected/documents/search?keyword=%20%20", nil, "", false)
+	t.requestResult("Markdown 空搜索词校验", "GET /api/v1/protected/documents/search", 400, r, err, bodyCode(r) == "VALIDATION_FAILED", "code="+bodyCode(r))
+	r, err = a.do(http.MethodGet, "/api/v1/protected/documents/search?keyword="+url.QueryEscape(strings.Repeat("文", 101)), nil, "", false)
+	t.requestResult("Markdown 超长搜索词校验", "GET /api/v1/protected/documents/search", 400, r, err, bodyCode(r) == "VALIDATION_FAILED", "code="+bodyCode(r))
+	r, err = a.do(http.MethodGet, "/api/v1/protected/documents/mine?page=0&pageSize=101", nil, "", false)
+	t.requestResult("Markdown 分页边界校验", "GET /api/v1/protected/documents/mine", 400, r, err, bodyCode(r) == "VALIDATION_FAILED", "code="+bodyCode(r))
 
-	r, err = a.do(http.MethodGet, "/api/v1/protected/markdown/"+publicID, nil, "", false)
-	t.requestResult("作者读取公开 Markdown", "GET /api/v1/protected/markdown/:id", 200, r, err, asString(nested(jsonMap(r.body), "data", "content")) == "# "+keyword+"\npublic body", "full content matched")
-	r, err = a.do(http.MethodGet, "/api/v1/protected/markdown/"+privateID, nil, "", false)
-	t.requestResult("作者读取私有 Markdown", "GET /api/v1/protected/markdown/:id", 200, r, err, asString(nested(jsonMap(r.body), "data", "visibility")) == "private", "visibility=private")
-	r, err = b.do(http.MethodGet, "/api/v1/protected/markdown/"+publicID, nil, "", false)
-	t.requestResult("其他用户读取公开 Markdown", "GET /api/v1/protected/markdown/:id", 200, r, err, true, "public access granted")
-	r, err = b.do(http.MethodGet, "/api/v1/protected/markdown/"+privateID, nil, "", false)
-	t.requestResult("其他用户禁止读取私有 Markdown", "GET /api/v1/protected/markdown/:id", 403, r, err, bodyCode(r) == "FORBIDDEN", "code="+bodyCode(r))
-	r, err = b.do(http.MethodGet, "/api/v1/protected/markdown/00000000-0000-0000-0000-000000000000", nil, "", false)
-	t.requestResult("不存在 Markdown", "GET /api/v1/protected/markdown/:id", 404, r, err, bodyCode(r) == "NOT_FOUND", "code="+bodyCode(r))
+	r, err = a.do(http.MethodGet, "/api/v1/protected/documents/"+publicID, nil, "", false)
+	t.requestResult("作者读取公开 Markdown", "GET /api/v1/protected/documents/:id", 200, r, err, asString(nested(jsonMap(r.body), "data", "content")) == "# "+keyword+"\npublic body", "full content matched")
+	r, err = a.do(http.MethodGet, "/api/v1/protected/documents/"+privateID, nil, "", false)
+	t.requestResult("作者读取私有 Markdown", "GET /api/v1/protected/documents/:id", 200, r, err, asString(nested(jsonMap(r.body), "data", "visibility")) == "private", "visibility=private")
+	r, err = b.do(http.MethodGet, "/api/v1/protected/documents/"+publicID, nil, "", false)
+	t.requestResult("其他用户读取公开 Markdown", "GET /api/v1/protected/documents/:id", 200, r, err, r.status == http.StatusOK, "public access granted")
+	r, err = b.do(http.MethodGet, "/api/v1/protected/documents/"+privateID, nil, "", false)
+	t.requestResult("其他用户禁止读取私有 Markdown", "GET /api/v1/protected/documents/:id", 403, r, err, bodyCode(r) == "FORBIDDEN", "code="+bodyCode(r))
+	r, err = b.do(http.MethodGet, "/api/v1/protected/documents/00000000-0000-0000-0000-000000000000", nil, "", false)
+	t.requestResult("不存在 Markdown", "GET /api/v1/protected/documents/:id", 404, r, err, bodyCode(r) == "NOT_FOUND", "code="+bodyCode(r))
 
-	r, err = a.do(http.MethodPut, "/api/v1/protected/markdown/"+publicID, map[string]any{"title": "  ", "content": "invalid update", "visibility": "public"}, "pp_user_csrf", true)
-	t.requestResult("Markdown 更新参数校验", "PUT /api/v1/protected/markdown/:id", 400, r, err, bodyCode(r) == "VALIDATION_FAILED", "code="+bodyCode(r))
+	r, err = a.do(http.MethodPut, "/api/v1/protected/documents/"+publicID, map[string]any{"title": "  ", "content": "invalid update", "visibility": "public"}, "pp_user_csrf", true)
+	t.requestResult("Markdown 更新参数校验", "PUT /api/v1/protected/documents/:id", 400, r, err, bodyCode(r) == "VALIDATION_FAILED", "code="+bodyCode(r))
 
 	updatedKeyword := "updated" + strings.ReplaceAll(t.runID, "_", "")
 	updatedBody := "# " + updatedKeyword + "\nupdated body"
 	updatePayload := map[string]any{"title": updatedKeyword + " private", "content": updatedBody, "visibility": "private"}
-	r, err = b.do(http.MethodPut, "/api/v1/protected/markdown/"+publicID, updatePayload, "pp_user_csrf", true)
-	t.requestResult("其他用户禁止编辑 Markdown", "PUT /api/v1/protected/markdown/:id", 403, r, err, bodyCode(r) == "FORBIDDEN", "code="+bodyCode(r))
+	r, err = b.do(http.MethodPut, "/api/v1/protected/documents/"+publicID, updatePayload, "pp_user_csrf", true)
+	t.requestResult("其他用户禁止编辑 Markdown", "PUT /api/v1/protected/documents/:id", 403, r, err, bodyCode(r) == "FORBIDDEN", "code="+bodyCode(r))
 
-	r, err = a.do(http.MethodPut, "/api/v1/protected/markdown/"+publicID, updatePayload, "pp_user_csrf", true)
+	r, err = a.do(http.MethodPut, "/api/v1/protected/documents/"+publicID, updatePayload, "pp_user_csrf", true)
 	updateOK := asString(nested(jsonMap(r.body), "data", "content")) == updatedBody &&
 		asString(nested(jsonMap(r.body), "data", "visibility")) == "private"
-	t.requestResult("作者编辑 Markdown", "PUT /api/v1/protected/markdown/:id", 200, r, err, updateOK, "content and visibility updated")
+	t.requestResult("作者编辑 Markdown", "PUT /api/v1/protected/documents/:id", 200, r, err, updateOK, "content and visibility updated")
 
-	r, err = a.do(http.MethodGet, "/api/v1/protected/markdown/"+publicID, nil, "", false)
+	r, err = a.do(http.MethodGet, "/api/v1/protected/documents/"+publicID, nil, "", false)
 	cacheUpdated := asString(nested(jsonMap(r.body), "data", "content")) == updatedBody
-	t.requestResult("Markdown 更新后缓存失效", "GET /api/v1/protected/markdown/:id", 200, r, err, cacheUpdated, "updated content returned")
-	r, err = a.do(http.MethodGet, "/api/v1/protected/markdown/search?keyword="+url.QueryEscape(updatedKeyword)+"&page=1&pageSize=10", nil, "", false)
-	updatedSearchList := nested(jsonMap(r.body), "data", "markdownList")
-	t.requestResult("Markdown 更新后搜索索引生效", "GET /api/v1/protected/markdown/search", 200, r, err, listContainsMarkdown(updatedSearchList, publicID), "updated keyword matched document")
-	r, err = b.do(http.MethodGet, "/api/v1/protected/markdown/"+publicID, nil, "", false)
-	t.requestResult("更新为私有后其他用户不可读", "GET /api/v1/protected/markdown/:id", 403, r, err, bodyCode(r) == "FORBIDDEN", "code="+bodyCode(r))
+	t.requestResult("Markdown 更新后缓存失效", "GET /api/v1/protected/documents/:id", 200, r, err, cacheUpdated, "updated content returned")
+	r, err = a.do(http.MethodGet, "/api/v1/protected/documents/search?keyword="+url.QueryEscape(updatedKeyword)+"&page=1&pageSize=10", nil, "", false)
+	updatedSearchList := nested(jsonMap(r.body), "data", "documentList")
+	t.requestResult("Markdown 更新后搜索索引生效", "GET /api/v1/protected/documents/search", 200, r, err, listContainsDocument(updatedSearchList, publicID), "updated keyword matched document")
+	r, err = b.do(http.MethodGet, "/api/v1/protected/documents/"+publicID, nil, "", false)
+	t.requestResult("更新为私有后其他用户不可读", "GET /api/v1/protected/documents/:id", 403, r, err, bodyCode(r) == "FORBIDDEN", "code="+bodyCode(r))
 
-	r, err = b.do(http.MethodDelete, "/api/v1/protected/markdown/"+publicID, nil, "pp_user_csrf", true)
-	t.requestResult("其他用户禁止删除 Markdown", "DELETE /api/v1/protected/markdown/:id", 403, r, err, bodyCode(r) == "FORBIDDEN", "code="+bodyCode(r))
-	r, err = a.do(http.MethodDelete, "/api/v1/protected/markdown/"+publicID, nil, "pp_user_csrf", true)
-	t.requestResult("作者删除 Markdown", "DELETE /api/v1/protected/markdown/:id", 200, r, err, asString(nested(jsonMap(r.body), "data", "markdownId")) == publicID, "markdownId="+publicID)
-	r, err = a.do(http.MethodGet, "/api/v1/protected/markdown/"+publicID, nil, "", false)
-	t.requestResult("删除后 Markdown 不可读取", "GET /api/v1/protected/markdown/:id", 404, r, err, bodyCode(r) == "NOT_FOUND", "code="+bodyCode(r))
-	r, err = a.do(http.MethodGet, "/api/v1/protected/markdown/search?keyword="+url.QueryEscape(updatedKeyword)+"&page=1&pageSize=10", nil, "", false)
-	deletedSearchList := nested(jsonMap(r.body), "data", "markdownList")
-	t.requestResult("Markdown 删除后搜索结果移除", "GET /api/v1/protected/markdown/search", 200, r, err, !listContainsMarkdown(deletedSearchList, publicID), "deleted document absent")
-	r, err = a.do(http.MethodDelete, "/api/v1/protected/markdown/"+publicID, nil, "pp_user_csrf", true)
-	t.requestResult("重复删除 Markdown", "DELETE /api/v1/protected/markdown/:id", 404, r, err, bodyCode(r) == "NOT_FOUND", "code="+bodyCode(r))
+	r, err = b.do(http.MethodDelete, "/api/v1/protected/documents/"+publicID, nil, "pp_user_csrf", true)
+	t.requestResult("其他用户禁止删除 Markdown", "DELETE /api/v1/protected/documents/:id", 403, r, err, bodyCode(r) == "FORBIDDEN", "code="+bodyCode(r))
+	r, err = a.do(http.MethodDelete, "/api/v1/protected/documents/"+publicID, nil, "pp_user_csrf", true)
+	t.requestResult("作者删除 Markdown", "DELETE /api/v1/protected/documents/:id", 200, r, err, asString(nested(jsonMap(r.body), "data", "documentId")) == publicID, "documentId="+publicID)
+	r, err = a.do(http.MethodGet, "/api/v1/protected/documents/"+publicID, nil, "", false)
+	t.requestResult("删除后 Markdown 不可读取", "GET /api/v1/protected/documents/:id", 404, r, err, bodyCode(r) == "NOT_FOUND", "code="+bodyCode(r))
+	r, err = a.do(http.MethodGet, "/api/v1/protected/documents/search?keyword="+url.QueryEscape(updatedKeyword)+"&page=1&pageSize=10", nil, "", false)
+	deletedSearchList := nested(jsonMap(r.body), "data", "documentList")
+	t.requestResult("Markdown 删除后搜索结果移除", "GET /api/v1/protected/documents/search", 200, r, err, !listContainsDocument(deletedSearchList, publicID), "deleted document absent")
+	r, err = a.do(http.MethodDelete, "/api/v1/protected/documents/"+publicID, nil, "pp_user_csrf", true)
+	t.requestResult("重复删除 Markdown", "DELETE /api/v1/protected/documents/:id", 404, r, err, bodyCode(r) == "NOT_FOUND", "code="+bodyCode(r))
 	return publicID, privateID
 }
 
@@ -758,8 +760,8 @@ func (t *tester) runManager(user *session, bootstrapUser, bootstrapPass, approve
 
 	r, err = user.do(http.MethodGet, "/api/v1/protected/manager/requests?status=pending", nil, "", false)
 	t.requestResult("用户 Cookie 不能访问管理端", "GET /api/v1/protected/manager/requests", 401, r, err, bodyCode(r) == "UNAUTHORIZED", "scope isolated")
-	r, err = admin.do(http.MethodGet, "/api/v1/protected/markdown/mine", nil, "", false)
-	t.requestResult("管理员 Cookie 不能访问用户端", "GET /api/v1/protected/markdown/mine", 401, r, err, bodyCode(r) == "UNAUTHORIZED", "scope isolated")
+	r, err = admin.do(http.MethodGet, "/api/v1/protected/documents/mine", nil, "", false)
+	t.requestResult("管理员 Cookie 不能访问用户端", "GET /api/v1/protected/documents/mine", 401, r, err, bodyCode(r) == "UNAUTHORIZED", "scope isolated")
 
 	r, err = admin.do(http.MethodGet, "/api/v1/protected/manager/requests?status=pending&page=1&pageSize=100", nil, "", false)
 	requests := nested(jsonMap(r.body), "data", "requests")
@@ -818,34 +820,25 @@ func (t *tester) runProxy(email, password string) {
 	t.requestResult("Nginx 代理用户注册", "POST /api/v1/public/auth/register via :15173", 201, r, err, asID(nested(jsonMap(r.body), "data", "id")) != "", "API reverse proxy")
 	r, err = s.do(http.MethodPost, "/api/v1/public/auth/login", map[string]any{"email": email, "password": password}, "", false)
 	t.requestResult("Nginx 代理 Cookie 登录", "POST /api/v1/public/auth/login via :15173", 200, r, err, true, "same-origin cookie session")
-	r, err = s.do(http.MethodGet, "/api/v1/protected/markdown/mine", nil, "", false)
-	t.requestResult("Nginx 代理保护接口", "GET /api/v1/protected/markdown/mine via :15173", 200, r, err, true, "authenticated proxy request")
-	ws, wsResp, wsErr := dialWS(s, "/api/v1/protected/chat/ws", "http://localhost:15173")
-	t.add("Nginx 代理 WebSocket Upgrade", "GET /api/v1/protected/chat/ws via :15173", "HTTP 101", fmt.Sprintf("HTTP %d", statusOf(wsResp)), wsErr == nil && statusOf(wsResp) == 101, errorText(wsErr))
-	if ws != nil {
-		_ = ws.Close()
-	}
+	r, err = s.do(http.MethodGet, "/api/v1/protected/documents/mine", nil, "", false)
+	t.requestResult("Nginx 代理保护接口", "GET /api/v1/protected/documents/mine via :15173", 200, r, err, true, "authenticated proxy request")
 	r, err = s.do(http.MethodPost, "/api/v1/protected/auth/logout", nil, "pp_user_csrf", true)
 	t.requestResult("Nginx 代理用户登出", "POST /api/v1/protected/auth/logout via :15173", 200, r, err, true, "session revoked")
 }
 
 func (t *tester) runLogout(a, b *session) {
 	bOldCookies, bOldCSRF := b.cookieHeader("/api/v1/public/auth/refresh", "pp_user_rt", "pp_user_csrf")
-	bWS, bResp, bErr := dialWS(b, "/api/v1/protected/chat/ws", "http://localhost:15173")
-	t.add("登出验证前 WebSocket 建连", "GET /api/v1/protected/chat/ws", "HTTP 101", fmt.Sprintf("HTTP %d", statusOf(bResp)), bErr == nil && statusOf(bResp) == 101, errorText(bErr))
 	r, err := b.do(http.MethodPost, "/api/v1/protected/auth/logout", nil, "pp_user_csrf", true)
 	t.requestResult("用户 B 登出", "POST /api/v1/protected/auth/logout", 200, r, err, true, "cookie cleared; session revoked")
-	closed := waitWSClosed(bWS, 3*time.Second)
-	t.add("登出主动关闭当前 WebSocket", "WS session.revoked", "connection closed", boolState(closed), closed, "logout event observed")
-	r, err = b.do(http.MethodGet, "/api/v1/protected/markdown/mine", nil, "", false)
-	t.requestResult("登出后 Access 失效", "GET /api/v1/protected/markdown/mine", 401, r, err, bodyCode(r) == "UNAUTHORIZED", "code="+bodyCode(r))
+	r, err = b.do(http.MethodGet, "/api/v1/protected/documents/mine", nil, "", false)
+	t.requestResult("登出后 Access 失效", "GET /api/v1/protected/documents/mine", 401, r, err, bodyCode(r) == "UNAUTHORIZED", "code="+bodyCode(r))
 	r, err = manualRequest(t.baseURL, http.MethodPost, "/api/v1/public/auth/refresh", bOldCookies, bOldCSRF, "", nil)
 	t.requestResult("登出后旧 Refresh 失效", "POST /api/v1/public/auth/refresh", 401, r, err, bodyCode(r) == "UNAUTHORIZED", "code="+bodyCode(r))
 
 	r, err = a.do(http.MethodPost, "/api/v1/protected/auth/logout", nil, "pp_user_csrf", true)
 	t.requestResult("用户 A 登出", "POST /api/v1/protected/auth/logout", 200, r, err, true, "session revoked")
-	r, err = a.do(http.MethodGet, "/api/v1/protected/markdown/mine", nil, "", false)
-	t.requestResult("用户 A 登出后失效", "GET /api/v1/protected/markdown/mine", 401, r, err, bodyCode(r) == "UNAUTHORIZED", "code="+bodyCode(r))
+	r, err = a.do(http.MethodGet, "/api/v1/protected/documents/mine", nil, "", false)
+	t.requestResult("用户 A 登出后失效", "GET /api/v1/protected/documents/mine", 401, r, err, bodyCode(r) == "UNAUTHORIZED", "code="+bodyCode(r))
 }
 
 func userAOldCookie(s *session, path string) string {

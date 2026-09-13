@@ -1,8 +1,10 @@
 # chat 模块引入 TimescaleDB 改造方案
 
+> 状态：保留的 Chat 数据层设计记录；Chat/WebSocket 当前不注册、不产生运行写入。
+>
 > 定位：基于 PostgreSQL 生态的最小侵入改造。TimescaleDB 是 PostgreSQL 扩展，**兼容 PG 协议**，
 > 现有 `gorm.io/driver/postgres` 驱动与 `PostgreSQLManager` 连接框架**无需改动**，
-> 改造集中在：部署层（扩展安装）、`chat_messages` 表结构（hypertable 转换）、迁移工具、少量查询适配。
+> 改造集中在：部署层（扩展安装）、`chat_messages` 表结构（hypertable 转换）、初始化脚本、少量查询适配。
 >
 > 决策背景（2026-08-15 讨论）：chat 消息是"带时间戳的结构化事件流"，具备时序特征；
 > 现阶段以"低成本期权"方式落地——schema 设计为可平滑迁移 hypertable，为未来的时间维度查询/分析预留能力，
@@ -14,13 +16,13 @@
 
 | 项 | 现状 | 来源 |
 | --- | --- | --- |
-| 连接 | 单实例 PostgreSQL `gin_demo`，`PostgreSQLManager` 注册模式（ServiceAuth/ServiceMarkdown），chat 复用 ServiceMarkdown | `internal/common/base/connection/postgresql/` |
+| 连接 | 单实例 PostgreSQL `gin_demo`，`PostgreSQLManager` 注册模式（ServiceAuth/ServiceDocument/ServiceChat），chat 代码使用独立 ServiceChat；当前组合根不注册该连接 | `internal/common/base/connection/postgresql/` |
 | 驱动 | `gorm.io/driver/postgres v1.6.2` + `gorm.io/gorm v1.31.2` | `apps/gin-backend/go.mod` |
 | 消息表 | `chat_messages`：`id`(PK 自增)、`group_type`、`from_id`、`to_id`(复合索引)、`payload`(text)、`created_at`/`updated_at`(int64)、`deleted_at`(gorm.DeletedAt 软删) | `internal/model/orm/chat/message.go` |
-| 读路径 | `FetchOffline`（to_id+private, `ORDER BY id ASC LIMIT 100`）；`FetchGroupHistory`（to_id+group, `ORDER BY id DESC LIMIT 100` 反转） | `internal/service/chat/store/message.go` |
+| 读路径 | `FetchOffline`（to_id+private, `ORDER BY id ASC LIMIT 100`）；`FetchGroupHistory`（to_id+group, `ORDER BY id DESC LIMIT 100` 反转） | `internal/modules/chat/store/message.go` |
 | 写路径 | 投递热路径同步 `Save`（INSERT） | `structure/bridge/deliver.go` |
-| 迁移工具 | `utils/automigrate`，`migrateChat` 仅 `AutoMigrate` 三张表 | `utils/automigrate/automigrate.go` |
-| 部署 | `deployments/postgresql/sql/plugin/pg_search_setup.sql`（ParadeDB pg_search 扩展模式） | 仓库 |
+| 初始化 | 空库初始化直接建立 Chat schema 与 hypertable；当前运行时不注册 Chat 服务 | `deployments/postgresql/entryscript/00-init.sh` |
+| 部署 | 空库初始化统一安装 TimescaleDB/pg_search；文档 BM25 载体为 `document_search_projection` | 仓库 |
 
 ---
 
@@ -80,7 +82,7 @@ CMD ["postgres", "-c", "shared_preload_libraries=pg_search,timescaledb"]
 
 **方式 C：本地自装 PG**：编译安装 timescaledb 与 pg_search，`postgresql.conf` 追加 `shared_preload_libraries = 'timescaledb,pg_search'` 后重启。
 
-> 无论哪种方式，**pg_search（markdown 全文检索）必须保留**，仅新增 timescaledb，二者可共存。
+> 无论哪种方式，**pg_search（document_search_projection 全文检索）必须保留**，仅新增 timescaledb，二者可共存。
 
 ### 阶段 1：`chat_messages` 转 hypertable（核心）
 
@@ -123,8 +125,8 @@ CREATE INDEX IF NOT EXISTS idx_message_to_type_time
 | 文件 | 改动 | 说明 |
 | --- | --- | --- |
 | `internal/model/orm/chat/message.go` | 拆出 `TimeFiled`，`CreatedAt` 加 `gorm:"primaryKey"`（复合主键 `(id, created_at)`） | **不要改全局 `orm.TimeFiled`**（users/markdowns/groups 等会全变复合主键）；chat 模型独立声明字段 |
-| `internal/service/chat/store/message.go` `DeleteByIDs` | `Delete(&Message{}, ids)` → `Where("id IN ?", ids).Delete(&Message{})` | 复合主键下 GORM 不再支持按单主键 slice 删除 |
-| `internal/service/chat/store/message.go` 读路径 | **可选**：`Order("id DESC")` → `Order("created_at DESC, id DESC")` | `id` 与 `created_at` 在单进程写入下单调一致，当前不改也正确；显式对齐时间列可消除跨时钟漂移/批量导入的不一致隐患 |
+| `internal/modules/chat/store/message.go` `DeleteByIDs` | `Delete(&Message{}, ids)` → `Where("id IN ?", ids).Delete(&Message{})` | 复合主键下 GORM 不再支持按单主键 slice 删除 |
+| `internal/modules/chat/store/message.go` 读路径 | **可选**：`Order("id DESC")` → `Order("created_at DESC, id DESC")` | `id` 与 `created_at` 在单进程写入下单调一致，当前不改也正确；显式对齐时间列可消除跨时钟漂移/批量导入的不一致隐患 |
 | `Save`/`FetchOffline`/`FetchGroupHistory` | 无需改动 | SQL 语义不变，仅执行计划受益于分区裁剪 |
 
 > 其余表（`chat_groups`、`chat_group_members`）**不转 hypertable**——它们是低写入的成员关系数据，无时序特征，保持普通表。
@@ -162,16 +164,16 @@ WITH NO DATA;
 
 ---
 
-## 4. 迁移工具改造（`utils/automigrate`）
+## 4. 历史迁移工具方案（仅参考）
 
-`migrateChat` 改为三步骤（参考代码，**本方案不直接实施**）：
+以下代码仅保留早期方案语义。当前 schema 由空库初始化脚本建立，Chat 又处于不接入状态，因此组合根不执行该自动迁移：
 
 ```go
 func migrateChat(conf *config.Config) error {
     db, err := postgresqlconn.PostgreSQLManager.RegisterAndGet(
-        connection.ServiceMarkdown, conf.PostgresConfig, conf.LogConfig.Level)
+        connection.ServiceChat, conf.PostgresConfig, conf.LogConfig.Level)
     if err != nil { return err }
-    defer postgresqlconn.PostgreSQLManager.Unregister(connection.ServiceMarkdown)
+    defer postgresqlconn.PostgreSQLManager.Unregister(connection.ServiceChat)
 
     // 1. 建表 (幂等; 新环境建出普通表, 旧环境跳过)
     if err := postgresqlconn.AutoMigrate(db,

@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Check, ChevronLeft, Eye, FileText, Globe2, LockKeyhole, Save } from '@lucide/vue'
-import { markdownApi } from '@/api/markdown'
+import { documentApi } from '@/api/document'
 import { getApiError } from '@/api/client'
 import MarkdownBody from '@/components/MarkdownBody.vue'
 import { useToastStore } from '@/stores/toast'
@@ -51,10 +51,10 @@ async function publish() {
   loading.value = true
   errorMessage.value = ''
   try {
-    const created = await markdownApi.create({ title: title.value.trim(), content: content.value, visibility: visibility.value })
+    const created = await documentApi.create({ title: title.value.trim(), content: content.value, visibility: visibility.value })
     localStorage.removeItem(DRAFT_KEY)
     toast.show({ tone: 'success', title: '文稿已保存', message: visibility.value === 'public' ? '现在可以在公开广场看到它' : '仅你自己可以阅读这篇文稿' })
-    await router.replace({ name: 'markdown-detail', params: { markdownId: created.markdownId } })
+    await router.replace({ name: 'document-detail', params: { documentId: created.documentId } })
   } catch (error) {
     errorMessage.value = getApiError(error).message
   } finally { loading.value = false }

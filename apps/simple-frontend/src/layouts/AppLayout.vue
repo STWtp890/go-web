@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { BookOpen, Compass, FilePlus2, Home, LogOut, Menu, MessageCircle, Search, X } from '@lucide/vue'
+import { BookOpen, Compass, FilePlus2, Home, LogOut, Menu, Search, X } from '@lucide/vue'
 import AppLogo from '@/components/AppLogo.vue'
 import { useUserSessionStore } from '@/stores/session'
 import { getInitials } from '@/utils/format'
@@ -16,12 +16,11 @@ const navItems = [
   { name: 'mine', label: '我的文稿', icon: BookOpen },
   { name: 'explore', label: '公开广场', icon: Compass },
   { name: 'search', label: '搜索', icon: Search },
-  { name: 'chat', label: '消息', icon: MessageCircle },
 ]
 
 const pageTitle = computed(() => ({
   overview: '概览', mine: '我的文稿', explore: '公开广场', search: '搜索文稿', editor: '新建文稿',
-  'markdown-detail': '阅读文稿', chat: '消息中心',
+  'document-detail': '阅读文稿',
 }[String(route.name)] ?? 'Paperplane'))
 
 async function logout() {
@@ -49,11 +48,6 @@ async function logout() {
           <span>{{ item.label }}</span>
         </RouterLink>
       </nav>
-
-      <div class="sidebar__notice">
-        <span class="sidebar__notice-dot" />
-        <div><strong>实时通道待接入</strong><span>HTTP 消息功能可用</span></div>
-      </div>
 
       <div class="sidebar__profile">
         <span class="avatar">{{ getInitials(session.subject || '用户') }}</span>

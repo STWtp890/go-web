@@ -21,6 +21,3 @@ logs/
 .cache/
 tmp/
 temp/
-
-# Golang
-*.sum

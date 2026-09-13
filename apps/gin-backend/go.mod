@@ -1,6 +1,6 @@
 module gin-backend
 
-go 1.26.5
+go 1.26.8
 
 require (
 	github.com/gin-contrib/cors v1.7.7

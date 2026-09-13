@@ -8,6 +8,7 @@ import (
 
 	"gin-backend/internal/common/base/logger"
 	"gin-backend/internal/config"
+	"gin-backend/internal/platform/httpserver"
 
 	"github.com/gin-gonic/gin"
 )
@@ -25,11 +26,13 @@ func Run() error {
 		return err
 	}
 
-	cleanup := initDependencies(conf)
+	dependencies, cleanup := initDependencies(conf)
 	defer cleanup()
 
-	engine := gin.New()
-	setupRoutes(engine, conf)
+	engine := httpserver.New(conf, httpserver.Dependencies{
+		DocumentRoutes: dependencies.documentHTTP,
+		Ready:          dependencies.ready,
+	})
 
 	address := fmt.Sprintf(":%d", conf.ServerConfig.Port)
 	slog.Info("HTTP 服务启动", slog.String("address", address))

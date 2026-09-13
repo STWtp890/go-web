@@ -1,21 +1,11 @@
 # SQL 目录约定
 
-- `plugin/`：PostgreSQL 扩展安装与验证；不包含业务表、索引或数据。
-- `service/{auth,markdown,chat,manager}/`：各业务的表、索引、时序配置和种子数据。
+- `plugin/`：PostgreSQL 扩展安装与目标态验证，不包含业务数据。
+- `service/auth/`：用户认证表。
+- `service/manager/`：管理员与审批表；`seed_admin.sql` 仅用于本地引导和测试。
+- `service/chat/`：Chat 保留表与 TimescaleDB 配置；当前服务未注册。
+- `service/document/`：文档事实表、版本、访问策略、查询投影和 BM25 索引。
 
-Markdown 搜索边界固定为 ParadeDB `pg_search` + BM25/jieba。`plugin/bm25_only_verify.sql`
-会验证 BM25 索引可用，并拒绝业务 schema 中出现 `vector` 列或向量索引。`pg_search`
-上游自动创建的依赖扩展不属于 go-web 的业务能力。
+全新数据卷只通过 `../entryscript/00-init.sh` 按固定顺序初始化。仓库不维护 `schema_migrations`、manifest、升级 runner、反向导出、备份恢复或旧 Markdown schema；结构变化时直接重建开发数据卷。
 
-空数据库由 `docker-entrypoint-initdb.d/00-init.sh` 按依赖顺序执行。可靠投递与管理员申请唯一性
-已融合到 `service/chat/schema_init.sql`、`service/manager/schema_init.sql`；已有数据库需按这两份文件中新增 DDL
-手动补齐，不能重跑全量初始化。
-
-聊天应用层 ACK 模型升级时，已有数据库需单独执行：
-
-```bash
-psql -U postgres -d gin_demo -f service/chat/migrate_pending_delivery_ack.sql
-```
-
-该迁移删除已经 ACK 的旧 delivery，并把 `chat_message_deliveries` 收敛为只保存
-pending delivery 的短期可靠投递表；它不包含已读回执语义。
+Documents 搜索边界固定为 ParadeDB `pg_search` + BM25/jieba，索引载体为 `document_search_projection`。`plugin/bm25_only_verify.sql` 同时验证目标索引存在、业务 schema 不含 vector 列/索引，并拒绝 `schema_migrations`、旧 Markdown 表/索引以及未接入的 Outbox 状态表重新出现。pg_search 自动安装的 pgvector 依赖不代表 go-web 提供向量检索能力。

@@ -45,7 +45,7 @@ func NewEntity[T any](ttl time.Duration) *basecache.EntityCache[T] {
 // 首次使用才获取底层连接; 获取失败缓存错误, 由调用方透传
 type gormDB struct {
 	once sync.Once
-	name string // 注册名: ServiceAuth / ServiceMarkdown
+	name string // 注册名: ServiceAuth
 	db   *gorm.DB
 	err  error
 }
@@ -68,6 +68,3 @@ func (g *gormDB) get(ctx context.Context) (*gorm.DB, error) {
 
 // authDB 用户/管理员表连接 (ServiceAuth)
 var authDB = &gormDB{name: connection.ServiceAuth}
-
-// markdownDB 文章元信息/内容表连接 (ServiceMarkdown)
-var markdownDB = &gormDB{name: connection.ServiceMarkdown}

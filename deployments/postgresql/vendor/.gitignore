@@ -1,0 +1,3 @@
+*.deb
+!.gitignore
+!README.md

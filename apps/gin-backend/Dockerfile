@@ -1,8 +1,9 @@
-# syntax=docker/dockerfile:1
-
 # Build the Go application separately so the runtime image contains only what
 # is needed to start the service.
-FROM golang:1.26.5-alpine AS builder
+FROM golang:1.26.8-alpine AS builder
+
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
 
 WORKDIR /src
 
