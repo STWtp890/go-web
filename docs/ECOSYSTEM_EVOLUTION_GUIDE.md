@@ -202,7 +202,7 @@ AI Agent 的职责是理解用户意图、选择合适的知识域、组织工�
 - 先完成持久化控制状态、真实存储授权过滤、重试重放、状态对账和影子评估，再讨论受控切换检索读取方；
 - 在保持 Web 搜索产品语义清晰的前提下，形成统一的文档检索入口。
 
-当前进度：go-web 阶段 1 和阶段 2 的 P2.0-P2.5 已完成，已经贯通文档事实、BM25、可靠影子索引、异步影子查询与来源分层评估。P2.5 的七类基线质量和收敛后正确性通过，但当前检索仍使用 local-hash-v1 评估 embedding，书面结论为 KEEP_BM25；正式搜索继续由 PostgreSQL BM25 提供。
+当前进度：go-web 阶段 1 和阶段 2 的 P2.0-P2.5 已完成，已经贯通文档事实、BM25、可靠影子索引、异步影子查询与来源分层评估。P2.5 的七类基线质量和收敛后正确性通过，但当前检索仍使用 local-hash-v1 评估 embedding，书面结论为 KEEP_BM25；正式搜索继续由 PostgreSQL BM25 提供。阶段 2 已收口，文档 BM25 的正式交接属于独立的 B 线工作，不阻塞后续阶段。
 
 ### 阶段三：QQ 身份与知识空间融合
 
@@ -210,6 +210,10 @@ AI Agent 的职责是理解用户意图、选择合适的知识域、组织工�
 - 建立私聊与私人空间、群聊与团队空间的映射；
 - 贯通 QQ 场景下的文档查询、文档创建和知识分享；
 - 保证渠道权限与文档权限共同生效。
+
+阶段三需要先完成**多语料检索基础设计**，但不必提前完成整个聊天产品域：聊天的长期保存、采集、Web 查看和知识晋升仍属于阶段四；而聊天语料契约、独立集合与权限边界必须在 `py-agent` 成为 `mixin-search` 的正式消费者之前确定。这样既不打乱宏观阶段顺序，也满足接入的安全前置条件。
+
+`py-agent` 是 `mixin-search` 的第一个正式在线消费者，因此也是关键路径转折点：接入后 `mixin-search` 立即成为 QQ 知识问答的关键依赖，即使 `go-web` 仍使用本地 BM25。接入前必须完成调用身份认证、授权范围 capability、在线并发模型与不中断重建能力，完整门禁见 [ADR-012](./adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)。
 
 ### 阶段四：聊天记录域建设
 
@@ -264,4 +268,4 @@ AI Agent 的职责是理解用户意图、选择合适的知识域、组织工�
 
 后续实现方案可以调整技术选型和内部结构，但如果变更会改变本文定义的产品定位、数据所有权、知识域隔离或权限边界，应先更新宏观决策，再进入代码实施。
 
-当前映射：宏观阶段一已由 go-web 阶段 0 完成并冻结；宏观阶段二中的 go-web 阶段 1 和阶段 2 已完成，P2.5 已给出 KEEP_BM25 结论。后续只有在接入真实语义 embedding 并重新通过扩大后的评测门禁后，才进入受控读取切换；QQ 身份与知识空间融合仍按宏观阶段三单独启动。具体范围、顺序和门禁只在 [`CURRENT_IMPLEMENTATION_PLAN.md`](./planning/CURRENT_IMPLEMENTATION_PLAN.md) 维护，阶段 1 完成证据保存在 [`PHASE1_IMPLEMENTATION_LOG.md`](./reports/PHASE1_IMPLEMENTATION_LOG.md)，阶段 2 实施证据保存在 [`PHASE2_IMPLEMENTATION_LOG.md`](./reports/PHASE2_IMPLEMENTATION_LOG.md)。
+当前映射：宏观阶段一已由 go-web 阶段 0 完成并冻结；宏观阶段二中的 go-web 阶段 1 和阶段 2 已完成，P2.5 已给出 KEEP_BM25 结论。宏观阶段三的实施基线已于 2026-09-17 建立，当前实施包为 P3.1（`mixin-search` 调用身份与授权边界）；文档 BM25 的受控读取切换属于独立的 B 线，不再作为其他工作的前置条件。具体范围、顺序和门禁只在 [`CURRENT_IMPLEMENTATION_PLAN.md`](./planning/CURRENT_IMPLEMENTATION_PLAN.md) 维护，跨阶段决策见 [`ADR-012`](./adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)，阶段 1 完成证据保存在 [`PHASE1_IMPLEMENTATION_LOG.md`](./reports/PHASE1_IMPLEMENTATION_LOG.md)，阶段 2 实施证据保存在 [`PHASE2_IMPLEMENTATION_LOG.md`](./reports/PHASE2_IMPLEMENTATION_LOG.md)。

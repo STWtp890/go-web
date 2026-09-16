@@ -150,6 +150,9 @@ try {
     Invoke-CheckedCommand 'Verify generated mixin-search/v1 RPC code' {
         & ./packages/proto/verify-generated.ps1
     }
+    Invoke-CheckedCommand 'Verify documentation links' {
+        & ./docs/check-doc-links.ps1
+    }
 
     Push-Location 'apps/simple-frontend'
     try {

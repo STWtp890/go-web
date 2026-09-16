@@ -7,6 +7,7 @@
 > 后续状态：阶段 1 已关闭；新工作需建立新的阶段计划
 > 计划来源：[`CURRENT_IMPLEMENTATION_PLAN.md`](../planning/CURRENT_IMPLEMENTATION_PLAN.md)
 > 文档职责：只记录完成事实与实测证据，不维护后续实施细节
+> 证据归档：本报告引用的运行产物是阶段 1 的不可变证据，已固化在 [`./evidence/phase1/`](./evidence/phase1/)。链接指向该归档，不指向按保留策略滚动清理的 `deployments/test-results/`；归档内容不随后续实现改写。
 
 ## 阶段 1 项目结构基线
 
@@ -203,7 +204,7 @@ P1.4 实测结果：
 - `verify-image.ps1 -UseCachedBase`：`SCHEMA_BASELINE=PASS`、`BM25_ONLY=PASS`、三扩展存在、Chat hypertable 存在、旧关系数为 0；镜像 ID 为 `sha256:d21b5f991faeb090b3325600a0b6d1f9091b79ed90016d53d219a7c1e88d6b5f`。
 - `deployments/verify.ps1 -SkipImageBuild`：三个 Go module 的 `go test ./...` 与 `go vet ./...` 通过，Vue `npm run build` 通过，四个 Compose 服务 healthy。
 - 运行时 API 回归：`95 passed / 0 failed / 95 total`，覆盖认证、Documents、权限、BM25 更新/回收、管理员、Nginx 代理、5 项 Chat 路由 404 和 3 项旧 Markdown 路由 404。
-- 结果报告：`deployments/test-results/full-api-p14_20260912_215904.json` 与 `deployments/test-results/full-api-p14_20260912_215904.md`。
+- 结果报告：[`full-api-p14_20260912_215904.json`](./evidence/phase1/full-api-p14_20260912_215904.json) 与 [`full-api-p14_20260912_215904.md`](./evidence/phase1/full-api-p14_20260912_215904.md)。
 - 验证结束后临时容器、网络与数据卷已自动删除。
 - `P1.4_BUILD_TEST_DEPLOYMENT=PASS`，P1.4 完成；该时点转入 P1.5 mixin-search/v1 契约定型。
 
@@ -224,7 +225,7 @@ P1.5 实测结果（2026-09-13）：
 - 前端 `npm run build` 通过：`PHASE_BOUNDARY=PASS`，`vue-tsc` 通过，Vite 转换 1862 个模块并完成生产构建。
 - 根 Compose 与 mixin-search Compose 配置检查通过；从空卷构建并启动 PostgreSQL、Redis、gin-backend、simple-frontend，四个服务全部 healthy。
 - PostgreSQL 基线输出 `BM25_ONLY_OK`，pg_search 版本为 0.25.2；前端入口和经 Nginx 转发的存活、就绪探针均返回 HTTP 200。
-- 运行时 API 回归为 `95 passed / 0 failed / 95 total`；最终结果报告为 `deployments/test-results/full-api-p15_20260913_160226.json` 与 `deployments/test-results/full-api-p15_20260913_160226.md`。
+- 运行时 API 回归为 `95 passed / 0 failed / 95 total`；最终结果报告为 [`full-api-p15_20260913_160226.json`](./evidence/phase1/full-api-p15_20260913_160226.json) 与 [`full-api-p15_20260913_160226.md`](./evidence/phase1/full-api-p15_20260913_160226.md)。
 - 验证结束后随机项目 `go-web-p15-d9942a3a400c` 的容器、网络和三个数据卷全部删除。
 - 最终标识为 `P1.5_BUILD_TEST_DEPLOYMENT=PASS`；P1.5 与 go-web 阶段 1 完成。
 

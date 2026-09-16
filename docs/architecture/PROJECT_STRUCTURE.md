@@ -28,6 +28,8 @@ go-web/
 │   └── gen/               # 由契约生成的共享 Go 代码
 ├── deployments/           # Compose、数据库空库初始化制品和验收脚本
 ├── docs/                  # 架构、契约、ADR 和阶段实施记录
+│   ├── check-doc-links.ps1    # 文档链接与证据引用检查（ASCII-only）
+│   └── reports/evidence/      # 阶段报告引用的不可变证据快照
 ├── docker-compose.yaml    # 本地系统组合入口
 └── go.work                # Go workspace，仅组织本仓库 Go module
 ```
@@ -102,6 +104,8 @@ apps/mixin-search/
 
 `internal/rag` 中的 `ControlState` 是独立持久化模型，不依赖 Protobuf DTO。`DocumentIndexService` 同时依赖 `ControlStore` 和向量业务 `Service`；`cmd/rag-server` 作为组合根选择 PostgreSQL 或 memory 控制适配器。gRPC 层只完成协议转换和错误码映射，不读取数据库，也不复制幂等、修订或提交顺序规则。
 
+gRPC 层当前**没有**调用方身份认证或授权范围校验：`SearchDocuments` 把请求中的 allow-list 作为授权输入直接执行。这只在“唯一调用方是自身事实源、且只绑定 127.0.0.1”的现状下成立，属于阶段 3 的 P3.1 门禁，见 [ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md) 决策 4。控制面并发（每请求全量加载控制状态、全局排他锁、读路径内投影同步）属于 P3.2。
+
 控制 PostgreSQL 与 VectorStore 之间没有共享事务。索引使用持久化 pending write 租约进行两阶段提交，删除先持久化逻辑删除与 pending delete 后执行物理清理；完整顺序见 [ADR-006](../adr/006-mixin-search-control-state-commit-order.md)。
 
 Qdrant 通过 `ControlledVectorStore` 能力接口接收规范化控制投影；正式搜索在候选选择前统一下推 storage domain、活动/墓碑状态和三路 OR 授权，随后仍由 `DocumentIndexService` 复核并在不足时有界回填。memory 与 pgvector 保持基础 `VectorStore` 兼容，但不作为 P2.2 候选级过滤的验收后端。完整决策见 [ADR-007](../adr/007-qdrant-control-projection-and-filtering.md)。
@@ -137,6 +141,7 @@ cmd ──> app (composition root)
 - P2.1 的 PostgreSQL 控制状态和向量索引均为可重建派生数据；P2.3 已提供失败重放、差异对账和 repeatable-read 全量重建编排。
 - P2.2 已完成 Qdrant 授权、活动版本、墓碑与 storage domain 过滤下推；P2.3 已完成 gin-backend 可靠投递；P2.4 已完成根 Compose、分层健康状态与持续影子索引；P2.5 已完成非阻塞影子查询、事实复核、来源分层观测和质量报告。当前结论为 KEEP_BM25，正式读取方地位仍未改变。
 - P2.5 完成后的缓存加固统一了进程级 Redis/内存/singleflight 运行时。内存回退按实体与文档分区受 TTL、LRU、条目和字节预算约束；User/Manager 使用 PostgreSQL 单调 `cache_revision` 版本键隔离延迟旧回填，JWT 会话状态继续保持 Redis 故障时失败关闭。完整边界见 [ADR-011](../adr/011-bounded-cache-runtime-and-revision-fencing.md)。
+- 阶段 3 的实施基线已于 2026-09-17 建立（P3.0）。当前未完成项集中在 `mixin-search`：调用身份与授权范围校验（P3.1）、读路径的全局串行与每请求控制状态加载（P3.2）、聊天语料契约与索引隔离（P3.3）。`go-web` 侧在本阶段只新增 `py-agent` 接入所需的身份映射与治理边界，不建设完整聊天产品域。范围与门禁见 [CURRENT_IMPLEMENTATION_PLAN.md](../planning/CURRENT_IMPLEMENTATION_PLAN.md)。
 
 ## 7. P1.3 的结构结果
 

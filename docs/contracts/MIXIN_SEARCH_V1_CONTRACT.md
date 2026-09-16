@@ -1,14 +1,14 @@
 # mixin-search/v1 文档索引契约
 
-> 状态：P1.5 定型契约，P2.1 持久化控制面与 P2.2 Qdrant 候选过滤已落地
-> 日期：2026-09-14
+> 状态：P1.5 定型契约，P2.1 持久化控制面与 P2.2 Qdrant 候选过滤已落地；调用身份与授权范围证明尚未建立（见 5.1）
+> 日期：2026-09-14（2026-09-17 澄清授权语义）
 > Proto：`packages/proto/mixin-search/v1/mixin-search.proto`
 
 ## 1. 适用范围
 
 契约路径使用 `mixin-search/v1`，Protobuf 完整服务名为 `mixin_search.v1.RAGService`。该服务只负责正式文档版本的派生索引，不承载聊天语料、用户体系、空间成员关系或文档发布流程。
 
-`go-web` 是文档、版本、归属空间、访问策略、授权和生命周期的唯一事实源，负责分配 `activation_revision`、`access_revision`、`lifecycle_revision`，并在完成身份、成员和资源权限校验后计算搜索请求中的 allow-list。
+`go-web` 是文档、版本、归属空间、访问策略、授权和生命周期的唯一事实源，负责分配 `activation_revision`、`access_revision`、`lifecycle_revision`，并在完成身份、成员和资源权限校验后计算搜索请求中的 allow-list。该 allow-list 当前被 `mixin-search` 直接作为授权输入执行，其“调用方是否有权声明该范围”尚未验证，见 5.1。
 
 `mixin-search` 只保存可重建的文档索引、执行访问快照和索引控制状态，不解释用户、角色、成员或 QQ 身份，也不反向修改业务文档。P2.1 已为控制状态接入独立 PostgreSQL 持久化和 memory 测试适配器；P2.2 已为 Qdrant 接入候选级 ACL、活动版本、墓碑和 storage domain 过滤；P2.3/P2.4 已完成 gin-backend Outbox 消费、自动重试、对账、全量重建和根 Compose 持续影子索引；P2.5 已通过同一 SearchDocuments 契约运行异步影子查询和来源分层评估，未改变协议字段。
 
@@ -88,6 +88,16 @@ INDEXED --Activate(non-decreasing activation)--> ACTIVE
 3. 文档 ID 被请求 `allowed_document_ids` 显式命中。
 
 两个 allow-list 都允许为空；此时搜索仍可返回公开文档，但不得返回只依赖空间或显式文档授权的文档。空 allow-list 不再单独构成 `INVALID_ARGUMENT`。
+
+### 5.1 调用授权与候选过滤的区别
+
+本契约当前**假设调用方已经正确计算 allow-list**，并且**没有证明调用方是否有权声明这些范围**。`SearchDocuments` 直接用请求中的 `allowed_space_ids` / `allowed_document_ids` 与文档访问快照做 OR 授权，因此 allow-list 目前是**授权输入**，而不是**待证明的授权主张**。
+
+准确表述是：
+
+> `mixin-search` 完成了文档**候选过滤**（未授权、非活动、已删除内容不会进入结果集，访问快照按事实源给定值执行）；**调用方身份认证与授权范围证明尚未建立**，属于 [ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md) 决策 4 的接入门禁。
+
+在门禁落地前，唯一调用方是 `gin-backend` 的索引 Worker 与影子链路，allow-list 由事实源在自身权限校验之后产生，且根 Compose 只绑定 `127.0.0.1`。这是**当前时序事实**，不是可依赖的安全属性：任何持有网络访问权的调用方都可以自行扩大检索范围。因此不得把“搜索结果正确”表述为“`mixin-search` 完成了最终调用授权”，也不得在认证落地前把本服务暴露给第二个消费者。
 
 搜索还必须：
 

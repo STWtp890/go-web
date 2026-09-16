@@ -74,7 +74,9 @@ docker compose -f docker-compose.yaml up -d --build --wait
 .\deployments\prune-test-results.ps1           # 执行
 ```
 
-更早的产物可从 git 历史取回。该脚本只识别 `<族>_<YYYYMMDD>_<HHMMSS>.<ext>`（以及早期的 `<族>-<YYYYMMDD>_<HHMMSS>.<ext>`）命名；遇到其他命名会跳过并打印警告。
+更早的产物可从 git 历史取回。该脚本只识别 `<族>_<YYYYMMDD>_<HHMMSS>.<ext>`（以及早期的 `<族>-<YYYYMMDD>_<HHMMSS>.<ext>`）命名；遇到其他命名会跳过并打印警告。仍被任何受版本控制 Markdown 引用的制品也会跳过删除（输出计入 `referencedHeld`），因为正式文档引用会被清理的产物正是阶段报告 23 处证据断链的成因。
+
+正式文档**不应**链接到本目录。阶段 1 和阶段 2 报告引用的运行产物已固化在 `docs/reports/evidence/`，由 `docs/check-doc-links.ps1` 强制该规则。
 
 镜像已确认无需重建时可使用 `-SkipImageBuild`；排查失败并希望保留临时环境时可使用 `-KeepEnvironment`。
 

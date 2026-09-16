@@ -176,6 +176,13 @@ jobs:
           echo "checking whitespace errors in ${base}..HEAD"
           git diff --check "${base}" HEAD
 
+      # 阶段报告曾引用 deployments/test-results 的运行产物，而该目录按保留策略滚动
+      # 清理，导致 23 处证据链接失效。现在由脚本强制：正式文档只能链接到
+      # docs/reports/evidence/ 下的不可变归档快照。
+      - name: Check documentation links
+        shell: pwsh
+        run: ./docs/check-doc-links.ps1
+
       # 密钥绝不应出现在受版本控制的文件中（生成物由卷挂载提供）。
       - name: Assert no committed key material
         run: |

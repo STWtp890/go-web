@@ -7,11 +7,13 @@
 ```text
 docs/
 ├── README.md                         # 文档导航与维护规则
+├── check-doc-links.ps1               # 文档链接与证据引用检查
 ├── ECOSYSTEM_EVOLUTION_GUIDE.md      # 生态核心目标与长期边界
 ├── planning/                         # 当前实施计划
 ├── architecture/                     # 项目结构与依赖约束
 ├── contracts/                        # 当前跨服务契约
 ├── reports/                          # 阶段完成报告与实施证据
+│   └── evidence/                     # 阶段报告引用的不可变证据快照
 ├── adr/                              # 架构决策记录
 └── history/                          # 冻结或已被取代的历史基线
 ```
@@ -29,9 +31,11 @@ docs/
 
 ## 当前执行重点
 
-生态阶段二的 go-web 阶段 1 与阶段 2 已完成，P2.0-P2.5 均通过。P2.5 已建立异步影子查询、来源分层观测和七类质量评估；当前 local-hash-v1 不满足正式语义读取切换条件，因此 PostgreSQL BM25 继续作为正式读取方。
+生态阶段二已收口，P2.0-P2.5 全部通过；阶段三的实施基线已建立。`mixin-search` 当前仍只被 `gin-backend` 的索引 Worker 与影子链路调用，尚无调用方身份认证，控制面在读路径上全局串行，因此**不进入 BM25 读取切换**。
 
-具体任务、依赖和验收门禁以 [当前实施计划](./planning/CURRENT_IMPLEMENTATION_PLAN.md) 为准。
+当前实施包为 P3.1：为 `mixin-search` 建立调用身份与授权范围校验，使调用方只能缩小、不能扩大可检索空间。随后依次推进在线并发模型、多语料契约、QQ 身份与空间映射、在线可靠性门禁和 `py-agent` 文档知识闭环。
+
+具体任务、依赖和验收门禁以 [当前实施计划](./planning/CURRENT_IMPLEMENTATION_PLAN.md) 为准；判断依据见 [ADR-012](./adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)。
 ## 分类索引
 
 | 分类 | 文档 | 职责 |
@@ -42,6 +46,7 @@ docs/
 | 约定 | [architecture/DEVELOPMENT_CONVENTIONS.md](./architecture/DEVELOPMENT_CONVENTIONS.md) | 新增代码落位规则、身份与 HTTP 出入口契约、遗留模块冻结基线与迁移待办 |
 | 契约 | [contracts/MIXIN_SEARCH_V1_CONTRACT.md](./contracts/MIXIN_SEARCH_V1_CONTRACT.md) | 当前 RPC 边界和字段语义 |
 | 实施证据 | [reports/PHASE0_COMPLETION_REPORT.md](./reports/PHASE0_COMPLETION_REPORT.md)、[reports/PHASE1_IMPLEMENTATION_LOG.md](./reports/PHASE1_IMPLEMENTATION_LOG.md)、[reports/PHASE2_IMPLEMENTATION_LOG.md](./reports/PHASE2_IMPLEMENTATION_LOG.md) | 记录已经验证的结果，不承担后续排期 |
+| 证据快照 | [reports/evidence/](./reports/evidence/) | 阶段报告引用的运行产物归档，内容不随后续实现改写 |
 | 决策 | [adr/](./adr/) | 保存已接受、被取代或附条件的架构决策 |
 | 历史 | [history/](./history/) | 保存初始方案、冻结基线和已被取代的专项记录 |
 
@@ -59,9 +64,10 @@ docs/
 | --- | --- | --- |
 | 阶段一：现状审计与边界确认 | 阶段 0 | 已完成并冻结 |
 | 阶段二：文档知识链路贯通 | 阶段 1 → 阶段 2 | 已完成；P2.5 结论为 KEEP_BM25 |
-| 阶段三：QQ 身份与知识空间融合 | 后续专项阶段 | 未进入 |
+| 阶段三：QQ 身份与知识空间融合 | 阶段 3（P3.0-P3.6） | 实施基线已建立；P3.0 完成，P3.1 进行中 |
 | 阶段四：聊天记录域建设 | 后续专项阶段 | 未进入；Chat/WebSocket 保持代码存在但不接入 |
 | 阶段五：治理、可靠性与持续演进 | 持续治理阶段 | 未进入 |
+| 文档 BM25 交接 | B 线（独立排期） | 未完成；PostgreSQL BM25 仍是正式读取方 |
 
 ## 维护规则
 
@@ -70,5 +76,6 @@ docs/
 3. 实施包通过后，将实测结果写入对应阶段报告；已冻结的阶段报告不因后续计划变化而改写。
 4. `architecture/` 与 `contracts/` 只维护稳定结构和契约，不复制阶段排期。
 5. `history/` 文档不随当前实现持续改写；事实变化通过当前计划、ADR 或实施日志表达。
-6. 移动或新增文档时必须同步修改仓库内链接，并执行文档链接检查。
-7. 本地验证不得外推为生产、高并发或跨服务可靠性结论。
+6. 移动或新增文档时必须同步修改仓库内链接，并执行 `docs/check-doc-links.ps1`（CI hygiene 作业与 `deployments/verify.ps1` 都会执行同一脚本）。
+7. 正式文档不得链接 `deployments/test-results/`：该目录按保留策略滚动清理。阶段报告引用的运行产物必须固化到 `reports/evidence/<phase>/`，由脚本强制。
+8. 本地验证不得外推为生产、高并发或跨服务可靠性结论。

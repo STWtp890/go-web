@@ -7,6 +7,7 @@
 > 阶段起点提交：`a8ab94a7bd408ef49bbb85394dca3258dc653119`
 > 计划来源：[`CURRENT_IMPLEMENTATION_PLAN.md`](../planning/CURRENT_IMPLEMENTATION_PLAN.md)
 > 文档职责：只记录阶段 2 已完成事实、实测证据和当前有效限制，不提前宣告后续实施包完成
+> 证据归档：本报告引用的运行产物是阶段 2 的不可变证据，已固化在 [`./evidence/phase2/`](./evidence/phase2/)。链接指向该归档，不指向按保留策略滚动清理的 `deployments/test-results/`；归档内容不随后续实现改写。
 
 ## P2.0 已完成
 
@@ -20,7 +21,7 @@ P2.0 实测结果：
 - 使用一次性、空数据卷的 Compose 环境启动 PostgreSQL、Redis、gin-backend、simple-frontend，四个服务全部达到 healthy；
 - PostgreSQL 基线检查输出 `BM25_ONLY_OK`，正式搜索仍由 PostgreSQL BM25 提供；
 - 运行时 API 回归为 `95 passed / 0 failed / 95 total`，同时确认五项 Chat 路由和三项旧 Markdown 路由保持 HTTP 404；
-- 本次回归报告为 [`full-api-p15_20260913_193709.json`](../../deployments/test-results/full-api-p15_20260913_193709.json) 与 [`full-api-p15_20260913_193709.md`](../../deployments/test-results/full-api-p15_20260913_193709.md)。
+- 本次回归报告为 [`full-api-p15_20260913_193709.json`](./evidence/phase2/full-api-p15_20260913_193709.json) 与 [`full-api-p15_20260913_193709.md`](./evidence/phase2/full-api-p15_20260913_193709.md)。
 
 ## P2.1 已完成
 
@@ -66,7 +67,7 @@ P2.2 实测结果：
 - 验收脚本最终输出 `P2.2_QDRANT_CONTROL=PASS`，并默认清理临时容器、网络和数据卷；
 - P2.2 完成后再次执行 `./verify-control-store.ps1`，`TestPostgresControlStoreIntegration` 通过并输出 `P2.1_CONTROL_STORE=PASS`，临时 PostgreSQL 环境完成清理。
 - 从仓库根目录执行 `./deployments/verify.ps1`，Proto 生成一致、前端输出 `PHASE_BOUNDARY=PASS` 并构建 1862 个模块、三个 Go module 的 test/vet 通过、四个根 Compose 服务全部 healthy、数据库输出 `BM25_ONLY_OK`、运行时 API 回归为 `95 passed / 0 failed / 95 total`，最终输出 `P1.5_BUILD_TEST_DEPLOYMENT=PASS` 并清理一次性环境；
-- 本次仓库级回归报告为 [`full-api-p15_20260914_020040.json`](../../deployments/test-results/full-api-p15_20260914_020040.json) 与 [`full-api-p15_20260914_020040.md`](../../deployments/test-results/full-api-p15_20260914_020040.md)；
+- 本次仓库级回归报告为 [`full-api-p15_20260914_020040.json`](./evidence/phase2/full-api-p15_20260914_020040.json) 与 [`full-api-p15_20260914_020040.md`](./evidence/phase2/full-api-p15_20260914_020040.md)；
 - 本地 Markdown 链接检查覆盖 226 个文件、259 个相对链接，结果为 `MARKDOWN_LINKS=PASS`。
 
 ## P2.3 已完成
@@ -89,7 +90,7 @@ P2.3 实测结果：
 - 执行 `./verify-index-rebuild-e2e.ps1`，从全新 gin PostgreSQL、mixin 控制 PostgreSQL 和 Qdrant 重建活动版本/权限/删除状态并验证搜索结果，最终输出 `P2.3_INDEX_REBUILD_E2E=PASS`；
 - 两个验收入口均使用随机 Compose project 与一次性资源，并在结束后清理容器、网络、数据卷和临时进程；
 - 从仓库根目录执行 `./deployments/verify.ps1`，Proto 生成一致、前端输出 `PHASE_BOUNDARY=PASS` 并构建 1862 个模块、三个 Go module 的 test/vet 通过、四个根 Compose 服务全部 healthy、数据库输出 `BM25_ONLY_OK`、运行时 API 回归为 `95 passed / 0 failed / 95 total`，最终输出 `P1.5_BUILD_TEST_DEPLOYMENT=PASS` 并清理一次性环境；
-- 本次 P2.3 仓库级回归报告为 [`full-api-p15_20260914_094448.json`](../../deployments/test-results/full-api-p15_20260914_094448.json) 与 [`full-api-p15_20260914_094448.md`](../../deployments/test-results/full-api-p15_20260914_094448.md)；
+- 本次 P2.3 仓库级回归报告为 [`full-api-p15_20260914_094448.json`](./evidence/phase2/full-api-p15_20260914_094448.json) 与 [`full-api-p15_20260914_094448.md`](./evidence/phase2/full-api-p15_20260914_094448.md)；
 - 本地 Markdown 链接检查覆盖 46 个文件、84 个相对链接，结果为 `MARKDOWN_LINKS=PASS`。
 
 ## P2.4 已完成
@@ -114,8 +115,8 @@ P2.4 实测结果：
 - 空数据卷下八个默认服务全部达到 healthy；初始 Outbox 与对账事件全部排空；
 - mixin-search 停机前和停机期间两轮运行时 API 回归均为 `95 passed / 0 failed / 95 total`，停机期间 gin-backend `/readyz`、Documents 写入和 PostgreSQL BM25 保持正常；
 - mixin-search 恢复后积压无需人工修复即自动排空，死信为零，最终输出 `P2.4_SHADOW_INDEX=PASS` 与 `P1.5_BUILD_TEST_DEPLOYMENT=PASS`；
-- 本次正常链路报告为 [`full-api-p15_20260914_103919.json`](../../deployments/test-results/full-api-p15_20260914_103919.json) 与 [`full-api-p15_20260914_103919.md`](../../deployments/test-results/full-api-p15_20260914_103919.md)；
-- 本次停机链路报告为 [`full-api-p24_outage_20260914_103924.json`](../../deployments/test-results/full-api-p24_outage_20260914_103924.json) 与 [`full-api-p24_outage_20260914_103924.md`](../../deployments/test-results/full-api-p24_outage_20260914_103924.md)；
+- 本次正常链路报告为 [`full-api-p15_20260914_103919.json`](./evidence/phase2/full-api-p15_20260914_103919.json) 与 [`full-api-p15_20260914_103919.md`](./evidence/phase2/full-api-p15_20260914_103919.md)；
+- 本次停机链路报告为 [`full-api-p24_outage_20260914_103924.json`](./evidence/phase2/full-api-p24_outage_20260914_103924.json) 与 [`full-api-p24_outage_20260914_103924.md`](./evidence/phase2/full-api-p24_outage_20260914_103924.md)；
 - 验收结束后一次性容器、网络和数据卷全部清理。
 
 ## P2.5 已完成
@@ -140,9 +141,9 @@ P2.5 实测结果：
 - 七条收敛后 evaluation 观测的权限、生命周期、活动版本与 formal scope mismatch 均为 0；
 - mixin-search 停机期间第二轮运行时 API 回归仍为 95 passed / 0 failed / 95 total，gin-backend readiness 正常，影子失败观测从 0 增至 3；恢复后 Outbox 自动排空且死信为 0；
 - 根验收最终输出 P2.5_SHADOW_QUERY_EVALUATION=PASS、P2.4_SHADOW_INDEX=PASS 和 P1.5_BUILD_TEST_DEPLOYMENT=PASS，并清理一次性环境；
-- 质量报告为 [document-search-evaluation-p25_20260914_231537.json](../../deployments/test-results/document-search-evaluation-p25_20260914_231537.json) 与 [document-search-evaluation-p25_20260914_231537.md](../../deployments/test-results/document-search-evaluation-p25_20260914_231537.md)；
-- 正常链路 API 报告为 [full-api-p15_20260914_231533.json](../../deployments/test-results/full-api-p15_20260914_231533.json) 与 [full-api-p15_20260914_231533.md](../../deployments/test-results/full-api-p15_20260914_231533.md)；
-- 停机链路 API 报告为 [full-api-p24_outage_20260914_231542.json](../../deployments/test-results/full-api-p24_outage_20260914_231542.json) 与 [full-api-p24_outage_20260914_231542.md](../../deployments/test-results/full-api-p24_outage_20260914_231542.md)。
+- 质量报告为 [document-search-evaluation-p25_20260914_231537.json](./evidence/phase2/document-search-evaluation-p25_20260914_231537.json) 与 [document-search-evaluation-p25_20260914_231537.md](./evidence/phase2/document-search-evaluation-p25_20260914_231537.md)；
+- 正常链路 API 报告为 [full-api-p15_20260914_231533.json](./evidence/phase2/full-api-p15_20260914_231533.json) 与 [full-api-p15_20260914_231533.md](./evidence/phase2/full-api-p15_20260914_231533.md)；
+- 停机链路 API 报告为 [full-api-p24_outage_20260914_231542.json](./evidence/phase2/full-api-p24_outage_20260914_231542.json) 与 [full-api-p24_outage_20260914_231542.md](./evidence/phase2/full-api-p24_outage_20260914_231542.md)。
 
 书面结论：P2.5 实施和验收已完成，但当前 embedding profile 是 local-hash-v1，评测规模也只覆盖固定的七类基线，因此正式读取继续保持 PostgreSQL BM25，当前决策为 KEEP_BM25。
 
@@ -163,7 +164,7 @@ P2.5 实测结果：
 - 空卷 PostgreSQL 输出 `ENTITY_CACHE_REVISION_OK`，确认 User/Manager 两次立即更新均从 revision 1 增长到 3；
 - 根验收中正常与 mixin-search 停机期间两轮 API 回归均为 `95 passed / 0 failed / 95 total`，恢复后 Outbox 自动排空且死信为 0；
 - 根验收最终输出 `P2.5_SHADOW_QUERY_EVALUATION=PASS`、`P2.4_SHADOW_INDEX=PASS` 和 `P1.5_BUILD_TEST_DEPLOYMENT=PASS`，并删除一次性容器、网络和数据卷；
-- 本次报告为 [正常 API JSON](../../deployments/test-results/full-api-p15_20260915_033311.json)、[正常 API Markdown](../../deployments/test-results/full-api-p15_20260915_033311.md)、[停机 API JSON](../../deployments/test-results/full-api-p24_outage_20260915_033321.json)、[停机 API Markdown](../../deployments/test-results/full-api-p24_outage_20260915_033321.md)、[检索评测 JSON](../../deployments/test-results/document-search-evaluation-p25_20260915_033317.json) 与 [检索评测 Markdown](../../deployments/test-results/document-search-evaluation-p25_20260915_033317.md)。
+- 本次报告为 [正常 API JSON](./evidence/phase2/full-api-p15_20260915_033311.json)、[正常 API Markdown](./evidence/phase2/full-api-p15_20260915_033311.md)、[停机 API JSON](./evidence/phase2/full-api-p24_outage_20260915_033321.json)、[停机 API Markdown](./evidence/phase2/full-api-p24_outage_20260915_033321.md)、[检索评测 JSON](./evidence/phase2/document-search-evaluation-p25_20260915_033317.json) 与 [检索评测 Markdown](./evidence/phase2/document-search-evaluation-p25_20260915_033317.md)。
 
 ## 当前仍然有效的限制
 
