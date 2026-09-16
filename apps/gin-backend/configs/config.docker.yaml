@@ -1,9 +1,13 @@
 # Docker Compose configuration. The service names resolve through the Compose
-# network; production deployments should provide their own configuration and
-# JWT key pair instead.
+# network; production deployments should provide their own configuration,
+# JWT key pair and secrets instead.
+#
+# 本文件服务于本地 Compose：运行在明文 HTTP 上，并使用仓库内示例凭据。
+# 因此它声明 mode: debug —— 声明为 release 的配置会被 config.checkReleaseSecrets
+# 拒绝（禁止占位 csrf_secret、要求 cookie.secure=true、禁止示例口令）。
 server:
   port: 8080
-  mode: release
+  mode: debug
   read_timeout: 30s
   write_timeout: 30s
 

@@ -97,5 +97,9 @@ func ConfigCheck(c *Config) error {
 	if err := c.CustomConfig.ConfigCheck(); err != nil {
 		return err
 	}
+	// 最后执行：需要 mode 与各段凭据的联合判断
+	if err := checkReleaseSecrets(c); err != nil {
+		return err
+	}
 	return nil
 }
