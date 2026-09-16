@@ -7,12 +7,14 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	mixinsearchv1 "packages/gen/mixin-search/v1"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -29,6 +31,14 @@ func main() {
 	overlap := flag.Int("overlap", 20, "overlap in runes")
 	timeout := flag.Duration("timeout", 15*time.Second, "deadline for each RPC")
 	maxSendBytes := flag.Int("max-send-bytes", 16<<20, "maximum gRPC request size")
+	indexToken := flag.String(
+		"index-token", os.Getenv("MIXIN_SEARCH_INDEX_TOKEN"),
+		"capability with the index-writer role; mint one with cmd/rag-token",
+	)
+	searchToken := flag.String(
+		"search-token", os.Getenv("MIXIN_SEARCH_SEARCH_TOKEN"),
+		"capability with the searcher role; mint one with cmd/rag-token",
+	)
 	flag.Parse()
 
 	if *filePath == "" {
@@ -42,6 +52,11 @@ func main() {
 	}
 	if *maxSendBytes <= 0 {
 		log.Fatal("max-send-bytes must be greater than zero")
+	}
+	// Index mutation and search are separate roles on purpose, so this demo needs
+	// two capabilities instead of one broad credential.
+	if strings.TrimSpace(*indexToken) == "" || strings.TrimSpace(*searchToken) == "" {
+		log.Fatal("-index-token and -search-token are required; mint them with: go run ./cmd/rag-token")
 	}
 	content, err := os.ReadFile(*filePath)
 	if err != nil {
@@ -60,7 +75,7 @@ func main() {
 	client := mixinsearchv1.NewRAGServiceClient(connection)
 
 	operationSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	ctx, cancel := context.WithTimeout(withCapability(context.Background(), *indexToken), *timeout)
 	indexed, err := client.IndexDocumentVersion(ctx, &mixinsearchv1.IndexDocumentVersionRequest{
 		OperationId:  "example-index-" + operationSuffix,
 		DocumentId:   *documentID,
@@ -83,7 +98,7 @@ func main() {
 		indexed.GetState().GetChunkCount(),
 	)
 
-	ctx, cancel = context.WithTimeout(context.Background(), *timeout)
+	ctx, cancel = context.WithTimeout(withCapability(context.Background(), *indexToken), *timeout)
 	_, err = client.UpdateDocumentAccess(ctx, &mixinsearchv1.UpdateDocumentAccessRequest{
 		OperationId:     "example-access-" + operationSuffix,
 		DocumentId:      *documentID,
@@ -95,7 +110,7 @@ func main() {
 		log.Fatalf("update document access: %v", err)
 	}
 
-	ctx, cancel = context.WithTimeout(context.Background(), *timeout)
+	ctx, cancel = context.WithTimeout(withCapability(context.Background(), *indexToken), *timeout)
 	_, err = client.ActivateDocumentVersion(ctx, &mixinsearchv1.ActivateDocumentVersionRequest{
 		OperationId:        "example-activate-" + operationSuffix,
 		DocumentId:         *documentID,
@@ -107,7 +122,7 @@ func main() {
 		log.Fatalf("activate document version: %v", err)
 	}
 
-	ctx, cancel = context.WithTimeout(context.Background(), *timeout)
+	ctx, cancel = context.WithTimeout(withCapability(context.Background(), *searchToken), *timeout)
 	searched, err := client.SearchDocuments(ctx, &mixinsearchv1.SearchDocumentsRequest{
 		Query:           *query,
 		AllowedSpaceIds: []string{*ownerSpaceID},
@@ -128,4 +143,9 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Println(string(encoded))
+}
+
+// withCapability attaches the caller capability the boundary expects.
+func withCapability(ctx context.Context, token string) context.Context {
+	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+strings.TrimSpace(token))
 }

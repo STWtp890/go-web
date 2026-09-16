@@ -12,6 +12,10 @@ type DocumentSearchInput struct {
 	AllowedSpaceIDs    []string
 	AllowedDocumentIDs []string
 	TopK               int
+	// CallerUserID 是发起检索的最终用户，只用于 mixin-search 的调用审计，
+	// 不参与授权判定：授权范围由 AllowedSpaceIDs/AllowedDocumentIDs 表达。
+	// 0 表示未知。
+	CallerUserID int64
 }
 
 type DocumentSearchHit struct {

@@ -25,17 +25,19 @@ docs/
 3. [项目结构与依赖约束](./architecture/PROJECT_STRUCTURE.md)
 4. [结构与复用开发约定](./architecture/DEVELOPMENT_CONVENTIONS.md)（新增代码落位与复用规则的唯一约定）
 5. [mixin-search/v1 契约](./contracts/MIXIN_SEARCH_V1_CONTRACT.md)
-6. [阶段 1 实施日志](./reports/PHASE1_IMPLEMENTATION_LOG.md)
-7. [阶段 2 实施日志](./reports/PHASE2_IMPLEMENTATION_LOG.md)
-8. 需要追溯决策时阅读 [ADR](./adr/)；需要理解历史方案时阅读 [history](./history/)
+6. [调用方 capability 契约](./contracts/SERVICE_CALL_CAPABILITY.md)
+7. [阶段 1 实施日志](./reports/PHASE1_IMPLEMENTATION_LOG.md)
+8. [阶段 2 实施日志](./reports/PHASE2_IMPLEMENTATION_LOG.md)
+9. 需要追溯决策时阅读 [ADR](./adr/)；需要理解历史方案时阅读 [history](./history/)
 
 ## 当前执行重点
 
-生态阶段二已收口，P2.0-P2.5 全部通过；阶段三的实施基线已建立。`mixin-search` 当前仍只被 `gin-backend` 的索引 Worker 与影子链路调用，尚无调用方身份认证，控制面在读路径上全局串行，因此**不进入 BM25 读取切换**。
+生态阶段二已收口，P2.0-P2.5 全部通过；阶段三的实施基线已建立，P3.0 与 P3.1 已完成。`mixin-search` 现在只接受携带 capability 的调用方，索引写入与检索分离，请求范围只能缩小不能扩大。
 
-当前实施包为 P3.1：为 `mixin-search` 建立调用身份与授权范围校验，使调用方只能缩小、不能扩大可检索空间。随后依次推进在线并发模型、多语料契约、QQ 身份与空间映射、在线可靠性门禁和 `py-agent` 文档知识闭环。
+当前实施包为 P3.2：改造在线检索并发模型——去掉读路径上的每请求全量控制状态加载、全局排他锁和持锁网络调用，使索引写入与在线查询不再相互阻塞。PostgreSQL BM25 仍是正式读取方，读取切换属于独立的 B 线。
 
-具体任务、依赖和验收门禁以 [当前实施计划](./planning/CURRENT_IMPLEMENTATION_PLAN.md) 为准；判断依据见 [ADR-012](./adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)。
+具体任务、依赖和验收门禁以 [当前实施计划](./planning/CURRENT_IMPLEMENTATION_PLAN.md) 为准；判断依据见 [ADR-012](./adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)，调用凭据格式见 [调用方 capability 契约](./contracts/SERVICE_CALL_CAPABILITY.md)。
+
 ## 分类索引
 
 | 分类 | 文档 | 职责 |
@@ -45,6 +47,7 @@ docs/
 | 架构 | [architecture/PROJECT_STRUCTURE.md](./architecture/PROJECT_STRUCTURE.md) | 目录职责、领域分层和依赖方向 |
 | 约定 | [architecture/DEVELOPMENT_CONVENTIONS.md](./architecture/DEVELOPMENT_CONVENTIONS.md) | 新增代码落位规则、身份与 HTTP 出入口契约、遗留模块冻结基线与迁移待办 |
 | 契约 | [contracts/MIXIN_SEARCH_V1_CONTRACT.md](./contracts/MIXIN_SEARCH_V1_CONTRACT.md) | 当前 RPC 边界和字段语义 |
+| 调用边界 | [contracts/SERVICE_CALL_CAPABILITY.md](./contracts/SERVICE_CALL_CAPABILITY.md) | 调用方 capability 格式、角色权限与范围包含规则 |
 | 实施证据 | [reports/PHASE0_COMPLETION_REPORT.md](./reports/PHASE0_COMPLETION_REPORT.md)、[reports/PHASE1_IMPLEMENTATION_LOG.md](./reports/PHASE1_IMPLEMENTATION_LOG.md)、[reports/PHASE2_IMPLEMENTATION_LOG.md](./reports/PHASE2_IMPLEMENTATION_LOG.md) | 记录已经验证的结果，不承担后续排期 |
 | 证据快照 | [reports/evidence/](./reports/evidence/) | 阶段报告引用的运行产物归档，内容不随后续实现改写 |
 | 决策 | [adr/](./adr/) | 保存已接受、被取代或附条件的架构决策 |
@@ -64,7 +67,7 @@ docs/
 | --- | --- | --- |
 | 阶段一：现状审计与边界确认 | 阶段 0 | 已完成并冻结 |
 | 阶段二：文档知识链路贯通 | 阶段 1 → 阶段 2 | 已完成；P2.5 结论为 KEEP_BM25 |
-| 阶段三：QQ 身份与知识空间融合 | 阶段 3（P3.0-P3.6） | 实施基线已建立；P3.0 完成，P3.1 进行中 |
+| 阶段三：QQ 身份与知识空间融合 | 阶段 3（P3.0-P3.6） | P3.0、P3.1 已完成；P3.2 进行中 |
 | 阶段四：聊天记录域建设 | 后续专项阶段 | 未进入；Chat/WebSocket 保持代码存在但不接入 |
 | 阶段五：治理、可靠性与持续演进 | 持续治理阶段 | 未进入 |
 | 文档 BM25 交接 | B 线（独立排期） | 未完成；PostgreSQL BM25 仍是正式读取方 |

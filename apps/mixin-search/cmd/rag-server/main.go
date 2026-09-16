@@ -5,11 +5,14 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 
 	"mixin-search/internal/rag"
+	"mixin-search/internal/security"
 	grpcadapter "mixin-search/internal/transport/grpc"
 	mixinsearchv1 "packages/gen/mixin-search/v1"
 
@@ -34,10 +37,54 @@ func main() {
 	controlNamespace := flag.String("control-namespace", defaultControlNamespace(), "control state namespace")
 	controlBootstrap := flag.Bool("control-bootstrap", defaultControlBootstrap(), "initialize a missing control namespace once")
 	maxReceiveBytes := flag.Int("max-receive-bytes", 16<<20, "maximum gRPC request size")
+	capabilityKeyPath := flag.String(
+		"capability-key-file",
+		os.Getenv("MIXIN_SEARCH_CAPABILITY_KEY_FILE"),
+		"file holding the shared boundary key for caller capabilities (required)",
+	)
+	capabilityKey := flag.String("capability-key", "", "boundary key inline; prefer -capability-key-file outside tests")
+	capabilityAudience := flag.String(
+		"capability-audience",
+		envOrDefault("MIXIN_SEARCH_CAPABILITY_AUDIENCE", "mixin-search"),
+		"accepted capability audience",
+	)
+	callerRate := flag.Float64(
+		"caller-rate-per-second",
+		envFloatOrDefault("MIXIN_SEARCH_CALLER_RATE_PER_SECOND", 200),
+		"per-caller request budget per second; 0 disables throttling",
+	)
+	callerBurst := flag.Int(
+		"caller-burst",
+		envIntOrDefault("MIXIN_SEARCH_CALLER_BURST", 400),
+		"per-caller burst budget; 0 disables throttling",
+	)
+	enableReflection := flag.Bool(
+		"enable-reflection",
+		envBoolOrDefault("MIXIN_SEARCH_ENABLE_REFLECTION", true),
+		"register gRPC reflection; a development aid that must be off when the port is exposed",
+	)
 	flag.Parse()
 
 	if *maxReceiveBytes <= 0 {
 		log.Fatal("max-receive-bytes must be greater than zero")
+	}
+
+	boundaryKey, err := loadBoundaryKey(*capabilityKeyPath, *capabilityKey)
+	if err != nil {
+		log.Fatalf("load capability boundary key: %v", err)
+	}
+	verifier, err := security.NewVerifier(boundaryKey, *capabilityAudience)
+	if err != nil {
+		log.Fatalf("build capability verifier: %v", err)
+	}
+	limiter := security.NewRateLimiter(*callerRate, *callerBurst)
+	authenticator, err := grpcadapter.NewAuthenticator(grpcadapter.AuthConfig{
+		Verifier: verifier,
+		Limiter:  limiter,
+		Audit:    security.SlogAuditSink(slog.Default()),
+	})
+	if err != nil {
+		log.Fatalf("build boundary authenticator: %v", err)
 	}
 
 	ctx := context.Background()
@@ -78,21 +125,34 @@ func main() {
 	}
 	defer listener.Close()
 
-	server := newGRPCServer(*maxReceiveBytes, handler)
+	server := newGRPCServer(*maxReceiveBytes, handler, authenticator, *enableReflection)
 
 	log.Printf(
-		"RAG gRPC server listening on %s (store=%s control_store=%s)",
+		"RAG gRPC server listening on %s (store=%s control_store=%s audience=%s throttling=%t reflection=%t)",
 		listener.Addr(),
 		strings.ToLower(*backend),
 		strings.ToLower(*controlBackend),
+		*capabilityAudience,
+		limiter.Enabled(),
+		*enableReflection,
 	)
 	if err := server.Serve(listener); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func newGRPCServer(maxReceiveBytes int, handler mixinsearchv1.RAGServiceServer) *grpc.Server {
-	server := grpc.NewServer(grpc.MaxRecvMsgSize(maxReceiveBytes))
+// newGRPCServer assembles the gRPC server. The authenticator is mandatory: a
+// server without it would accept any caller that can reach the port.
+func newGRPCServer(
+	maxReceiveBytes int,
+	handler mixinsearchv1.RAGServiceServer,
+	authenticator *grpcadapter.Authenticator,
+	enableReflection bool,
+) *grpc.Server {
+	server := grpc.NewServer(
+		grpc.MaxRecvMsgSize(maxReceiveBytes),
+		grpc.UnaryInterceptor(authenticator.UnaryInterceptor),
+	)
 	mixinsearchv1.RegisterRAGServiceServer(server, handler)
 
 	healthServer := health.NewServer()
@@ -103,8 +163,44 @@ func newGRPCServer(maxReceiveBytes int, handler mixinsearchv1.RAGServiceServer) 
 		healthpb.HealthCheckResponse_SERVING,
 	)
 
-	reflection.Register(server)
+	// Reflection lets anyone who reaches the port enumerate the API, so it is a
+	// development aid rather than a product capability. Health stays registered
+	// either way because container probes carry no caller credential.
+	if enableReflection {
+		reflection.Register(server)
+	}
 	return server
+}
+
+// loadBoundaryKey resolves the shared key from a file first and from an inline
+// value second. A missing or too-short key is fatal: starting without it would
+// produce a service that cannot authenticate anyone.
+func loadBoundaryKey(path, inline string) ([]byte, error) {
+	path = strings.TrimSpace(path)
+	inline = strings.TrimSpace(inline)
+	switch {
+	case path != "":
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		key := []byte(strings.TrimSpace(string(contents)))
+		if err := security.ValidateKey(key); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		return key, nil
+	case inline != "":
+		key := []byte(inline)
+		if err := security.ValidateKey(key); err != nil {
+			return nil, err
+		}
+		return key, nil
+	default:
+		return nil, fmt.Errorf(
+			"%w: set -capability-key-file (or MIXIN_SEARCH_CAPABILITY_KEY_FILE) to the shared boundary key",
+			security.ErrInvalidKey,
+		)
+	}
 }
 func openStore(
 	ctx context.Context,
@@ -192,5 +288,44 @@ func defaultControlNamespace() string {
 
 func defaultControlBootstrap() bool {
 	value := strings.TrimSpace(os.Getenv("CONTROL_STORE_BOOTSTRAP"))
+	return value == "1" || strings.EqualFold(value, "true")
+}
+
+func envOrDefault(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func envIntOrDefault(name string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		log.Fatalf("%s must be an integer: %v", name, err)
+	}
+	return parsed
+}
+
+func envFloatOrDefault(name string, fallback float64) float64 {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		log.Fatalf("%s must be a number: %v", name, err)
+	}
+	return parsed
+}
+
+func envBoolOrDefault(name string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
 	return value == "1" || strings.EqualFold(value, "true")
 }

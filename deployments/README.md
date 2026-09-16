@@ -14,6 +14,7 @@
 | 缺失项 | 后果 |
 | --- | --- |
 | `apps/gin-backend/configs/rsa_private.pem` / `rsa_public.pem` | gin-backend 启动时 `LoadKeys` 失败。密钥不入镜像，由 Compose 只读挂载提供 |
+| `deployments/secrets/mixin_search_capability.key` | mixin-search 拒绝启动（它不接受无身份的调用方），索引 Worker 与检索评测也会失败。密钥不入镜像，由 Compose 只读挂载提供 |
 | `deployments/postgresql/vendor/*.deb` | postgres 镜像构建失败（ParadeDB `pg_search` 离线安装包，约 64 MB） |
 
 执行一次引导脚本即可补齐（会生成密钥，并在校验 SHA-256 后下载 `.deb`）：

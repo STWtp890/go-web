@@ -161,6 +161,7 @@ func (observer *ShadowSearchObserver) execute(request ShadowSearchRequest) {
 		var result domain.DocumentSearchResult
 		result, err = observer.client.SearchDocuments(callCtx, domain.DocumentSearchInput{
 			Query: request.Query, AllowedSpaceIDs: []string{spaceID}, TopK: requestedTopK,
+			CallerUserID: request.OwnerID,
 		})
 		if err == nil {
 			observation.Truncated = result.Truncated

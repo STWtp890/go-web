@@ -37,6 +37,17 @@ document_index_delivery:
   max_send_bytes: 16777216
   health_timeout: 2s
 
+# 本文件面向从 apps/gin-backend 直接运行的本地进程，因此密钥路径相对该目录。
+# 密钥由 deployments/bootstrap.ps1 生成；未生成时只有需要调用 mixin-search 的
+# 进程（Worker、对账、评测、启用影子查询的服务）会失败关闭。
+mixin_search_security:
+  capability_key_path: ../../deployments/secrets/mixin_search_capability.key
+  issuer: go-web
+  audience: mixin-search
+  token_ttl: 2m
+  index_caller_id: go-web-index-worker
+  search_caller_id: go-web-shadow-search
+
 # 正式 HTTP 结果仍来自 BM25；影子调用通过有界队列异步执行且只写观测记录。
 document_search_shadow:
   enabled: false

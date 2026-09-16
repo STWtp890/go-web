@@ -55,6 +55,10 @@ go run ./cmd/document-index-admin -config configs/config.yaml rebuild start
 # 由 docker-compose.yaml 以只读卷挂载到容器内 /app/configs/。
 go run ./cmd/tools/pemgenerator
 
+# 生成 mixin-search 调用边界密钥（同一前置：bootstrap 会同时生成两者）
+# 密钥不进镜像（见根 .dockerignore 的 **/*.key），由只读卷挂载到 /app/secrets/。
+powershell -NoProfile -ExecutionPolicy Bypass -File ../../deployments/bootstrap.ps1
+
 # 运行 API 验证程序
 go run ./cmd/tools/runtimeapitest -help
 
@@ -72,6 +76,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ./verify-index-rebuild-e2e.p
 ```
 
 服务默认读取 `configs/config.yaml`；设置 `GIN_CONFIG_PATH` 可以覆盖配置文件路径。数据库结构由 `deployments/postgresql/entryscript/00-init.sh` 在全新开发数据卷上统一初始化。
+
+凡是要调用 mixin-search 的进程（索引 Worker、对账/重建、检索评测，以及启用影子查询的服务）都需要 `mixin_search_security` 配置指向的边界密钥文件，否则它们在启动时失败关闭。key 路径、调用方标识与 token 有效期都在该配置段中；可用 `-caller-id` 覆盖各命令的调用方标识，便于在 mixin-search 的审计记录中区分 Worker、对账与评测。凭据格式与角色划分见 [调用方 capability 契约](../../docs/contracts/SERVICE_CALL_CAPABILITY.md)。
 
 User、Manager 与 Document 实体缓存统一由进程级运行时创建，共享 Redis 适配器和 singleflight；内存回退按 entities/documents 分区执行 TTL + LRU，并受条目数和字节数双上限约束。User/Manager 每次先从 PostgreSQL 读取权威 `cache_revision`，再按 `id+revision` 访问缓存，避免 Evict 与在途回填竞态。Evict 只负责旧键回收并报告删除错误。JWT 会话状态不使用该内存回退：Redis 原子会话操作不可用时保持失败关闭。完整决策见 [ADR-011](../../docs/adr/011-bounded-cache-runtime-and-revision-fencing.md)。
 

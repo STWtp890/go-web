@@ -39,6 +39,7 @@ func run() error {
 	_ = global.String("config", configPathDefault, "gin-backend YAML config path")
 	address := global.String("mixin-search-address", envOrDefault("MIXIN_SEARCH_GRPC_ADDRESS", conf.IndexDeliveryConfig.GRPCAddress), "mixin-search gRPC address")
 	maxSendBytes := global.Int("max-send-bytes", conf.IndexDeliveryConfig.MaxSendBytes, "maximum gRPC request size")
+	callerID := global.String("caller-id", "go-web-index-admin", "mixin-search capability caller identity")
 	if err := global.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -55,7 +56,17 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	client, err := mixinsearch.New(*address, *maxSendBytes)
+	issuer, err := mixinsearch.NewCapabilityIssuerFromConfig(
+		conf.MixinSearchSecurity.CapabilityKeyPath,
+		conf.MixinSearchSecurity.Issuer,
+		*callerID,
+		conf.MixinSearchSecurity.Audience,
+		conf.MixinSearchSecurity.TokenTTL,
+	)
+	if err != nil {
+		return err
+	}
+	client, err := mixinsearch.New(*address, *maxSendBytes, issuer)
 	if err != nil {
 		return err
 	}

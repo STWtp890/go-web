@@ -40,6 +40,17 @@ document_index_delivery:
   max_send_bytes: 16777216
   health_timeout: 2s
 
+# mixin-search 拒绝任何不能证明身份的调用方，并按角色区分索引写入与检索。
+# 边界密钥由 deployments/bootstrap.ps1 生成，不入库也不入镜像，Compose 以只读卷
+# 挂载到 /app/secrets/。token_ttl 必须覆盖本文件中最大的 RPC 超时（30s）。
+mixin_search_security:
+  capability_key_path: secrets/mixin_search_capability.key
+  issuer: go-web
+  audience: mixin-search
+  token_ttl: 2m
+  index_caller_id: go-web-index-worker
+  search_caller_id: go-web-shadow-search
+
 document_search_shadow:
   enabled: true
   grpc_address: mixin-search:9090

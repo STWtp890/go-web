@@ -3,7 +3,7 @@
 > 文档职责：当前唯一阶段排期与实施入口
 > 上位目标：[ECOSYSTEM_EVOLUTION_GUIDE.md](../ECOSYSTEM_EVOLUTION_GUIDE.md)
 > 相关决策：[ADR-001](../adr/001-search-service-boundary.md)、[ADR-002](../adr/002-document-index-ownership.md)、[ADR-004](../adr/004-bm25-migration-strategy.md)、[ADR-005](../adr/005-development-baseline-over-production-migration.md)、[ADR-006](../adr/006-mixin-search-control-state-commit-order.md)、[ADR-007](../adr/007-qdrant-control-projection-and-filtering.md)、[ADR-008](../adr/008-document-index-transactional-outbox.md)、[ADR-009](../adr/009-shadow-index-compose-and-health-boundary.md)、[ADR-010](../adr/010-shadow-query-evaluation-gate.md)、[ADR-011](../adr/011-bounded-cache-runtime-and-revision-fencing.md)、[ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)
-> 当前状态：生态阶段二已收口（P2.0-P2.5 全部通过）；阶段三实施基线已建立，P3.0 已完成，当前实施包为 P3.1
+> 当前状态：生态阶段二已收口（P2.0-P2.5 全部通过）；阶段三实施基线已建立，P3.0 与 P3.1 已完成，当前实施包为 P3.2
 > 更新日期：2026-09-17
 
 ## 1. 当前全局进度结论
@@ -60,8 +60,8 @@
 | 实施包 | 目标 | 依赖 | 状态 |
 | --- | --- | --- | --- |
 | P3.0 | 重建文档与决策基线 | 无 | 已完成 |
-| P3.1 | mixin-search 调用身份与授权边界 | P3.0 | 当前实施包 |
-| P3.2 | 在线检索并发模型 | P3.0 | 待推进 |
+| P3.1 | mixin-search 调用身份与授权边界 | P3.0 | 已完成 |
+| P3.2 | 在线检索并发模型 | P3.0 | 当前实施包 |
 | P3.3 | 多语料契约与索引隔离 | P3.0 | 待推进 |
 | P3.4 | QQ 身份与知识空间映射 | P3.1、P3.3 | 待推进 |
 | P3.5 | 在线可靠性门禁 | P3.1、P3.2、P3.4 | 待推进 |
@@ -119,6 +119,19 @@ P3.0 已于 2026-09-17 完成。新增 ADR-012 并修订 ADR-001；阶段 1 与�
 - 审计记录可回答“谁在什么范围内发起了哪次检索”；
 - 开启认证后，`gin-backend` 的增量投递、对账、全量重建与影子查询链路仍全部通过原有回归；
 - 契约文档不再宣称 `mixin-search` 已完成最终调用授权。
+
+### 完成状态
+
+P3.1 已完成，调用边界契约见 [SERVICE_CALL_CAPABILITY.md](../contracts/SERVICE_CALL_CAPABILITY.md)：
+
+- `mixin-search` 新增 `internal/security`（capability 签名与校验、角色、范围包含判定、按调用方限流、结构化审计）与 `internal/transport/grpc/auth.go` 一元拦截器；缺少有效能力凭证返回 `UNAUTHENTICATED`，角色不符与范围越界返回 `PERMISSION_DENIED`，超出预算返回 `RESOURCE_EXHAUSTED`；
+- 索引写入（`index-writer`）、检索（`searcher`）与只读运维（`ops`）是三个独立角色，写 RPC 不接受检索身份，`SearchDocuments` 不接受写入身份；
+- 范围判定是包含而非取交集：请求中出现任何未授予标识即整体拒绝，不做静默裁剪；写入角色签发的 token 不携带范围，因此不能当作受限检索重放；
+- 服务端在缺少边界密钥时拒绝启动；密钥由 `deployments/bootstrap.ps1` 随机生成到 `deployments/secrets/mixin_search_capability.key`，不入库、不入镜像，由根 Compose 只读挂载；`reflection` 增加开关并在根 Compose 中关闭；健康检查刻意不要求凭证，容器探针无需持有密钥；
+- `go-web` 侧在 `mixinsearch` 适配器逐调用签发 capability，配置新增 `mixin_search_security` 段；索引 Worker、对账、评测与影子查询均已携带凭证；
+- 两侧各有一条相同的 golden vector 测试固定凭据格式，任一侧改动格式都会让另一侧失败；`mixin-search` 新增的测试覆盖未认证拒绝、越权范围拒绝、读写角色交叉拒绝、限流与审计记录。
+
+尚未建立的部分记录在契约第 8 节：`py-agent` 的 capability 签发入口属于 P3.4/P3.6，传输加密与按用户配额属于后续在线暴露前的加固项。
 
 ## 6. P3.2：在线检索并发模型
 

@@ -63,7 +63,19 @@ func TestIndexDeliveryRebuildE2E(t *testing.T) {
 		t.Fatalf("complete historical deliveries: %v", err)
 	}
 
-	client, err := mixinsearch.New(address, 16<<20)
+	// mixin-search 只接受携带 capability 的调用方，因此这条端到端用例和其余
+	// 环境变量一样要求显式提供边界密钥文件。
+	keyPath := os.Getenv("MIXIN_SEARCH_CAPABILITY_KEY_FILE")
+	if keyPath == "" {
+		t.Fatal("MIXIN_SEARCH_CAPABILITY_KEY_FILE is not set")
+	}
+	issuer, err := mixinsearch.NewCapabilityIssuerFromConfig(
+		keyPath, "go-web", "go-web-index-e2e", "mixin-search", 2*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("new capability issuer: %v", err)
+	}
+	client, err := mixinsearch.New(address, 16<<20, issuer)
 	if err != nil {
 		t.Fatalf("new mixin-search client: %v", err)
 	}

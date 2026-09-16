@@ -121,7 +121,19 @@ func initDependencies(conf *config.Config) (*runtimeDependencies, func()) {
 		queryOptions       []application.QueryOption
 	)
 	if conf.ShadowSearchConfig.Enabled {
-		shadowSearchClient, err = mixinsearch.New(conf.ShadowSearchConfig.GRPCAddress, conf.IndexDeliveryConfig.MaxSendBytes)
+		searchIssuer, err := mixinsearch.NewCapabilityIssuerFromConfig(
+			conf.MixinSearchSecurity.CapabilityKeyPath,
+			conf.MixinSearchSecurity.Issuer,
+			conf.MixinSearchSecurity.SearchCallerID,
+			conf.MixinSearchSecurity.Audience,
+			conf.MixinSearchSecurity.TokenTTL,
+		)
+		if err != nil {
+			panic(fmt.Sprintf("初始化 mixin-search 调用凭证失败: %v", err))
+		}
+		shadowSearchClient, err = mixinsearch.New(
+			conf.ShadowSearchConfig.GRPCAddress, conf.IndexDeliveryConfig.MaxSendBytes, searchIssuer,
+		)
 		if err != nil {
 			panic(fmt.Sprintf("初始化文档影子查询客户端失败: %v", err))
 		}

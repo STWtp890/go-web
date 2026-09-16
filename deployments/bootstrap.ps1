@@ -61,7 +61,33 @@ else {
     Write-Host "already present: $privateKeyPath"
 }
 
-# 2. pg_search offline artifact ------------------------------------------------
+# 2. mixin-search boundary key --------------------------------------------------
+Write-Step 'Ensure mixin-search capability boundary key'
+$secretsDirectory = Join-Path -Path $repositoryRoot -ChildPath 'deployments/secrets'
+$capabilityKeyPath = Join-Path -Path $secretsDirectory -ChildPath 'mixin_search_capability.key'
+
+if ($Force -or -not (Test-Path -LiteralPath $capabilityKeyPath -PathType Leaf)) {
+    New-Item -ItemType Directory -Path $secretsDirectory -Force | Out-Null
+    # mixin-search rejects any caller that cannot prove its identity, so go-web and
+    # mixin-search must share one unpredictable key: it signs every capability the
+    # caller presents. Generated here rather than committed, and gitignored (*.key).
+    $keyBytes = New-Object byte[] 32
+    $generator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $generator.GetBytes($keyBytes)
+    }
+    finally {
+        $generator.Dispose()
+    }
+    $capabilityKey = -join ($keyBytes | ForEach-Object { $_.ToString('x2') })
+    Set-Content -LiteralPath $capabilityKeyPath -Value $capabilityKey -Encoding ASCII -NoNewline
+    Write-Host "generated: $capabilityKeyPath"
+}
+else {
+    Write-Host "already present: $capabilityKeyPath"
+}
+
+# 3. pg_search offline artifact ------------------------------------------------
 Write-Step 'Ensure pg_search offline package'
 $vendorDirectory = Join-Path -Path $repositoryRoot -ChildPath 'deployments/postgresql/vendor'
 $debName = 'postgresql-17-pg-search_0.25.2-1PARADEDB-bookworm_amd64.deb'
@@ -98,7 +124,7 @@ else {
     Write-Host "already present and verified: $debPath"
 }
 
-# 3. Toolchain report ----------------------------------------------------------
+# 4. Toolchain report ----------------------------------------------------------
 Write-Step 'Report optional toolchain'
 foreach ($tool in @('docker', 'go', 'protoc', 'protoc-gen-go', 'protoc-gen-go-grpc', 'node', 'npm')) {
     $found = Get-Command $tool -ErrorAction SilentlyContinue

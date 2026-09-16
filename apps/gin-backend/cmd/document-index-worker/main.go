@@ -47,6 +47,7 @@ func run() error {
 	baseBackoff := flag.Duration("base-backoff", delivery.BaseBackoff, "minimum retry backoff")
 	maxBackoff := flag.Duration("max-backoff", delivery.MaxBackoff, "maximum retry backoff")
 	maxSendBytes := flag.Int("max-send-bytes", delivery.MaxSendBytes, "maximum gRPC request size")
+	callerID := flag.String("caller-id", conf.MixinSearchSecurity.IndexCallerID, "mixin-search capability caller identity")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -69,7 +70,17 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	client, err := mixinsearch.New(*address, *maxSendBytes)
+	issuer, err := mixinsearch.NewCapabilityIssuerFromConfig(
+		conf.MixinSearchSecurity.CapabilityKeyPath,
+		conf.MixinSearchSecurity.Issuer,
+		*callerID,
+		conf.MixinSearchSecurity.Audience,
+		conf.MixinSearchSecurity.TokenTTL,
+	)
+	if err != nil {
+		return err
+	}
+	client, err := mixinsearch.New(*address, *maxSendBytes, issuer)
 	if err != nil {
 		return err
 	}

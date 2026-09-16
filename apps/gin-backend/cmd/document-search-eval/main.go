@@ -58,6 +58,7 @@ func run() error {
 	queryTimeout := flags.Duration("query-timeout", conf.ShadowSearchConfig.Timeout, "per-query shadow timeout")
 	embeddingProfile := flags.String("embedding-profile", "local-hash-v1", "retrieval embedding profile under evaluation")
 	requireEligible := flags.Bool("require-eligible", false, "exit non-zero unless controlled switch is eligible")
+	callerID := flags.String("caller-id", "go-web-search-eval", "mixin-search capability caller identity")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -82,7 +83,17 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	client, err := mixinsearch.New(*address, conf.IndexDeliveryConfig.MaxSendBytes)
+	issuer, err := mixinsearch.NewCapabilityIssuerFromConfig(
+		conf.MixinSearchSecurity.CapabilityKeyPath,
+		conf.MixinSearchSecurity.Issuer,
+		*callerID,
+		conf.MixinSearchSecurity.Audience,
+		conf.MixinSearchSecurity.TokenTTL,
+	)
+	if err != nil {
+		return err
+	}
+	client, err := mixinsearch.New(*address, conf.IndexDeliveryConfig.MaxSendBytes, issuer)
 	if err != nil {
 		return err
 	}

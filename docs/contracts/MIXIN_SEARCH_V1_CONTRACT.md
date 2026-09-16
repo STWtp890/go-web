@@ -1,14 +1,14 @@
 # mixin-search/v1 文档索引契约
 
-> 状态：P1.5 定型契约，P2.1 持久化控制面与 P2.2 Qdrant 候选过滤已落地；调用身份与授权范围证明尚未建立（见 5.1）
-> 日期：2026-09-14（2026-09-17 澄清授权语义）
+> 状态：P1.5 定型契约，P2.1 持久化控制面与 P2.2 Qdrant 候选过滤已落地；P3.1 已建立调用方 capability 边界（见 5.1）
+> 日期：2026-09-14（2026-09-17 澄清授权语义并补入调用边界）
 > Proto：`packages/proto/mixin-search/v1/mixin-search.proto`
 
 ## 1. 适用范围
 
 契约路径使用 `mixin-search/v1`，Protobuf 完整服务名为 `mixin_search.v1.RAGService`。该服务只负责正式文档版本的派生索引，不承载聊天语料、用户体系、空间成员关系或文档发布流程。
 
-`go-web` 是文档、版本、归属空间、访问策略、授权和生命周期的唯一事实源，负责分配 `activation_revision`、`access_revision`、`lifecycle_revision`，并在完成身份、成员和资源权限校验后计算搜索请求中的 allow-list。该 allow-list 当前被 `mixin-search` 直接作为授权输入执行，其“调用方是否有权声明该范围”尚未验证，见 5.1。
+`go-web` 是文档、版本、归属空间、访问策略、授权和生命周期的唯一事实源，负责分配 `activation_revision`、`access_revision`、`lifecycle_revision`，并在完成身份、成员和资源权限校验后计算搜索请求中的 allow-list。该 allow-list 同时决定签发调用方 capability 时写入的已授予范围，服务端据此拒绝任何扩大范围的请求，见 5.1 与 [SERVICE_CALL_CAPABILITY.md](./SERVICE_CALL_CAPABILITY.md)。
 
 `mixin-search` 只保存可重建的文档索引、执行访问快照和索引控制状态，不解释用户、角色、成员或 QQ 身份，也不反向修改业务文档。P2.1 已为控制状态接入独立 PostgreSQL 持久化和 memory 测试适配器；P2.2 已为 Qdrant 接入候选级 ACL、活动版本、墓碑和 storage domain 过滤；P2.3/P2.4 已完成 gin-backend Outbox 消费、自动重试、对账、全量重建和根 Compose 持续影子索引；P2.5 已通过同一 SearchDocuments 契约运行异步影子查询和来源分层评估，未改变协议字段。
 
@@ -95,9 +95,15 @@ INDEXED --Activate(non-decreasing activation)--> ACTIVE
 
 准确表述是：
 
-> `mixin-search` 完成了文档**候选过滤**（未授权、非活动、已删除内容不会进入结果集，访问快照按事实源给定值执行）；**调用方身份认证与授权范围证明尚未建立**，属于 [ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md) 决策 4 的接入门禁。
+> `mixin-search` 完成了文档**候选过滤**（未授权、非活动、已删除内容不会进入结果集，访问快照按事实源给定值执行）。**调用方身份认证与授权范围证明已由 [SERVICE_CALL_CAPABILITY.md](./SERVICE_CALL_CAPABILITY.md) 在传输边界建立**：调用方必须携带由 `go-web` 签发的短时 capability，且请求范围必须包含在已授予范围内。
 
-在门禁落地前，唯一调用方是 `gin-backend` 的索引 Worker 与影子链路，allow-list 由事实源在自身权限校验之后产生，且根 Compose 只绑定 `127.0.0.1`。这是**当前时序事实**，不是可依赖的安全属性：任何持有网络访问权的调用方都可以自行扩大检索范围。因此不得把“搜索结果正确”表述为“`mixin-search` 完成了最终调用授权”，也不得在认证落地前把本服务暴露给第二个消费者。
+因此“搜索结果正确”仍然不等于“`mixin-search` 完成了最终调用授权”。区别在于：
+
+- **调用授权**由 `go-web` 在签发 capability 时完成，它决定某个用户此刻可以在哪些空间和文档上检索；
+- **候选过滤与范围包含校验**由 `mixin-search` 完成，它保证结果集不含未授权内容，并拒绝任何超出已授予范围的请求；
+- Model 只选择检索意图，两条链路都不接受它的权限判定。
+
+在 capability 边界建立之前，唯一调用方是 `gin-backend` 的索引 Worker 与影子链路，allow-list 由事实源在自身权限校验之后产生，且根 Compose 只绑定 `127.0.0.1`。这是当时的时序事实，不是可依赖的安全属性，已于 P3.1 被显式校验替代。
 
 搜索还必须：
 

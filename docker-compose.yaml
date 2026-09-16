@@ -87,8 +87,15 @@ services:
       - -control-dsn=postgres://mixin_control:mixin_control@control-postgres:5432/mixin_control?sslmode=disable
       - -control-namespace=go-web-shadow-v1
       - -control-bootstrap=true
+      # 调用方身份：缺少 capability 的调用被拒绝，因此密钥必须挂载。
+      - -capability-key-file=/app/secrets/mixin_search_capability.key
+      # reflection 让任何能连上端口者枚举全部 API，只在本地调试时开启。
+      - -enable-reflection=false
     ports:
       - "127.0.0.1:${MIXIN_SEARCH_GRPC_PORT:-19090}:9090"
+    volumes:
+      # 边界密钥由 deployments/bootstrap.ps1 生成，不入镜像（见根 .dockerignore 的 **/*.key）。
+      - ./deployments/secrets/mixin_search_capability.key:/app/secrets/mixin_search_capability.key:ro
     depends_on:
       control-postgres:
         condition: service_healthy
@@ -124,6 +131,8 @@ services:
       # 前置：在仓库根执行 `go run ./cmd/tools/pemgenerator` 生成 key pair。
       - ./apps/gin-backend/configs/rsa_private.pem:/app/configs/rsa_private.pem:ro
       - ./apps/gin-backend/configs/rsa_public.pem:/app/configs/rsa_public.pem:ro
+      # mixin-search 调用凭证使用同一条边界密钥，同样以只读卷提供。
+      - ./deployments/secrets/mixin_search_capability.key:/app/secrets/mixin_search_capability.key:ro
       - backend-storage:/app/storage
     depends_on:
       postgres:
@@ -150,6 +159,7 @@ services:
     command: ["/app/document-index-worker", "-config", "/app/configs/config.yaml"]
     volumes:
       - ./apps/gin-backend/configs/config.docker.yaml:/app/configs/config.yaml:ro
+      - ./deployments/secrets/mixin_search_capability.key:/app/secrets/mixin_search_capability.key:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -176,6 +186,7 @@ services:
     command: ["/app/document-index-admin", "-config", "/app/configs/config.yaml", "status"]
     volumes:
       - ./apps/gin-backend/configs/config.docker.yaml:/app/configs/config.yaml:ro
+      - ./deployments/secrets/mixin_search_capability.key:/app/secrets/mixin_search_capability.key:ro
     depends_on:
       postgres:
         condition: service_healthy

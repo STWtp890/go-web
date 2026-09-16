@@ -90,11 +90,14 @@ go run ./cmd/demo -store pgvector -pg-dsn "postgres://rag:rag@localhost:5432/rag
 
 ## gRPC 服务
 
+服务端只接受携带调用方 capability 的请求：没有有效凭证的调用返回 `UNAUTHENTICATED`，角色不匹配返回 `PERMISSION_DENIED`，请求范围超出已授予范围同样返回 `PERMISSION_DENIED`。因此启动前必须准备边界密钥文件（仓库根执行一次 `./deployments/bootstrap.ps1` 会生成 `deployments/secrets/mixin_search_capability.key`）。
+
 启动服务端（默认监听 `127.0.0.1:9090`，默认控制存储为 PostgreSQL）：
 
 ```powershell
 docker compose up -d --wait control-postgres
-go run ./cmd/rag-server -store memory -control-bootstrap
+go run ./cmd/rag-server -store memory -control-bootstrap `
+  -capability-key-file ../../deployments/secrets/mixin_search_capability.key
 ```
 
 默认控制连接为 `postgres://mixin_control:mixin_control@localhost:55432/mixin_control?sslmode=disable`，namespace 为 `default`。服务会幂等初始化 `mixin_search_control.control_states` schema，并以 namespace 隔离完整控制快照、使用 `generation` CAS 防止多实例覆盖写入。首次创建 namespace 时必须显式传入 `-control-bootstrap` 或设置 `CONTROL_STORE_BOOTSTRAP=true`；后续运行应去掉 bootstrap，缺失 namespace 将失败关闭。
@@ -108,31 +111,54 @@ go run ./cmd/rag-server -store memory -control-bootstrap
 | `-control-namespace` | `CONTROL_STORE_NAMESPACE` | `default` | 同一数据库中的控制状态隔离键 |
 | `-control-bootstrap` | `CONTROL_STORE_BOOTSTRAP` | `false` | 仅首次创建缺失 namespace；正常运行保持关闭 |
 
+调用边界参数：
+
+| 命令行参数 | 环境变量 | 默认值 | 说明 |
+|---|---|---|---|
+| `-capability-key-file` | `MIXIN_SEARCH_CAPABILITY_KEY_FILE` | 空 | 边界密钥文件；缺失即拒绝启动 |
+| `-capability-audience` | `MIXIN_SEARCH_CAPABILITY_AUDIENCE` | `mixin-search` | 接受的 capability audience |
+| `-caller-rate-per-second` | `MIXIN_SEARCH_CALLER_RATE_PER_SECOND` | `200` | 单调用方每秒请求预算；0 关闭限流 |
+| `-caller-burst` | `MIXIN_SEARCH_CALLER_BURST` | `400` | 单调用方突发预算；0 关闭限流 |
+| `-enable-reflection` | `MIXIN_SEARCH_ENABLE_REFLECTION` | `true` | gRPC reflection；端口对外暴露时必须关闭 |
+
+凭据格式、角色划分与“只允许缩小”的范围规则见 [SERVICE_CALL_CAPABILITY.md](../../docs/contracts/SERVICE_CALL_CAPABILITY.md)。
+
 完全内存化演示必须显式选择 memory 控制存储；这种方式不提供进程重启持久性：
 
 ```powershell
-go run ./cmd/rag-server -store memory -control-store memory
+go run ./cmd/rag-server -store memory -control-store memory `
+  -capability-key-file ../../deployments/secrets/mixin_search_capability.key
 ```
 
 索引先持久化带 15 分钟租约的 pending write，再写入向量，最后提交版本映射和首次响应；删除先持久化逻辑删除、墓碑和 pending delete，再清理物理向量。generation 冲突返回 `ABORTED`，控制存储不可用或快照损坏返回 `UNAVAILABLE`。完整故障收敛语义见 [ADR-006](../../docs/adr/006-mixin-search-control-state-commit-order.md)。
 
-使用命令行客户端索引、激活文档版本并执行授权范围混合检索：
+索引写入与检索是不同角色，命令行客户端因此需要两个 capability。用开发工具 `cmd/rag-token` 分别签发（它需要边界密钥，因此只用于本地调试）：
 
 ```powershell
+$indexToken = go run ./cmd/rag-token -capability-key-file ../../deployments/secrets/mixin_search_capability.key `
+  -role index-writer -subject dev-index
+$searchToken = go run ./cmd/rag-token -capability-key-file ../../deployments/secrets/mixin_search_capability.key `
+  -role searcher -subject dev-search -space demo
+
 go run ./cmd/rag-grpc-client `
   -address 127.0.0.1:9090 `
   -file ./examples/knowledge.md `
   -document-id knowledge `
-  -query "Eino 文档向量化"
+  -owner-space-id demo `
+  -query "Eino 文档向量化" `
+  -index-token $indexToken `
+  -search-token $searchToken
 ```
 
-服务端注册标准 grpc.health.v1.Health，空服务名和 mixin_search.v1.RAGService 均在成功完成存储初始化后报告 SERVING。
+服务端注册标准 grpc.health.v1.Health，空服务名和 mixin_search.v1.RAGService 均在成功完成存储初始化后报告 SERVING。健康检查刻意不要求 capability，容器探针因此不需要持有密钥。
 
 Qdrant 是首个完成候选级 ACL/活动版本/生命周期过滤的持久化后端；pgvector 保留为实验性替代，memory 仅用于测试和演示。P2.2 的本地候选语义通过不表示生产流量已经接入：
 
 ```powershell
-go run ./cmd/rag-server -store qdrant -qdrant-host localhost -qdrant-port 6334 -control-bootstrap
-go run ./cmd/rag-server -store pgvector -pg-dsn "postgres://rag:rag@localhost:5432/rag?sslmode=disable" -control-bootstrap
+go run ./cmd/rag-server -store qdrant -qdrant-host localhost -qdrant-port 6334 -control-bootstrap `
+  -capability-key-file ../../deployments/secrets/mixin_search_capability.key
+go run ./cmd/rag-server -store pgvector -pg-dsn "postgres://rag:rag@localhost:5432/rag?sslmode=disable" -control-bootstrap `
+  -capability-key-file ../../deployments/secrets/mixin_search_capability.key
 ```
 
 远程接口接收文件名和文件字节，不接收服务端本地路径；`.md`、`.markdown`、`.doc`、`.docx` 都会进入已有的独立文档管道。默认单次请求上限为 16 MiB，可分别通过服务端 `-max-receive-bytes` 和客户端 `-max-send-bytes` 调整。
@@ -206,10 +232,15 @@ go test ./internal/rag -run 'TestQdrant.*Integration|TestPGVectorStoreIntegratio
 - `../../packages/proto/mixin-search/v1/mixin-search.proto`：monorepo 中统一维护的版本化文档索引 gRPC 契约。
 - `../../packages/gen/mixin-search/v1`：由统一协议生成并供应用共享的 Go 类型与 gRPC 代码。
 - `internal/transport/grpc/server.go`：Protobuf DTO、gRPC 状态码与共享业务 Service 的适配层。
-- `cmd/rag-server/main.go`：gRPC 监听、后端选择与服务注册入口。
+- `internal/transport/grpc/auth.go`：调用方 capability 认证、角色权限与方法策略的 gRPC 拦截器。
+- `internal/security/capability.go`：capability 的签名、校验与“只允许缩小”的范围判定。
+- `internal/security/identity.go`：已验证身份在请求上下文中的传递与结构化审计记录。
+- `internal/security/limiter.go`：按调用方的令牌桶限流。
+- `cmd/rag-server/main.go`：gRPC 监听、边界认证、后端选择与服务注册入口。
 - `cmd/rag-healthcheck/main.go`：根 Compose 使用的标准 gRPC Health 探针。
 - `verify-control-store.ps1`：创建并清理一次性控制 PostgreSQL 的 P2.1 验收入口。
 - `verify-qdrant-control.ps1`：创建并清理一次性 Qdrant 的 P2.2 验收入口。
-- `cmd/rag-grpc-client/main.go`：上传文档并检索的最小客户端。
+- `cmd/rag-grpc-client/main.go`：携带索引与检索两个 capability 的最小客户端。
+- `cmd/rag-token/main.go`：本地调试用 capability 签发工具；持有边界密钥，因此不进产品镜像。
 - `cmd/demo/main.go`：后端切换、文档写入和混合查询演示。
 - `examples/knowledge.md`：可直接运行的 Markdown 示例文档。

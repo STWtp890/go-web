@@ -80,11 +80,16 @@ apps/gin-backend/
 ```text
 apps/mixin-search/
 ├── cmd/
-│   ├── rag-server/                         # 向量存储、控制存储和 gRPC 的组合根
+│   ├── rag-server/                         # 向量存储、控制存储、调用边界和 gRPC 的组合根
 │   ├── rag-healthcheck/                    # 标准 gRPC Health 容器探针
 │   ├── rag-grpc-client/                    # 最小远程调用客户端
+│   ├── rag-token/                          # 本地调试用 capability 签发工具（不进产品镜像）
 │   └── demo/                               # 文档管道与检索演示
 ├── internal/
+│   ├── security/                           # 调用方 capability、身份、审计与限流
+│   │   ├── capability.go                   # 签名、校验、角色与“只允许缩小”的范围判定
+│   │   ├── identity.go                     # 已验证身份的上下文传递与结构化审计记录
+│   │   └── limiter.go                      # 按调用方的令牌桶限流
 │   ├── rag/
 │   │   ├── contract.go                     # 文档索引用例、幂等、fencing 与提交编排
 │   │   ├── control_store.go                # ControlStore 端口、持久化模型和故障收敛
@@ -97,6 +102,8 @@ apps/mixin-search/
 │   │   ├── store_qdrant.go                 # Qdrant 控制投影与候选级过滤实现
 │   │   └── store_pgvector.go               # 实验性 pgvector 实现
 │   └── transport/grpc/                     # Protobuf DTO 与业务 Service 的适配层
+│       ├── server.go                       # 协议转换与错误码映射
+│       └── auth.go                         # 调用方认证、角色策略与范围包含校验拦截器
 ├── compose.yaml                            # 控制 PostgreSQL、Qdrant、pgvector 本地依赖
 ├── verify-control-store.ps1                # 一次性 PostgreSQL P2.1 验收入口
 └── verify-qdrant-control.ps1               # 一次性 Qdrant P2.2 验收入口
@@ -104,7 +111,9 @@ apps/mixin-search/
 
 `internal/rag` 中的 `ControlState` 是独立持久化模型，不依赖 Protobuf DTO。`DocumentIndexService` 同时依赖 `ControlStore` 和向量业务 `Service`；`cmd/rag-server` 作为组合根选择 PostgreSQL 或 memory 控制适配器。gRPC 层只完成协议转换和错误码映射，不读取数据库，也不复制幂等、修订或提交顺序规则。
 
-gRPC 层当前**没有**调用方身份认证或授权范围校验：`SearchDocuments` 把请求中的 allow-list 作为授权输入直接执行。这只在“唯一调用方是自身事实源、且只绑定 127.0.0.1”的现状下成立，属于阶段 3 的 P3.1 门禁，见 [ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md) 决策 4。控制面并发（每请求全量加载控制状态、全局排他锁、读路径内投影同步）属于 P3.2。
+gRPC 层自 P3.1 起先认证调用方、再映射协议：`internal/transport/grpc/auth.go` 的一元拦截器校验 capability 的签名、audience、有效期与角色，并对 `SearchDocuments` 执行“请求范围 ⊆ 已授予范围”的包含校验，未通过时不进入业务路径。索引写入（`index-writer`）、检索（`searcher`）与只读运维（`ops`）是三个独立角色，`internal/rag` 保持不感知身份。凭据格式与校验规则见 [SERVICE_CALL_CAPABILITY.md](../contracts/SERVICE_CALL_CAPABILITY.md)，背景决策见 [ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md) 决策 4。
+
+控制面并发（每请求全量加载控制状态、全局排他锁、读路径内投影同步）尚未改造，属于 P3.2。
 
 控制 PostgreSQL 与 VectorStore 之间没有共享事务。索引使用持久化 pending write 租约进行两阶段提交，删除先持久化逻辑删除与 pending delete 后执行物理清理；完整顺序见 [ADR-006](../adr/006-mixin-search-control-state-commit-order.md)。
 
@@ -141,7 +150,7 @@ cmd ──> app (composition root)
 - P2.1 的 PostgreSQL 控制状态和向量索引均为可重建派生数据；P2.3 已提供失败重放、差异对账和 repeatable-read 全量重建编排。
 - P2.2 已完成 Qdrant 授权、活动版本、墓碑与 storage domain 过滤下推；P2.3 已完成 gin-backend 可靠投递；P2.4 已完成根 Compose、分层健康状态与持续影子索引；P2.5 已完成非阻塞影子查询、事实复核、来源分层观测和质量报告。当前结论为 KEEP_BM25，正式读取方地位仍未改变。
 - P2.5 完成后的缓存加固统一了进程级 Redis/内存/singleflight 运行时。内存回退按实体与文档分区受 TTL、LRU、条目和字节预算约束；User/Manager 使用 PostgreSQL 单调 `cache_revision` 版本键隔离延迟旧回填，JWT 会话状态继续保持 Redis 故障时失败关闭。完整边界见 [ADR-011](../adr/011-bounded-cache-runtime-and-revision-fencing.md)。
-- 阶段 3 的实施基线已于 2026-09-17 建立（P3.0）。当前未完成项集中在 `mixin-search`：调用身份与授权范围校验（P3.1）、读路径的全局串行与每请求控制状态加载（P3.2）、聊天语料契约与索引隔离（P3.3）。`go-web` 侧在本阶段只新增 `py-agent` 接入所需的身份映射与治理边界，不建设完整聊天产品域。范围与门禁见 [CURRENT_IMPLEMENTATION_PLAN.md](../planning/CURRENT_IMPLEMENTATION_PLAN.md)。
+- 阶段 3 的实施基线已于 2026-09-17 建立（P3.0），调用方 capability 边界已落地（P3.1）。当前未完成项集中在 `mixin-search`：读路径的全局串行与每请求控制状态加载（P3.2）、聊天语料契约与索引隔离（P3.3）。`go-web` 侧在本阶段只新增 `py-agent` 接入所需的身份映射与治理边界，不建设完整聊天产品域。范围与门禁见 [CURRENT_IMPLEMENTATION_PLAN.md](../planning/CURRENT_IMPLEMENTATION_PLAN.md)。
 
 ## 7. P1.3 的结构结果
 

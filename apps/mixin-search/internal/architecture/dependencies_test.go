@@ -46,10 +46,18 @@ func TestDependencyRules(t *testing.T) {
 				if strings.HasPrefix(path, "mixin-search/cmd/") || path == "mixin-search/document_pipeline" {
 					return true
 				}
+				// internal/security holds the caller-capability primitives and no
+				// application state. The transport boundary is where a caller is
+				// authenticated, so it must be allowed to verify credentials there
+				// instead of pushing identity parsing into the rag core or the
+				// command wiring.
+				if path == "mixin-search/internal/security" || strings.HasPrefix(path, "mixin-search/internal/security/") {
+					return false
+				}
 				return strings.HasPrefix(path, "mixin-search/internal/") &&
 					path != "mixin-search/internal/rag" && !strings.HasPrefix(path, "mixin-search/internal/rag/")
 			},
-			reason: "transport may map protocol types to rag only and must not depend on commands or concrete lower layers",
+			reason: "transport may map protocol types to rag and verify capabilities only, and must not depend on commands or concrete lower layers",
 		},
 	}
 
