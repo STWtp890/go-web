@@ -17,13 +17,20 @@ $verificationGoCache = Join-Path ([System.IO.Path]::GetTempPath()) 'go-web-build
 $started = $false
 
 function Assert-JWTKeysPresent {
-    # JWT 密钥对不进镜像（见根 .dockerignore 的 **/*.pem），由 compose 只读挂载到容器。
-    # 若缺失，Docker 会在挂载点创建目录，导致容器内 LoadKeys 失败且原因难辨，故在此前置失败。
-    $keyDirectory = Join-Path $repositoryRoot 'apps/gin-backend/configs'
-    foreach ($name in @('rsa_private.pem', 'rsa_public.pem')) {
-        $path = Join-Path $keyDirectory $name
-        if (-not (Test-Path -Path $path -PathType Leaf)) {
-            throw "缺少 JWT 密钥文件 $path。请先在仓库根执行: go run ./apps/gin-backend/cmd/tools/pemgenerator"
+    param(
+        [Parameter(Mandatory)][string]$RepositoryRoot
+    )
+
+    # The JWT key pair is not baked into the image (root .dockerignore excludes **/*.pem);
+    # compose mounts it read-only into the container instead. When it is missing, Docker
+    # creates a directory at the mount point and LoadKeys then fails with a confusing error,
+    # so fail here first. Keep this file ASCII-only: Windows PowerShell 5.1 parses
+    # BOM-less .ps1 as ANSI, and a multi-byte comment can swallow the following newline.
+    $keyDirectory = Join-Path -Path $RepositoryRoot -ChildPath 'apps/gin-backend/configs'
+    foreach ($keyName in @('rsa_private.pem', 'rsa_public.pem')) {
+        $keyPath = Join-Path -Path $keyDirectory -ChildPath $keyName
+        if (-not (Test-Path -LiteralPath $keyPath -PathType Leaf)) {
+            throw "missing JWT key file: $keyPath. Run first: go run ./apps/gin-backend/cmd/tools/pemgenerator"
         }
     }
 }
@@ -126,7 +133,7 @@ try {
         Pop-Location
     }
 
-    Assert-JWTKeysPresent
+    Assert-JWTKeysPresent -RepositoryRoot $repositoryRoot
 
     $composeArguments = $composePrefix + @('up', '-d')
     if (-not $SkipImageBuild) {

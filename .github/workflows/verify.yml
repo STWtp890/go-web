@@ -163,3 +163,16 @@ jobs:
             exit 1
           fi
           echo "OK: no tracked .pem/.key files"
+
+      # Windows PowerShell 5.1 把无 BOM 的 .ps1 按 ANSI 解析：多字节注释的尾字节
+      # 可能吞掉紧随的换行，使下一行代码并入注释而静默失效。仓库约定 .ps1 保持 ASCII-only。
+      - name: Assert PowerShell scripts are ASCII-only
+        run: |
+          set -euo pipefail
+          offenders="$(grep -rlP '[^\x00-\x7F]' --include='*.ps1' . || true)"
+          if [[ -n "$offenders" ]]; then
+            echo "$offenders"
+            echo "::error::检测到含非 ASCII 的 .ps1；Windows PowerShell 5.1 会误解析，请改为 ASCII 或加 UTF-8 BOM。"
+            exit 1
+          fi
+          echo "OK: all .ps1 files are ASCII-only"
