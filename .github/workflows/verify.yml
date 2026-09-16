@@ -29,8 +29,13 @@ env:
 
 jobs:
   go-modules:
-    name: go build / vet / test（逐 module）
+    name: go build / vet / test（逐 module，GOWORK=off）
     runs-on: ubuntu-latest
+    # GOWORK=off 是刻意的：只 cd 到子目录仍会向上发现根 go.work，
+    # 那样无法证明 module 自洽（曾实测 GOWORK=off 下两个应用均构建失败）。
+    # 两个应用现已在 go.mod 中显式 require + replace packages/gen。
+    env:
+      GOWORK: 'off'
     steps:
       - uses: actions/checkout@v4
 
@@ -150,9 +155,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 需要完整历史才能对提交区间执行 diff。
+          fetch-depth: 0
 
-      - name: git diff --check
-        run: git diff --check
+      # 注意：在干净检出上直接跑 `git diff --check` 比较的是工作树与索引，
+      # 恒为空——那是一个假通过的判据。必须指定提交区间。
+      - name: git diff --check over the pushed range
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base="origin/${{ github.base_ref }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          # 首次推送、或事件未提供可用的 before 时，回退到根提交。
+          if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git rev-parse --verify --quiet "${base}^{commit}" >/dev/null; then
+            base="$(git rev-list --max-parents=0 HEAD | tail -n 1)"
+          fi
+          echo "checking whitespace errors in ${base}..HEAD"
+          git diff --check "${base}" HEAD
 
       # 密钥绝不应出现在受版本控制的文件中（生成物由卷挂载提供）。
       - name: Assert no committed key material
