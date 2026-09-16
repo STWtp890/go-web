@@ -2,6 +2,13 @@ module gin-backend
 
 go 1.26.8
 
+// 共享生成代码不随 module 发布，只能用相对路径 replace 指向仓库内目录。
+// 显式 require + replace 使本 module 在 GOWORK=off 下也能独立构建，
+// 这是 CI 的 module 隔离校验（GOWORK=off go build/vet/test）成立的前提。
+require packages/gen v0.0.0
+
+replace packages/gen => ../../packages/gen
+
 require (
 	github.com/gin-contrib/cors v1.7.7
 	github.com/gin-gonic/gin v1.12.0
