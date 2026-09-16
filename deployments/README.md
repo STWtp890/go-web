@@ -65,6 +65,17 @@ docker compose -f docker-compose.yaml up -d --build --wait
 
 成功运行会在 test-results 生成 document-search-evaluation-<run-id>.json/.md。当前 local-hash-v1 只用于确定性评估，因此报告即使数值门禁通过也会给出 KEEP_BM25；正式读取不会由脚本自动切换。
 
+### 验收产物的保留策略
+
+一次完整验收会新增 6 个文件（3 个报告族 × json + md）。为避免无限增长，`test-results/` **每个报告族只保留最近 3 次运行**：
+
+```powershell
+.\deployments\prune-test-results.ps1 -DryRun   # 先看将删除什么
+.\deployments\prune-test-results.ps1           # 执行
+```
+
+更早的产物可从 git 历史取回。该脚本只识别 `<族>_<YYYYMMDD>_<HHMMSS>.<ext>`（以及早期的 `<族>-<YYYYMMDD>_<HHMMSS>.<ext>`）命名；遇到其他命名会跳过并打印警告。
+
 镜像已确认无需重建时可使用 `-SkipImageBuild`；排查失败并希望保留临时环境时可使用 `-KeepEnvironment`。
 
 只验证 PostgreSQL 镜像和空库基线：
