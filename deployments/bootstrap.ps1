@@ -34,15 +34,26 @@ $publicKeyPath = Join-Path -Path $keyDirectory -ChildPath 'rsa_public.pem'
 
 if ($Force -or -not (Test-Path -LiteralPath $privateKeyPath -PathType Leaf) -or -not (Test-Path -LiteralPath $publicKeyPath -PathType Leaf)) {
     Assert-CommandAvailable -Name 'go'
-    Push-Location $repositoryRoot
+    # pemgenerator writes to -out (default 'configs') relative to its working directory,
+    # so it must run from apps/gin-backend -- running it from the repository root would
+    # scatter a stray top-level configs/ directory and leave the real path untouched.
+    $backendDirectory = Join-Path -Path $repositoryRoot -ChildPath 'apps/gin-backend'
+    Push-Location $backendDirectory
     try {
-        & go run ./apps/gin-backend/cmd/tools/pemgenerator
+        & go run ./cmd/tools/pemgenerator
         if ($LASTEXITCODE -ne 0) {
             throw "pemgenerator failed with exit code $LASTEXITCODE"
         }
     }
     finally {
         Pop-Location
+    }
+    # Never trust the generator's own report: confirm the files landed where the
+    # container mount and config.docker.yaml expect them.
+    foreach ($expected in @($privateKeyPath, $publicKeyPath)) {
+        if (-not (Test-Path -LiteralPath $expected -PathType Leaf)) {
+            throw "pemgenerator did not produce the expected key file: $expected"
+        }
     }
     Write-Host "generated: $privateKeyPath"
 }
