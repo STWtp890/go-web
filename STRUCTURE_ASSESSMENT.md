@@ -38,6 +38,10 @@
 | 最大单文件 | `cmd/runtimeapitest/main.go` 1045 | `internal/rag/contract.go` 1091 |
 
 > 注：`_test.go` 行占比**不是覆盖率**，也不代表测试质量，仅用于粗略比较测试投入分布。
+>
+> **上表为评估时点（H2）的实测值，其中「架构约束测试」一行已过时**——后续 C9/C10 落地为
+> gin-backend 1 个文件 / 8 条规则、mixin-search 1 个文件 / 3 条规则；**C9 随后被撤销**，
+> gin-backend 侧回归为 0。当前状态见 §3.5 的后续变化说明与 §7 优先级表。
 
 ---
 
@@ -301,7 +305,7 @@ Go 的包是最小封装边界。同包意味着**没有任何机制阻止 `Docu
 
 > **`gin-backend`**：目标架构已被编译级依赖图验证成立，但迁移只完成了一个模块。`modules/document` 达到样板级（domain 零内部依赖、适配器只依赖 domain）；`auth`/`manager` 存在强端到端覆盖但缺单元级隔离，且该缺口由 `logic ↔ GORM` 耦合导致；`chat`/`aiagent` 是生产入口不可达的孤儿实现，占全部代码 18.6%，但仍被 `go test ./...` 与 `go vet ./...` 完整编译检查。
 >
-> **`mixin-search`**：跨包依赖方向优秀且是严格线性链（`document_pipeline → rag → transport/grpc → cmd`，`rag` 不 import proto、不 import transport），契约与并发正确性设计出色（CAS 入签名、fail-closed 有代码支撑、可选能力接口）；但核心包 `internal/rag` 内部没有任何物理边界，`contract.go` 1091 行承担五种职责，且没有任何测试保护当前正确的依赖方向。
+> **`mixin-search`**：跨包依赖方向优秀且是严格线性链（`document_pipeline → rag → transport/grpc → cmd`，`rag` 不 import proto、不 import transport），契约与并发正确性设计出色（CAS 入签名、fail-closed 有代码支撑、可选能力接口）；但核心包 `internal/rag` 内部没有任何物理边界，`contract.go` 1091 行承担五种职责。**（原句「没有任何测试保护当前正确的依赖方向」已过时：C10 已为该边界增加 `internal/architecture` 依赖测试，见 §7。）**
 >
 > **共同问题不是目录不统一，而是架构规则尚未覆盖所有正在演进的代码。**
 
