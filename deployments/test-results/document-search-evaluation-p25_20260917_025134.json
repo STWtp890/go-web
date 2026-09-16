@@ -1,0 +1,255 @@
+{
+  "schemaVersion": "document-search-evaluation/v1",
+  "runId": "p25_20260917_025134",
+  "generatedAt": "2026-09-16T18:51:36.4269721Z",
+  "datasetName": "document-search-v1",
+  "datasetSha256": "d2fe1ecebbb66a3bb15682bc4794d3923a99a30f4cf801856d12f47676a32c50",
+  "embeddingProfile": "local-hash-v1",
+  "topK": 5,
+  "bm25": {
+    "meanRecallAtK": 1,
+    "meanMrr": 1,
+    "meanNdcgAtK": 1,
+    "latencyP50Micros": 5436,
+    "latencyP95Micros": 170057,
+    "latencyMaxMicros": 170057,
+    "errors": 0
+  },
+  "shadow": {
+    "meanRecallAtK": 1,
+    "meanMrr": 0.9047619047619049,
+    "meanNdcgAtK": 0.9285714285714286,
+    "latencyP50Micros": 25951,
+    "latencyP95Micros": 31304,
+    "latencyMaxMicros": 31304,
+    "errors": 0
+  },
+  "correctness": {
+    "permissionViolations": 0,
+    "lifecycleViolations": 0,
+    "activeVersionViolations": 0,
+    "formalScopeMismatches": 0
+  },
+  "decision": "KEEP_BM25",
+  "decisionReasons": [
+    "evaluation-only local hash embedding is not eligible for a semantic read switch"
+  ],
+  "queries": [
+    {
+      "id": "q-zh",
+      "category": "chinese",
+      "query": "并发控制",
+      "relevantKeys": [
+        "zh-concurrency"
+      ],
+      "bm25Keys": [
+        "zh-concurrency"
+      ],
+      "shadowKeys": [
+        "zh-concurrency",
+        "semantic-recovery",
+        "exact-quasar",
+        "title-beidou",
+        "body-mars"
+      ],
+      "bm25Metrics": {
+        "recallAtK": 1,
+        "mrr": 1,
+        "ndcgAtK": 1
+      },
+      "shadowMetrics": {
+        "recallAtK": 1,
+        "mrr": 1,
+        "ndcgAtK": 1
+      },
+      "bm25LatencyMicros": 170057,
+      "shadowLatencyMicros": 15944
+    },
+    {
+      "id": "q-en",
+      "category": "english",
+      "query": "transactional outbox",
+      "relevantKeys": [
+        "en-outbox"
+      ],
+      "bm25Keys": [
+        "en-outbox",
+        "zh-concurrency",
+        "code-timeout",
+        "exact-quasar",
+        "title-beidou"
+      ],
+      "shadowKeys": [
+        "en-outbox",
+        "code-timeout",
+        "semantic-recovery",
+        "exact-quasar",
+        "title-beidou"
+      ],
+      "bm25Metrics": {
+        "recallAtK": 1,
+        "mrr": 1,
+        "ndcgAtK": 1
+      },
+      "shadowMetrics": {
+        "recallAtK": 1,
+        "mrr": 1,
+        "ndcgAtK": 1
+      },
+      "bm25LatencyMicros": 5436,
+      "shadowLatencyMicros": 30338
+    },
+    {
+      "id": "q-code",
+      "category": "code",
+      "query": "context.WithTimeout",
+      "relevantKeys": [
+        "code-timeout"
+      ],
+      "bm25Keys": [
+        "code-timeout",
+        "zh-concurrency",
+        "en-outbox"
+      ],
+      "shadowKeys": [
+        "code-timeout",
+        "zh-concurrency",
+        "title-beidou",
+        "exact-quasar",
+        "en-outbox"
+      ],
+      "bm25Metrics": {
+        "recallAtK": 1,
+        "mrr": 1,
+        "ndcgAtK": 1
+      },
+      "shadowMetrics": {
+        "recallAtK": 1,
+        "mrr": 1,
+        "ndcgAtK": 1
+      },
+      "bm25LatencyMicros": 6085,
+      "shadowLatencyMicros": 25951
+    },
+    {
+      "id": "q-title",
+      "category": "title",
+      "query": "北斗索引",
+      "relevantKeys": [
+        "title-beidou"
+      ],
+      "bm25Keys": [
+        "title-beidou"
+      ],
+      "shadowKeys": [
+        "semantic-recovery",
+        "exact-quasar",
+        "title-beidou",
+        "body-mars",
+        "zh-concurrency"
+      ],
+      "bm25Metrics": {
+        "recallAtK": 1,
+        "mrr": 1,
+        "ndcgAtK": 1
+      },
+      "shadowMetrics": {
+        "recallAtK": 1,
+        "mrr": 0.3333333333333333,
+        "ndcgAtK": 0.5
+      },
+      "bm25LatencyMicros": 6211,
+      "shadowLatencyMicros": 23863
+    },
+    {
+      "id": "q-body",
+      "category": "body",
+      "query": "火星信标",
+      "relevantKeys": [
+        "body-mars"
+      ],
+      "bm25Keys": [
+        "body-mars"
+      ],
+      "shadowKeys": [
+        "body-mars",
+        "exact-quasar",
+        "zh-concurrency",
+        "semantic-recovery",
+        "code-timeout"
+      ],
+      "bm25Metrics": {
+        "recallAtK": 1,
+        "mrr": 1,
+        "ndcgAtK": 1
+      },
+      "shadowMetrics": {
+        "recallAtK": 1,
+        "mrr": 1,
+        "ndcgAtK": 1
+      },
+      "bm25LatencyMicros": 5400,
+      "shadowLatencyMicros": 23832
+    },
+    {
+      "id": "q-exact",
+      "category": "exact_keyword",
+      "query": "quasar-p25-token",
+      "relevantKeys": [
+        "exact-quasar"
+      ],
+      "bm25Keys": [
+        "exact-quasar"
+      ],
+      "shadowKeys": [
+        "exact-quasar",
+        "title-beidou",
+        "zh-concurrency",
+        "semantic-recovery",
+        "code-timeout"
+      ],
+      "bm25Metrics": {
+        "recallAtK": 1,
+        "mrr": 1,
+        "ndcgAtK": 1
+      },
+      "shadowMetrics": {
+        "recallAtK": 1,
+        "mrr": 1,
+        "ndcgAtK": 1
+      },
+      "bm25LatencyMicros": 5180,
+      "shadowLatencyMicros": 31304
+    },
+    {
+      "id": "q-semantic",
+      "category": "semantic_expression",
+      "query": "系统恢复后怎样保证消息不会丢失",
+      "relevantKeys": [
+        "semantic-recovery"
+      ],
+      "bm25Keys": [
+        "semantic-recovery"
+      ],
+      "shadowKeys": [
+        "semantic-recovery",
+        "zh-concurrency",
+        "body-mars",
+        "exact-quasar",
+        "code-timeout"
+      ],
+      "bm25Metrics": {
+        "recallAtK": 1,
+        "mrr": 1,
+        "ndcgAtK": 1
+      },
+      "shadowMetrics": {
+        "recallAtK": 1,
+        "mrr": 1,
+        "ndcgAtK": 1
+      },
+      "bm25LatencyMicros": 3854,
+      "shadowLatencyMicros": 28158
+    }
+  ]
+}
