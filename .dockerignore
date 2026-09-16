@@ -1,3 +1,7 @@
+# 本文件对以「仓库根」为 build context 的镜像生效。
+# 当前使用仓库根 context 的只有：gin-backend、mixin-search（docker-compose.yaml 中 `context: .`）。
+# postgres（./deployments/postgresql）与 simple-frontend（./apps/simple-frontend）
+# 各自使用子目录 context，本文件对其不生效；它们目录下的 .dockerignore 才对自己生效。
 .git
 .agents
 .codex
@@ -11,3 +15,13 @@
 **/*.test
 **/*.exe
 deployments/test-results
+
+# 密钥绝不进入镜像层。
+# JWT 密钥对由 compose 以只读卷挂载到容器内 /app/configs/，见 docker-compose.yaml。
+**/*.pem
+**/*.key
+
+# 仅供 postgres 镜像构建使用的预编译扩展包（约 64 MB）。
+# 该镜像的 context 是 ./deployments/postgresql，因此排除它不影响 postgres 构建，
+# 但可避免每个使用仓库根 context 的构建都把这 64 MB 送进 build context。
+deployments/postgresql/vendor
