@@ -120,6 +120,10 @@ services:
       - "8080:8080"
     volumes:
       - ./apps/gin-backend/configs/config.docker.yaml:/app/configs/config.yaml:ro
+      # JWT 密钥对不进镜像（见根 .dockerignore 的 **/*.pem），改为只读挂载。
+      # 前置：在仓库根执行 `go run ./cmd/tools/pemgenerator` 生成 key pair。
+      - ./apps/gin-backend/configs/rsa_private.pem:/app/configs/rsa_private.pem:ro
+      - ./apps/gin-backend/configs/rsa_public.pem:/app/configs/rsa_public.pem:ro
       - backend-storage:/app/storage
     depends_on:
       postgres:

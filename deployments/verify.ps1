@@ -16,6 +16,18 @@ $previousDocumentDSN = $env:DOCUMENT_REPOSITORY_TEST_DSN
 $verificationGoCache = Join-Path ([System.IO.Path]::GetTempPath()) 'go-web-build-verify-cache'
 $started = $false
 
+function Assert-JWTKeysPresent {
+    # JWT 密钥对不进镜像（见根 .dockerignore 的 **/*.pem），由 compose 只读挂载到容器。
+    # 若缺失，Docker 会在挂载点创建目录，导致容器内 LoadKeys 失败且原因难辨，故在此前置失败。
+    $keyDirectory = Join-Path $repositoryRoot 'apps/gin-backend/configs'
+    foreach ($name in @('rsa_private.pem', 'rsa_public.pem')) {
+        $path = Join-Path $keyDirectory $name
+        if (-not (Test-Path -Path $path -PathType Leaf)) {
+            throw "缺少 JWT 密钥文件 $path。请先在仓库根执行: go run ./apps/gin-backend/cmd/tools/pemgenerator"
+        }
+    }
+}
+
 function Invoke-CheckedCommand {
     param(
         [Parameter(Mandatory)][string]$Label,
@@ -113,6 +125,8 @@ try {
     finally {
         Pop-Location
     }
+
+    Assert-JWTKeysPresent
 
     $composeArguments = $composePrefix + @('up', '-d')
     if (-not $SkipImageBuild) {

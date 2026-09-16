@@ -51,6 +51,8 @@ go run ./cmd/document-index-admin -config configs/config.yaml -mixin-search-addr
 go run ./cmd/document-index-admin -config configs/config.yaml rebuild start
 
 # 生成默认 RSA 密钥
+# 注意：这是启动根 Compose 栈的前置步骤。密钥不进镜像（见根 .dockerignore 的 **/*.pem），
+# 由 docker-compose.yaml 以只读卷挂载到容器内 /app/configs/。
 go run ./cmd/tools/pemgenerator
 
 # 运行 API 验证程序
