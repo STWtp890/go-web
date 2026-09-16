@@ -1,0 +1,165 @@
+name: verify
+
+# 仓库原先没有任何 CI，投入最大的资产（依赖边界、proto 生成物一致性、
+# 95 项运行时 API 断言）全靠人工记得执行。本流水线覆盖其中可在无外部依赖
+# 环境下确定性复现的部分。
+#
+# 不在本流水线内：deployments/verify.ps1 的跨服务端到端验收——它需要构建镜像、
+# 启动 8 个容器与空数据卷，属于里程碑/行级改动的门禁，按需手工执行。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.26.8'
+  # 与 packages/gen 中已提交生成物一致，改动前请同步更新并重新生成。
+  PROTOC_VERSION: '33.4'
+  PROTOC_GEN_GO_VERSION: 'v1.36.11'
+  PROTOC_GEN_GO_GRPC_VERSION: 'v1.6.2'
+
+jobs:
+  go-modules:
+    name: go build / vet / test（逐 module）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            apps/gin-backend/go.sum
+            apps/mixin-search/go.sum
+            packages/gen/go.sum
+
+      # go.work 不把 ./... 传递到各 module，必须逐目录执行。
+      - name: Build, vet and test
+        run: |
+          set -euo pipefail
+          for module in apps/gin-backend apps/mixin-search packages/gen; do
+            echo "::group::$module"
+            (
+              cd "$module"
+              go build ./...
+              go vet ./...
+              go test ./...
+            )
+            echo "::endgroup::"
+          done
+
+      # mixin-search 的依赖边界由 Go 测试强制，单独列出以便失败时定位。
+      - name: Architecture boundary (mixin-search)
+        run: |
+          set -euo pipefail
+          cd apps/mixin-search
+          go test ./internal/architecture -v
+
+  generated-proto:
+    name: proto 生成物与源文件一致
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: packages/gen/go.sum
+
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: ${{ env.PROTOC_VERSION }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Go protobuf plugins (pinned)
+        run: |
+          set -euo pipefail
+          go install "google.golang.org/protobuf/cmd/protoc-gen-go@${{ env.PROTOC_GEN_GO_VERSION }}"
+          go install "google.golang.org/grpc/cmd/protoc-gen-go-grpc@${{ env.PROTOC_GEN_GO_GRPC_VERSION }}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Regenerate and compare against committed code
+        run: |
+          set -euo pipefail
+          # 注意：--go_opt=module=packages/gen 只是从 go_package 中剥掉该前缀，
+          # 产物会落在 <out>/mixin-search/v1/，而不是 <out>/packages/gen/mixin-search/v1/。
+          # 因此必须生成到临时目录再逐一比对——不能直接 --go_out=. 后 diff packages/gen，
+          # 那样产物会落到仓库根的 mixin-search/ 且 diff 恒为空（假通过）。
+          # 参数与 packages/proto/verify-generated.ps1 保持一致。
+          generated="$(mktemp -d)"
+          protoc -I . \
+            --go_out="$generated" --go_opt=module=packages/gen \
+            --go-grpc_out="$generated" --go-grpc_opt=module=packages/gen \
+            packages/proto/mixin-search/v1/mixin-search.proto
+
+          status=0
+          for file in mixin-search.pb.go mixin-search_grpc.pb.go; do
+            committed="packages/gen/mixin-search/v1/$file"
+            fresh="$generated/mixin-search/v1/$file"
+            if [[ ! -f "$fresh" ]]; then
+              echo "::error::protoc 未产出预期文件 $fresh"
+              status=1
+              continue
+            fi
+            if [[ ! -f "$committed" ]]; then
+              echo "::error::$committed 缺失"
+              status=1
+              continue
+            fi
+            if ! diff -u "$committed" "$fresh"; then
+              echo "::error::$file 与 proto 源不一致；请重新生成并提交。"
+              status=1
+            fi
+          done
+          if [[ "$status" -ne 0 ]]; then
+            exit 1
+          fi
+          echo "OK: packages/gen 与 proto 源一致"
+
+  frontend:
+    name: 前端 type-check 与构建
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/simple-frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/simple-frontend/package-lock.json
+
+      - run: npm ci
+
+      # build 脚本链：阶段边界校验 → vue-tsc → vite build
+      - run: npm run build
+
+  hygiene:
+    name: 仓库卫生
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: git diff --check
+        run: git diff --check
+
+      # 密钥绝不应出现在受版本控制的文件中（生成物由卷挂载提供）。
+      - name: Assert no committed key material
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -Ei '\.(pem|key)$'; then
+            echo "::error::检测到受版本控制的密钥文件；密钥应由挂载提供，不入库。"
+            exit 1
+          fi
+          echo "OK: no tracked .pem/.key files"
