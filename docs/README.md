@@ -32,11 +32,11 @@ docs/
 
 ## 当前执行重点
 
-生态阶段二已收口，P2.0-P2.5 全部通过；阶段三的实施基线已建立，P3.0 与 P3.1 已完成。`mixin-search` 现在只接受携带 capability 的调用方，索引写入与检索分离，请求范围只能缩小不能扩大。
+生态阶段二已收口，P2.0-P2.5 全部通过；阶段三的 P3.0-P3.2 已完成。`mixin-search` 现在只接受携带 capability 的调用方，索引写入与检索分离，请求范围只能缩小不能扩大；进程内控制状态已改为不可变快照，读路径不取全局锁、不加载全量控制状态，控制投影由后台 reconciler 收敛。
 
-当前实施包为 P3.2：改造在线检索并发模型——去掉读路径上的每请求全量控制状态加载、全局排他锁和持锁网络调用，使索引写入与在线查询不再相互阻塞。PostgreSQL BM25 仍是正式读取方，读取切换属于独立的 B 线。
+当前实施包为 P3.3：确定聊天语料契约与索引隔离——文档与聊天使用独立领域契约、独立集合与独立生命周期，不做成给文档 RPC 增加 `corpus_type` 字段；本阶段只建立基础边界，不实现聊天保存、采集、Web 查看与知识晋升。PostgreSQL BM25 仍是正式读取方，读取切换属于独立的 B 线。
 
-具体任务、依赖和验收门禁以 [当前实施计划](./planning/CURRENT_IMPLEMENTATION_PLAN.md) 为准；判断依据见 [ADR-012](./adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)，调用凭据格式见 [调用方 capability 契约](./contracts/SERVICE_CALL_CAPABILITY.md)。
+具体任务、依赖和验收门禁以 [当前实施计划](./planning/CURRENT_IMPLEMENTATION_PLAN.md) 为准；判断依据见 [ADR-012](./adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)，调用凭据格式见 [调用方 capability 契约](./contracts/SERVICE_CALL_CAPABILITY.md)，控制面并发模型见 [ADR-013](./adr/013-immutable-control-snapshot-and-background-projection.md)。
 
 ## 分类索引
 
@@ -67,7 +67,7 @@ docs/
 | --- | --- | --- |
 | 阶段一：现状审计与边界确认 | 阶段 0 | 已完成并冻结 |
 | 阶段二：文档知识链路贯通 | 阶段 1 → 阶段 2 | 已完成；P2.5 结论为 KEEP_BM25 |
-| 阶段三：QQ 身份与知识空间融合 | 阶段 3（P3.0-P3.6） | P3.0、P3.1 已完成；P3.2 进行中 |
+| 阶段三：QQ 身份与知识空间融合 | 阶段 3（P3.0-P3.6） | P3.0-P3.2 已完成；P3.3 进行中 |
 | 阶段四：聊天记录域建设 | 后续专项阶段 | 未进入；Chat/WebSocket 保持代码存在但不接入 |
 | 阶段五：治理、可靠性与持续演进 | 持续治理阶段 | 未进入 |
 | 文档 BM25 交接 | B 线（独立排期） | 未完成；PostgreSQL BM25 仍是正式读取方 |

@@ -3,7 +3,7 @@
 > 文档职责：当前唯一阶段排期与实施入口
 > 上位目标：[ECOSYSTEM_EVOLUTION_GUIDE.md](../ECOSYSTEM_EVOLUTION_GUIDE.md)
 > 相关决策：[ADR-001](../adr/001-search-service-boundary.md)、[ADR-002](../adr/002-document-index-ownership.md)、[ADR-004](../adr/004-bm25-migration-strategy.md)、[ADR-005](../adr/005-development-baseline-over-production-migration.md)、[ADR-006](../adr/006-mixin-search-control-state-commit-order.md)、[ADR-007](../adr/007-qdrant-control-projection-and-filtering.md)、[ADR-008](../adr/008-document-index-transactional-outbox.md)、[ADR-009](../adr/009-shadow-index-compose-and-health-boundary.md)、[ADR-010](../adr/010-shadow-query-evaluation-gate.md)、[ADR-011](../adr/011-bounded-cache-runtime-and-revision-fencing.md)、[ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)
-> 当前状态：生态阶段二已收口（P2.0-P2.5 全部通过）；阶段三实施基线已建立，P3.0 与 P3.1 已完成，当前实施包为 P3.2
+> 当前状态：生态阶段二已收口（P2.0-P2.5 全部通过）；阶段三实施基线已建立，P3.0-P3.2 已完成，当前实施包为 P3.3
 > 更新日期：2026-09-17
 
 ## 1. 当前全局进度结论
@@ -61,8 +61,8 @@
 | --- | --- | --- | --- |
 | P3.0 | 重建文档与决策基线 | 无 | 已完成 |
 | P3.1 | mixin-search 调用身份与授权边界 | P3.0 | 已完成 |
-| P3.2 | 在线检索并发模型 | P3.0 | 当前实施包 |
-| P3.3 | 多语料契约与索引隔离 | P3.0 | 待推进 |
+| P3.2 | 在线检索并发模型 | P3.0 | 已完成 |
+| P3.3 | 多语料契约与索引隔离 | P3.0 | 当前实施包 |
 | P3.4 | QQ 身份与知识空间映射 | P3.1、P3.3 | 待推进 |
 | P3.5 | 在线可靠性门禁 | P3.1、P3.2、P3.4 | 待推进 |
 | P3.6 | py-agent 文档知识闭环 | P3.5 | 待推进 |
@@ -158,6 +158,18 @@ P3.1 已完成，调用边界契约见 [SERVICE_CALL_CAPABILITY.md](../contracts
 - 并发查询的吞吐随并发度提升，而不是被服务内单锁串行化；
 - 并发索引写入期间的查询延迟与吞吐纳入门禁（与 P3.5 共用同一套测量）；
 - 既有契约测试全部通过：幂等重放、三类高水位、墓碑、重新发布、候选过滤语义不回归。
+
+### 完成状态
+
+P3.2 已完成，并发模型见 [ADR-013](../adr/013-immutable-control-snapshot-and-background-projection.md)：
+
+- 进程内控制状态改为**不可变快照 + 原子发布**（`snapshot.go`）：读 RPC 只做一次原子加载，不取锁；写 RPC 在写入锁内对私有副本执行 compare-and-swap，持久化成功后才发布，因此不再需要回滚路径，读者也不会看到从未持久化的状态；发布按 generation 单调，旧加载结果不会覆盖新状态；
+- `ControlStore` 增加 `Generation(ctx)`，PostgreSQL 实现只读取 generation 列；读路径只在 generation 变化或快照确需维护时重新加载控制面。跨实例新鲜度不变：另一实例的授权撤销/墓碑仍在下一次请求被观察到（`TestRequestRefreshObservesExternalAccessRevocationAndTombstone` 保持通过）；
+- 重新加载由独立的 `reloadMu` 串行，而不是写入者的 `writeMu`，因此读请求不会排在**本实例正在进行的向量写入**之后；维护（围栏到期意图、清理待删除向量）只在 lease 已过期或存在待清理删除时触发，且用 `TryLock` 机会式尝试，抢不到就用当前快照返回；
+- 投影同步移出搜索路径：新增投影 generation 跟踪与后台 reconciler（写入提交后唤醒，另有兜底间隔），搜索只确认投影已追上所用快照，未追上时才完成这一次收敛。投影写入失败时搜索仍失败关闭且不执行召回，与 P2.2 语义一致；
+- 新增证据测试：搜索不再加载控制面（25 次搜索 0 次加载）、8 个并发搜索在向量存储内同时执行、**一次索引写入挂起在向量存储内时搜索仍然完成**、未过期的写入意图不被当作待维护、后台 reconciler 在无请求时完成收敛、投影损坏时搜索失败关闭且不召回。
+
+本次只解除**读**路径的串行。控制状态仍是单行快照，“整个控制面必须装进内存”的天花板与按文档行存储（行级 CAS）留作后续独立事项，不阻塞 P3.3。
 
 ## 7. P3.3：多语料契约与索引隔离
 

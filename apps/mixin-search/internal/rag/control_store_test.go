@@ -658,6 +658,16 @@ func (s *faultControlStore) Save(ctx context.Context, generation uint64, state C
 	return next, nil
 }
 
+func (s *faultControlStore) Generation(ctx context.Context) (uint64, error) {
+	s.mu.Lock()
+	err := s.loadErr
+	s.mu.Unlock()
+	if err != nil {
+		return 0, err
+	}
+	return s.inner.Generation(ctx)
+}
+
 func (s *faultControlStore) StorageDomain() string { return s.inner.StorageDomain() }
 
 func (s *faultControlStore) setLoadError(err error) {
@@ -711,6 +721,10 @@ func (s *firstSavesBarrierControlStore) Save(ctx context.Context, generation uin
 		<-release
 	}
 	return s.inner.Save(ctx, generation, state)
+}
+
+func (s *firstSavesBarrierControlStore) Generation(ctx context.Context) (uint64, error) {
+	return s.inner.Generation(ctx)
 }
 
 func (s *firstSavesBarrierControlStore) StorageDomain() string { return s.inner.StorageDomain() }

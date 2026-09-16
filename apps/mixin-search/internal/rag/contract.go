@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -167,22 +168,26 @@ type documentManifest struct {
 }
 
 // DocumentIndexService implements the mixin-search/v1 contract over the shared
-// Eino workflows. Its control plane is refreshed from ControlStore before each
-// request and committed with generation compare-and-swap after each mutation.
+// Eino workflows. Its control plane is an immutable snapshot: readers load the
+// published pointer without taking a lock, while writers serialize on writeMu
+// and publish a private copy only after the durable compare-and-swap succeeds.
 type DocumentIndexService struct {
 	core          *Service
 	controlStore  ControlStore
 	storageDomain string
 
-	mu                   sync.RWMutex
-	controlGeneration    uint64
-	versionsByKey        map[string]contractVersion
-	versionsByStore      map[string]string
-	versionFingerprints  map[string]versionFingerprint
-	manifests            map[string]*documentManifest
-	operations           map[string]operationRecord
-	pendingVectorWrites  map[string]ControlPendingVectorWrite
-	pendingVectorDeletes map[string]struct{}
+	snapshot atomic.Pointer[controlSnapshot]
+	// writeMu serializes control-plane mutations; readers never take it.
+	writeMu sync.Mutex
+	// reloadMu serializes control-plane reloads. It is separate from writeMu so a
+	// reader whose snapshot is stale does not wait behind a writer's vector I/O.
+	reloadMu sync.Mutex
+
+	projectionMu     sync.Mutex
+	projectionSynced uint64
+	projectionErr    error
+
+	projectionWake chan struct{}
 }
 
 func NewDocumentIndexService(core *Service) (*DocumentIndexService, error) {
@@ -215,10 +220,17 @@ func NewDocumentIndexServiceWithControlStore(
 	if storageDomain == "" {
 		return nil, errors.New("control store storage domain is required")
 	}
-	service := &DocumentIndexService{core: core, controlStore: controlStore, storageDomain: storageDomain}
-	if err := service.restoreControlStateLocked(state); err != nil {
+	restored, err := snapshotFromControlState(state)
+	if err != nil {
 		return nil, fmt.Errorf("%w: restore control state: %w", ErrControlStoreUnavailable, err)
 	}
+	service := &DocumentIndexService{
+		core:           core,
+		controlStore:   controlStore,
+		storageDomain:  storageDomain,
+		projectionWake: make(chan struct{}, 1),
+	}
+	service.snapshot.Store(restored)
 	return service, nil
 }
 
@@ -269,21 +281,19 @@ func (s *DocumentIndexService) IndexDocumentVersion(
 		Metadata:          request.Metadata,
 	})
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.refreshControlStateLocked(ctx); err != nil {
+	locked, err := s.lockWrite(ctx)
+	if err != nil {
 		return DocumentVersionState{}, err
 	}
-	if replay, ok, err := s.replayOperationLocked(request.OperationID, "index_document_version", fingerprint); err != nil {
+	defer s.unlockWrite()
+	snapshot := locked
+	next := snapshot.clone()
+	if replay, ok, err := next.replayOperation(request.OperationID, "index_document_version", fingerprint); err != nil {
 		return DocumentVersionState{}, err
 	} else if ok {
 		return replay.(DocumentVersionState), nil
 	}
-	before, err := s.captureControlStateLocked()
-	if err != nil {
-		return DocumentVersionState{}, fmt.Errorf("%w: capture control state: %w", ErrControlStoreUnavailable, err)
-	}
-	manifest := s.manifestLocked(request.DocumentID)
+	manifest := next.manifest(request.DocumentID)
 	if err := validateLiveLifecycle(manifest, request.LifecycleRevision); err != nil {
 		return DocumentVersionState{}, err
 	}
@@ -292,22 +302,22 @@ func (s *DocumentIndexService) IndexDocumentVersion(
 	}
 
 	key := documentVersionKey(request.DocumentID, request.VersionID)
-	if fingerprint, ok := s.versionFingerprints[key]; ok &&
+	if fingerprint, ok := next.versionFingerprints[key]; ok &&
 		(fingerprint.contentSHA256 != digest || fingerprint.ownerSpaceID != request.OwnerSpaceID) {
 		return DocumentVersionState{}, fmt.Errorf("%w: document version already exists with different content or owner space", ErrConflict)
 	}
-	if existing, ok := s.versionsByKey[key]; ok {
+	if existing, ok := next.versionsByKey[key]; ok {
 		advanceLiveLifecycle(manifest, request.LifecycleRevision)
 		state := versionState(existing, manifest)
-		s.recordOperationLocked(request.OperationID, "index_document_version", fingerprint, state)
-		if err := s.persistControlMutationLocked(ctx, before); err != nil {
+		next.recordOperation(request.OperationID, "index_document_version", fingerprint, state)
+		if err := s.commit(ctx, snapshot, next); err != nil {
 			return DocumentVersionState{}, err
 		}
 		return state, nil
 	}
 
 	storageID := storageDocumentID(s.storageDomain, request.DocumentID, request.VersionID, request.OperationID)
-	pending, ok := s.pendingVectorWrites[storageID]
+	pending, ok := next.pendingVectorWrites[storageID]
 	if ok {
 		if pending.OperationID != request.OperationID || pending.Fingerprint != fingerprint {
 			return DocumentVersionState{}, fmt.Errorf("%w: operation_id %q is already bound to another index payload", ErrConflict, request.OperationID)
@@ -318,14 +328,15 @@ func (s *DocumentIndexService) IndexDocumentVersion(
 			Fingerprint:             fingerprint,
 			LeaseExpiresAtUnixMilli: time.Now().Add(pendingVectorWriteLease).UnixMilli(),
 		}
-		s.pendingVectorWrites[storageID] = pending
-		if err := s.persistControlMutationLocked(ctx, before); err != nil {
+		next.pendingVectorWrites[storageID] = pending
+		if err := s.commit(ctx, snapshot, next); err != nil {
 			return DocumentVersionState{}, err
 		}
-	}
-	beforeVectorCommit, err := s.captureControlStateLocked()
-	if err != nil {
-		return DocumentVersionState{}, fmt.Errorf("%w: capture vector write intent: %w", ErrControlStoreUnavailable, err)
+		snapshot = next
+		next = snapshot.clone()
+		// The clone deep-copies manifests, so the previous pointer now belongs to
+		// the published snapshot and must not be mutated any further.
+		manifest = next.manifest(request.DocumentID)
 	}
 	vectorWriteContext, cancelVectorWrite := context.WithDeadline(
 		ctx,
@@ -341,14 +352,14 @@ func (s *DocumentIndexService) IndexDocumentVersion(
 		Overlap:    request.Overlap,
 	})
 	if err != nil {
-		if persistErr := s.abandonVectorWriteLocked(ctx, storageID, beforeVectorCommit); persistErr != nil {
+		if _, persistErr := s.abandonVectorWrite(ctx, snapshot, storageID); persistErr != nil {
 			return DocumentVersionState{}, errors.Join(err, persistErr)
 		}
 		return DocumentVersionState{}, err
 	}
 	if time.Now().UnixMilli() >= pending.LeaseExpiresAtUnixMilli {
 		leaseErr := fmt.Errorf("%w: vector write intent lease expired", context.DeadlineExceeded)
-		if persistErr := s.abandonVectorWriteLocked(ctx, storageID, beforeVectorCommit); persistErr != nil {
+		if _, persistErr := s.abandonVectorWrite(ctx, snapshot, storageID); persistErr != nil {
 			return DocumentVersionState{}, errors.Join(leaseErr, persistErr)
 		}
 		return DocumentVersionState{}, leaseErr
@@ -367,17 +378,17 @@ func (s *DocumentIndexService) IndexDocumentVersion(
 		sourceURI: strings.TrimSpace(request.SourceURI),
 		metadata:  cloneStringMap(request.Metadata),
 	}
-	s.versionsByKey[key] = version
-	s.versionsByStore[storageID] = key
-	delete(s.pendingVectorWrites, storageID)
-	s.versionFingerprints[key] = versionFingerprint{contentSHA256: digest, ownerSpaceID: request.OwnerSpaceID}
+	next.versionsByKey[key] = version
+	next.versionsByStore[storageID] = key
+	delete(next.pendingVectorWrites, storageID)
+	next.versionFingerprints[key] = versionFingerprint{contentSHA256: digest, ownerSpaceID: request.OwnerSpaceID}
 	if manifest.ownerSpaceID == "" {
 		manifest.ownerSpaceID = request.OwnerSpaceID
 	}
 	advanceLiveLifecycle(manifest, request.LifecycleRevision)
 	state := versionState(version, manifest)
-	s.recordOperationLocked(request.OperationID, "index_document_version", fingerprint, state)
-	if err := s.persistControlMutationLocked(ctx, beforeVectorCommit); err != nil {
+	next.recordOperation(request.OperationID, "index_document_version", fingerprint, state)
+	if err := s.commit(ctx, snapshot, next); err != nil {
 		return DocumentVersionState{}, err
 	}
 	return state, nil
@@ -408,21 +419,19 @@ func (s *DocumentIndexService) ActivateDocumentVersion(
 		ExpectedPreviousVersionID: request.ExpectedPreviousVersionID,
 	})
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.refreshControlStateLocked(ctx); err != nil {
+	locked, err := s.lockWrite(ctx)
+	if err != nil {
 		return DocumentVersionState{}, err
 	}
-	if replay, ok, err := s.replayOperationLocked(request.OperationID, "activate_document_version", fingerprint); err != nil {
+	defer s.unlockWrite()
+	snapshot := locked
+	next := snapshot.clone()
+	if replay, ok, err := next.replayOperation(request.OperationID, "activate_document_version", fingerprint); err != nil {
 		return DocumentVersionState{}, err
 	} else if ok {
 		return replay.(DocumentVersionState), nil
 	}
-	before, err := s.captureControlStateLocked()
-	if err != nil {
-		return DocumentVersionState{}, fmt.Errorf("%w: capture control state: %w", ErrControlStoreUnavailable, err)
-	}
-	manifest := s.manifestLocked(request.DocumentID)
+	manifest := next.manifest(request.DocumentID)
 	if err := validateLiveLifecycle(manifest, request.LifecycleRevision); err != nil {
 		return DocumentVersionState{}, err
 	}
@@ -434,7 +443,7 @@ func (s *DocumentIndexService) ActivateDocumentVersion(
 			return DocumentVersionState{}, fmt.Errorf("%w: activation revision %d already belongs to version %q", ErrConflict, manifest.activationRevision, manifest.activationVersionID)
 		}
 		if manifest.tombstoned && request.LifecycleRevision > manifest.tombstoneRevision {
-			version, ok := s.versionsByKey[documentVersionKey(request.DocumentID, request.VersionID)]
+			version, ok := next.versionsByKey[documentVersionKey(request.DocumentID, request.VersionID)]
 			if !ok {
 				return DocumentVersionState{}, fmt.Errorf("%w: document version", ErrNotFound)
 			}
@@ -443,22 +452,22 @@ func (s *DocumentIndexService) ActivateDocumentVersion(
 			manifest.activationState = version.state
 			manifest.tombstoned = false
 			state := versionState(version, manifest)
-			s.recordOperationLocked(request.OperationID, "activate_document_version", fingerprint, state)
-			if err := s.persistControlMutationLocked(ctx, before); err != nil {
+			next.recordOperation(request.OperationID, "activate_document_version", fingerprint, state)
+			if err := s.commit(ctx, snapshot, next); err != nil {
 				return DocumentVersionState{}, err
 			}
 			return state, nil
 		}
-		state := s.activationRetryStateLocked(manifest)
-		s.recordOperationLocked(request.OperationID, "activate_document_version", fingerprint, state)
-		if err := s.persistControlMutationLocked(ctx, before); err != nil {
+		state := next.activationRetryState(manifest)
+		next.recordOperation(request.OperationID, "activate_document_version", fingerprint, state)
+		if err := s.commit(ctx, snapshot, next); err != nil {
 			return DocumentVersionState{}, err
 		}
 		return state, nil
 	}
 
 	key := documentVersionKey(request.DocumentID, request.VersionID)
-	version, ok := s.versionsByKey[key]
+	version, ok := next.versionsByKey[key]
 	if !ok {
 		return DocumentVersionState{}, fmt.Errorf("%w: document version", ErrNotFound)
 	}
@@ -473,8 +482,8 @@ func (s *DocumentIndexService) ActivateDocumentVersion(
 	manifest.activationState = version.state
 	manifest.tombstoned = false
 	state := versionState(version, manifest)
-	s.recordOperationLocked(request.OperationID, "activate_document_version", fingerprint, state)
-	if err := s.persistControlMutationLocked(ctx, before); err != nil {
+	next.recordOperation(request.OperationID, "activate_document_version", fingerprint, state)
+	if err := s.commit(ctx, snapshot, next); err != nil {
 		return DocumentVersionState{}, err
 	}
 	return state, nil
@@ -504,21 +513,19 @@ func (s *DocumentIndexService) UpdateDocumentAccess(
 		GrantedSpaceIDs:     request.GrantedSpaceIDs,
 	})
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.refreshControlStateLocked(ctx); err != nil {
+	locked, err := s.lockWrite(ctx)
+	if err != nil {
 		return DocumentAccessState{}, err
 	}
-	if replay, ok, err := s.replayOperationLocked(request.OperationID, "update_document_access", fingerprint); err != nil {
+	defer s.unlockWrite()
+	snapshot := locked
+	next := snapshot.clone()
+	if replay, ok, err := next.replayOperation(request.OperationID, "update_document_access", fingerprint); err != nil {
 		return DocumentAccessState{}, err
 	} else if ok {
 		return cloneDocumentAccessState(replay.(DocumentAccessState)), nil
 	}
-	before, err := s.captureControlStateLocked()
-	if err != nil {
-		return DocumentAccessState{}, fmt.Errorf("%w: capture control state: %w", ErrControlStoreUnavailable, err)
-	}
-	manifest := s.manifestLocked(request.DocumentID)
+	manifest := next.manifest(request.DocumentID)
 	if err := validateLiveLifecycle(manifest, request.LifecycleRevision); err != nil {
 		return DocumentAccessState{}, err
 	}
@@ -531,8 +538,8 @@ func (s *DocumentIndexService) UpdateDocumentAccess(
 		}
 		advanceLiveLifecycle(manifest, request.LifecycleRevision)
 		state := accessState(request.DocumentID, manifest)
-		s.recordOperationLocked(request.OperationID, "update_document_access", fingerprint, state)
-		if err := s.persistControlMutationLocked(ctx, before); err != nil {
+		next.recordOperation(request.OperationID, "update_document_access", fingerprint, state)
+		if err := s.commit(ctx, snapshot, next); err != nil {
 			return DocumentAccessState{}, err
 		}
 		return state, nil
@@ -543,8 +550,8 @@ func (s *DocumentIndexService) UpdateDocumentAccess(
 	manifest.grantedSpaceIDs = cloneStrings(request.GrantedSpaceIDs)
 	advanceLiveLifecycle(manifest, request.LifecycleRevision)
 	state := accessState(request.DocumentID, manifest)
-	s.recordOperationLocked(request.OperationID, "update_document_access", fingerprint, state)
-	if err := s.persistControlMutationLocked(ctx, before); err != nil {
+	next.recordOperation(request.OperationID, "update_document_access", fingerprint, state)
+	if err := s.commit(ctx, snapshot, next); err != nil {
 		return DocumentAccessState{}, err
 	}
 	return state, nil
@@ -570,25 +577,23 @@ func (s *DocumentIndexService) DeleteDocumentVersion(
 		LifecycleRevision: request.LifecycleRevision,
 	})
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.refreshControlStateLocked(ctx); err != nil {
+	locked, err := s.lockWrite(ctx)
+	if err != nil {
 		return DeleteDocumentVersionResult{}, err
 	}
-	if replay, ok, err := s.replayOperationLocked(request.OperationID, "delete_document_version", fingerprint); err != nil {
+	defer s.unlockWrite()
+	snapshot := locked
+	next := snapshot.clone()
+	if replay, ok, err := next.replayOperation(request.OperationID, "delete_document_version", fingerprint); err != nil {
 		return DeleteDocumentVersionResult{}, err
 	} else if ok {
 		return replay.(DeleteDocumentVersionResult), nil
 	}
-	before, err := s.captureControlStateLocked()
-	if err != nil {
-		return DeleteDocumentVersionResult{}, fmt.Errorf("%w: capture control state: %w", ErrControlStoreUnavailable, err)
-	}
-	manifest := s.manifestLocked(request.DocumentID)
+	manifest := next.manifest(request.DocumentID)
 	if byRevision := manifest.versionDeleteResults[request.VersionID]; byRevision != nil {
 		if result, ok := byRevision[request.LifecycleRevision]; ok {
-			s.recordOperationLocked(request.OperationID, "delete_document_version", fingerprint, result)
-			if err := s.persistControlMutationLocked(ctx, before); err != nil {
+			next.recordOperation(request.OperationID, "delete_document_version", fingerprint, result)
+			if err := s.commit(ctx, snapshot, next); err != nil {
 				return DeleteDocumentVersionResult{}, err
 			}
 			return result, nil
@@ -599,20 +604,20 @@ func (s *DocumentIndexService) DeleteDocumentVersion(
 	}
 
 	key := documentVersionKey(request.DocumentID, request.VersionID)
-	version, ok := s.versionsByKey[key]
+	version, ok := next.versionsByKey[key]
 	if !ok {
 		advanceLiveLifecycle(manifest, request.LifecycleRevision)
 		result := DeleteDocumentVersionResult{}
 		recordVersionDelete(manifest, request.VersionID, request.LifecycleRevision, result)
-		s.recordOperationLocked(request.OperationID, "delete_document_version", fingerprint, result)
-		if err := s.persistControlMutationLocked(ctx, before); err != nil {
+		next.recordOperation(request.OperationID, "delete_document_version", fingerprint, result)
+		if err := s.commit(ctx, snapshot, next); err != nil {
 			return DeleteDocumentVersionResult{}, err
 		}
 		return result, nil
 	}
-	delete(s.versionsByKey, key)
-	delete(s.versionsByStore, version.storageID)
-	s.pendingVectorDeletes[version.storageID] = struct{}{}
+	delete(next.versionsByKey, key)
+	delete(next.versionsByStore, version.storageID)
+	next.pendingVectorDeletes[version.storageID] = struct{}{}
 	activeRemoved := manifest.activeVersionID == request.VersionID
 	if activeRemoved {
 		manifest.activeVersionID = ""
@@ -620,11 +625,11 @@ func (s *DocumentIndexService) DeleteDocumentVersion(
 	advanceLiveLifecycle(manifest, request.LifecycleRevision)
 	result := DeleteDocumentVersionResult{Deleted: true, ActiveVersionRemoved: activeRemoved}
 	recordVersionDelete(manifest, request.VersionID, request.LifecycleRevision, result)
-	s.recordOperationLocked(request.OperationID, "delete_document_version", fingerprint, result)
-	if err := s.persistControlMutationLocked(ctx, before); err != nil {
+	next.recordOperation(request.OperationID, "delete_document_version", fingerprint, result)
+	if err := s.commit(ctx, snapshot, next); err != nil {
 		return DeleteDocumentVersionResult{}, err
 	}
-	if err := s.reconcilePendingVectorDeletesLocked(ctx); err != nil {
+	if err := s.reconcilePendingVectorDeletes(ctx, next); err != nil {
 		return DeleteDocumentVersionResult{}, err
 	}
 	return result, nil
@@ -647,24 +652,22 @@ func (s *DocumentIndexService) DeleteDocument(
 		LifecycleRevision: request.LifecycleRevision,
 	})
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.refreshControlStateLocked(ctx); err != nil {
+	locked, err := s.lockWrite(ctx)
+	if err != nil {
 		return DeleteDocumentResult{}, err
 	}
-	if replay, ok, err := s.replayOperationLocked(request.OperationID, "delete_document", fingerprint); err != nil {
+	defer s.unlockWrite()
+	snapshot := locked
+	next := snapshot.clone()
+	if replay, ok, err := next.replayOperation(request.OperationID, "delete_document", fingerprint); err != nil {
 		return DeleteDocumentResult{}, err
 	} else if ok {
 		return replay.(DeleteDocumentResult), nil
 	}
-	before, err := s.captureControlStateLocked()
-	if err != nil {
-		return DeleteDocumentResult{}, fmt.Errorf("%w: capture control state: %w", ErrControlStoreUnavailable, err)
-	}
-	manifest := s.manifestLocked(request.DocumentID)
+	manifest := next.manifest(request.DocumentID)
 	if result, ok := manifest.documentDeleteResults[request.LifecycleRevision]; ok {
-		s.recordOperationLocked(request.OperationID, "delete_document", fingerprint, result)
-		if err := s.persistControlMutationLocked(ctx, before); err != nil {
+		next.recordOperation(request.OperationID, "delete_document", fingerprint, result)
+		if err := s.commit(ctx, snapshot, next); err != nil {
 			return DeleteDocumentResult{}, err
 		}
 		return result, nil
@@ -676,11 +679,11 @@ func (s *DocumentIndexService) DeleteDocument(
 		return DeleteDocumentResult{}, fmt.Errorf("%w: lifecycle revision %d already represents a live document generation", ErrConflict, request.LifecycleRevision)
 	}
 
-	for key, version := range s.versionsByKey {
+	for key, version := range next.versionsByKey {
 		if version.state.DocumentID == request.DocumentID {
-			delete(s.versionsByStore, version.storageID)
-			delete(s.versionsByKey, key)
-			s.pendingVectorDeletes[version.storageID] = struct{}{}
+			delete(next.versionsByStore, version.storageID)
+			delete(next.versionsByKey, key)
+			next.pendingVectorDeletes[version.storageID] = struct{}{}
 		}
 	}
 
@@ -690,11 +693,11 @@ func (s *DocumentIndexService) DeleteDocument(
 	manifest.tombstoned = true
 	result := DeleteDocumentResult{Tombstoned: true, LifecycleRevision: request.LifecycleRevision}
 	manifest.documentDeleteResults[request.LifecycleRevision] = result
-	s.recordOperationLocked(request.OperationID, "delete_document", fingerprint, result)
-	if err := s.persistControlMutationLocked(ctx, before); err != nil {
+	next.recordOperation(request.OperationID, "delete_document", fingerprint, result)
+	if err := s.commit(ctx, snapshot, next); err != nil {
 		return DeleteDocumentResult{}, err
 	}
-	if err := s.reconcilePendingVectorDeletesLocked(ctx); err != nil {
+	if err := s.reconcilePendingVectorDeletes(ctx, next); err != nil {
 		return DeleteDocumentResult{}, err
 	}
 	return result, nil
@@ -710,16 +713,15 @@ func (s *DocumentIndexService) GetDocumentVersionState(
 		return GetDocumentVersionStateResult{}, fmt.Errorf("%w: document_id and version_id are required", ErrInvalidInput)
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.refreshControlStateLocked(ctx); err != nil {
+	snapshot, err := s.readSnapshot(ctx)
+	if err != nil {
 		return GetDocumentVersionStateResult{}, err
 	}
-	version, ok := s.versionsByKey[documentVersionKey(request.DocumentID, request.VersionID)]
+	version, ok := snapshot.versionsByKey[documentVersionKey(request.DocumentID, request.VersionID)]
 	if !ok {
 		return GetDocumentVersionStateResult{}, nil
 	}
-	return GetDocumentVersionStateResult{Exists: true, State: versionState(version, s.manifests[request.DocumentID])}, nil
+	return GetDocumentVersionStateResult{Exists: true, State: versionState(version, snapshot.manifests[request.DocumentID])}, nil
 }
 
 func (s *DocumentIndexService) SearchDocuments(
@@ -746,12 +748,15 @@ func (s *DocumentIndexService) SearchDocuments(
 	candidateLimit := max(request.TopK*2, 16)
 	maxCandidateLimit := min(max(request.TopK*16, 128), 800)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.refreshControlStateLocked(ctx); err != nil {
+	snapshot, err := s.readSnapshot(ctx)
+	if err != nil {
 		return SearchDocumentsResult{}, err
 	}
-	if err := s.core.SyncDocumentControls(ctx, s.vectorDocumentControlsLocked()); err != nil {
+	// The vector-store projection is converged by the background reconciler. A
+	// request pays for it only when the reconciler has not caught up yet, so a
+	// steady-state search performs no projection write, holds no lock, and never
+	// touches the control store beyond the generation probe above.
+	if err := s.ensureProjection(ctx, snapshot); err != nil {
 		return SearchDocumentsResult{}, err
 	}
 
@@ -764,15 +769,15 @@ func (s *DocumentIndexService) SearchDocuments(
 		hits := make([]SearchHit, 0, request.TopK)
 		seen := make(map[string]struct{}, request.TopK)
 		for _, hit := range raw.Hits {
-			key, ok := s.versionsByStore[hit.Chunk.DocumentID]
+			key, ok := snapshot.versionsByStore[hit.Chunk.DocumentID]
 			if !ok {
 				continue
 			}
-			version, ok := s.versionsByKey[key]
+			version, ok := snapshot.versionsByKey[key]
 			if !ok {
 				continue
 			}
-			manifest := s.manifests[version.state.DocumentID]
+			manifest := snapshot.manifests[version.state.DocumentID]
 			if manifest == nil || manifest.tombstoned || manifest.activeVersionID != version.state.VersionID {
 				continue
 			}
@@ -807,128 +812,6 @@ func (s *DocumentIndexService) SearchDocuments(
 		}
 		candidateLimit = min(candidateLimit*2, maxCandidateLimit)
 	}
-}
-
-func (s *DocumentIndexService) vectorDocumentControlsLocked() []VectorDocumentControl {
-	keys := make([]string, 0, len(s.versionsByKey))
-	for key := range s.versionsByKey {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	controls := make([]VectorDocumentControl, 0, len(keys)+len(s.pendingVectorDeletes))
-	projected := make(map[string]struct{}, len(keys))
-	for _, key := range keys {
-		version := s.versionsByKey[key]
-		manifest := s.manifests[version.state.DocumentID]
-		if manifest == nil {
-			continue
-		}
-		controls = append(controls, VectorDocumentControl{
-			StorageID:           version.storageID,
-			StorageDomain:       s.storageDomain,
-			DocumentID:          version.state.DocumentID,
-			VersionID:           version.state.VersionID,
-			OwnerSpaceID:        version.state.OwnerSpaceID,
-			AuthenticatedPublic: manifest.authenticatedPublic,
-			GrantedSpaceIDs:     cloneStrings(manifest.grantedSpaceIDs),
-			Active:              !manifest.tombstoned && manifest.activeVersionID == version.state.VersionID,
-			Tombstoned:          manifest.tombstoned,
-			ActivationRevision:  manifest.activationRevision,
-			AccessRevision:      manifest.accessRevision,
-			LifecycleRevision:   manifest.lifecycleRevision,
-			ContentSHA256:       version.state.ContentSHA256,
-		})
-		projected[version.storageID] = struct{}{}
-	}
-	for storageID := range s.pendingVectorDeletes {
-		if _, ok := projected[storageID]; ok {
-			continue
-		}
-		controls = append(controls, VectorDocumentControl{
-			StorageID:     storageID,
-			StorageDomain: s.storageDomain,
-			Tombstoned:    true,
-		})
-	}
-	return controls
-}
-
-func (s *DocumentIndexService) manifestLocked(documentID string) *documentManifest {
-	manifest := s.manifests[documentID]
-	if manifest == nil {
-		manifest = &documentManifest{
-			documentDeleteResults: make(map[uint64]DeleteDocumentResult),
-			versionDeleteResults:  make(map[string]map[uint64]DeleteDocumentVersionResult),
-		}
-		s.manifests[documentID] = manifest
-	}
-	return manifest
-}
-
-func (s *DocumentIndexService) replayOperationLocked(
-	operationID string,
-	kind string,
-	fingerprint string,
-) (any, bool, error) {
-	record, ok := s.operations[operationID]
-	if !ok {
-		for _, pending := range s.pendingVectorWrites {
-			if pending.OperationID != operationID {
-				continue
-			}
-			if kind != operationIndexDocumentVersion || pending.Fingerprint != fingerprint {
-				return nil, false, fmt.Errorf("%w: operation_id %q is already bound to an unfinished index operation", ErrConflict, operationID)
-			}
-			return nil, false, nil
-		}
-		return nil, false, nil
-	}
-	if record.kind != kind || record.fingerprint != fingerprint {
-		return nil, false, fmt.Errorf("%w: operation_id %q is already bound to %s", ErrConflict, operationID, record.kind)
-	}
-	return cloneOperationResult(record.result), true, nil
-}
-
-func (s *DocumentIndexService) abandonVectorWriteLocked(
-	ctx context.Context,
-	storageID string,
-	before ControlState,
-) error {
-	delete(s.pendingVectorWrites, storageID)
-	s.pendingVectorDeletes[storageID] = struct{}{}
-	if err := s.persistControlMutationLocked(ctx, before); err != nil {
-		return fmt.Errorf("claim abandoned vector write: %w", err)
-	}
-	if err := s.reconcilePendingVectorDeletesLocked(ctx); err != nil {
-		return fmt.Errorf("clean abandoned vector write: %w", err)
-	}
-	return nil
-}
-
-func (s *DocumentIndexService) recordOperationLocked(
-	operationID string,
-	kind string,
-	fingerprint string,
-	result any,
-) {
-	s.operations[operationID] = operationRecord{
-		kind:        kind,
-		fingerprint: fingerprint,
-		result:      cloneOperationResult(result),
-	}
-}
-
-func (s *DocumentIndexService) activationRetryStateLocked(manifest *documentManifest) DocumentVersionState {
-	if version, ok := s.versionsByKey[documentVersionKey(manifest.activationState.DocumentID, manifest.activationVersionID)]; ok {
-		return versionState(version, manifest)
-	}
-	state := manifest.activationState
-	state.Status = DocumentVersionIndexed
-	state.ActivationRevision = 0
-	state.AccessRevision = manifest.accessRevision
-	state.LifecycleRevision = manifest.lifecycleRevision
-	return state
 }
 
 func validateLiveLifecycle(manifest *documentManifest, revision uint64) error {

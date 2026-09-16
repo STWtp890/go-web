@@ -120,6 +120,14 @@ func main() {
 			log.Printf("close vector store: %v", closeErr)
 		}
 	}()
+
+	// The vector-store projection is converged in the background so search
+	// requests neither hold the global writer lock nor perform a projection write
+	// of their own in the steady state.
+	reconcilerCtx, stopProjectionReconciler := context.WithCancel(context.Background())
+	defer stopProjectionReconciler()
+	contractService.StartProjectionReconciler(reconcilerCtx)
+
 	handler, err := grpcadapter.NewServer(contractService)
 	if err != nil {
 		log.Fatal(err)

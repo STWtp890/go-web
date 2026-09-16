@@ -92,7 +92,9 @@ apps/mixin-search/
 │   │   └── limiter.go                      # 按调用方的令牌桶限流
 │   ├── rag/
 │   │   ├── contract.go                     # 文档索引用例、幂等、fencing 与提交编排
-│   │   ├── control_store.go                # ControlStore 端口、持久化模型和故障收敛
+│   │   ├── snapshot.go                     # 不可变控制快照、发布模型转换与控制投影构造
+│   │   ├── projection.go                   # 投影 generation 跟踪、后台 reconciler 与准入确认
+│   │   ├── control_store.go                # ControlStore 端口、持久化模型、读写快照与故障收敛
 │   │   ├── control_store_memory.go         # 单元测试/显式本地演示适配器
 │   │   ├── control_store_postgres.go       # 默认 PostgreSQL 控制存储适配器
 │   │   ├── control_schema.sql              # mixin_search_control schema 基线
@@ -109,11 +111,11 @@ apps/mixin-search/
 └── verify-qdrant-control.ps1               # 一次性 Qdrant P2.2 验收入口
 ```
 
-`internal/rag` 中的 `ControlState` 是独立持久化模型，不依赖 Protobuf DTO。`DocumentIndexService` 同时依赖 `ControlStore` 和向量业务 `Service`；`cmd/rag-server` 作为组合根选择 PostgreSQL 或 memory 控制适配器。gRPC 层只完成协议转换和错误码映射，不读取数据库，也不复制幂等、修订或提交顺序规则。
+`internal/rag` 中的 `ControlState` 是独立持久化模型，不依赖 Protobuf DTO。进程内控制状态自 P3.2 起是**不可变快照**（`snapshot.go`）：读请求只做一次原子加载与一次 generation 探测，写请求在独立写入锁内对私有副本执行 compare-and-swap，成功后发布。控制投影由 `projection.go` 的后台 reconciler 按投影 generation 收敛，搜索只确认投影已追上所用快照。`DocumentIndexService` 同时依赖 `ControlStore` 和向量业务 `Service`；`cmd/rag-server` 作为组合根选择 PostgreSQL 或 memory 控制适配器并启动 reconciler。gRPC 层只完成协议转换和错误码映射，不读取数据库，也不复制幂等、修订或提交顺序规则。并发模型见 [ADR-013](../adr/013-immutable-control-snapshot-and-background-projection.md)。
 
 gRPC 层自 P3.1 起先认证调用方、再映射协议：`internal/transport/grpc/auth.go` 的一元拦截器校验 capability 的签名、audience、有效期与角色，并对 `SearchDocuments` 执行“请求范围 ⊆ 已授予范围”的包含校验，未通过时不进入业务路径。索引写入（`index-writer`）、检索（`searcher`）与只读运维（`ops`）是三个独立角色，`internal/rag` 保持不感知身份。凭据格式与校验规则见 [SERVICE_CALL_CAPABILITY.md](../contracts/SERVICE_CALL_CAPABILITY.md)，背景决策见 [ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md) 决策 4。
 
-控制面并发（每请求全量加载控制状态、全局排他锁、读路径内投影同步）尚未改造，属于 P3.2。
+控制面并发已在 P3.2 改造完成：读路径不再全量加载控制状态、不取全局排他锁、不执行投影同步。控制状态仍是单行快照，“整个控制面必须装进内存”的天花板与按文档行存储（行级 CAS）属于后续独立事项。
 
 控制 PostgreSQL 与 VectorStore 之间没有共享事务。索引使用持久化 pending write 租约进行两阶段提交，删除先持久化逻辑删除与 pending delete 后执行物理清理；完整顺序见 [ADR-006](../adr/006-mixin-search-control-state-commit-order.md)。
 

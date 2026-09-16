@@ -26,18 +26,19 @@ Qdrant 与控制 PostgreSQL 之间没有共享事务。Qdrant 仍是可重建的
 
 `storage_id` 继续是向量副作用与清理的稳定键；`storage_domain` 来自 `ControlStore.StorageDomain()`。即使多个控制 namespace 共享一个 collection，查询也不会吸收其他 namespace 的候选。
 
-### 2. 正式搜索先同步投影，再选择候选
+### 2. 投影在候选选择前生效，但不再由每次搜索同步
 
-`SearchDocuments` 按以下顺序执行：
+`SearchDocuments` 按以下顺序执行（P3.2 之后；同步时机的改动见 [ADR-013](./013-immutable-control-snapshot-and-background-projection.md)）：
 
-1. 从 ControlStore 刷新最新 generation。
-2. 先把到期 pending write 转成持久化 pending delete，再尝试物理清理。
+1. 探测 ControlStore generation；只有它变化时才重新加载控制面并收敛 pending 向量意图。
+2. 确认 Qdrant 控制投影已经追上本次搜索所用的快照 generation；未追上时先完成这一次收敛，仍无法写入则停止本次搜索，不使用可能过期的候选状态，也不执行召回。
 3. 从当前版本、清单、访问快照和 pending delete 构造完整 Qdrant 控制投影；不可映射的待删除块投影为墓碑。
-4. 等待 Qdrant payload 更新完成；任一更新失败时停止本次搜索，不使用可能过期的候选状态。
-5. dense 与 sparse 查询使用完全相同的过滤条件后再执行 RRF。
-6. 返回前由 `DocumentIndexService` 再次复核活动版本、墓碑和授权。
+4. dense 与 sparse 查询使用完全相同的过滤条件后再执行 RRF。
+5. 返回前由 `DocumentIndexService` 再次复核活动版本、墓碑和授权。
 
-因此，版本激活、授权撤销、版本/文档删除和更高 lifecycle 重新发布最迟在下一次正式搜索准入时更新 Qdrant 投影，并在候选选择前生效。P2.2 不把 Qdrant 更新并入写 RPC 的控制状态事务，也不改变 ADR-006 的成功提交定义。
+投影的常规收敛由后台 reconciler 完成（按投影 generation 收敛，写入 RPC 提交后会主动唤醒），因此稳态搜索不再执行投影写入。**本 ADR 第 2 节原先规定的“每次正式搜索先同步投影”已被 ADR-013 取代**；第 3、4 节的过滤与复核语义不变。
+
+因此，版本激活、授权撤销、版本/文档删除和更高 lifecycle 重新发布最迟在下一次正式搜索准入时投影生效，并在候选选择前生效。P2.2 不把 Qdrant 更新并入写 RPC 的控制状态事务，也不改变 ADR-006 的成功提交定义。
 
 ### 3. 授权条件使用 Must 与最少一项 OR
 

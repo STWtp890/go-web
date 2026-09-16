@@ -138,9 +138,9 @@ P1.5 时进程重启后内存控制状态不会恢复，因此所有版本均视
 
 索引采用持久化 `pending_vector_write` 租约、向量写入、最终控制提交的两阶段顺序；删除先持久化逻辑删除、墓碑、首次响应与 pending delete，再清理物理向量。具体提交顺序和故障收敛见 [ADR-006](../adr/006-mixin-search-control-state-commit-order.md)。
 
-每次请求都以持久化 generation 为判定基础。控制存储 generation 冲突返回 `ABORTED`，调用方使用相同 `operation_id` 重新读取并重试；业务 revision/CAS 冲突返回 `FAILED_PRECONDITION`；无法证明控制状态有效时返回 `UNAVAILABLE` 并停止读写。
+每次请求都以持久化 generation 为判定基础。读请求先探测控制存储 generation，只有它发生变化（或还有待收敛的向量意图）才重新加载控制面；写请求在写入锁内执行 compare-and-swap 并只在持久化成功后发布新的不可变快照。控制存储 generation 冲突返回 `ABORTED`，调用方使用相同 `operation_id` 重新读取并重试；业务 revision/CAS 冲突返回 `FAILED_PRECONDITION`；无法证明控制状态有效时返回 `UNAVAILABLE` 并停止读写。
 
-Qdrant payload 保存规范化控制投影；每次正式搜索在读取最新持久化 generation 并收敛 pending 操作后，先同步投影，再在 dense/sparse 两路候选选择中统一下推 `storage_domain + active + not tombstoned` 和三路 OR 授权。返回前仍执行相同的契约层复核；候选不足时有界扩大召回并按公开 chunk ID 稳定去重。完整门禁见 [ADR-007](../adr/007-qdrant-control-projection-and-filtering.md)。pgvector 与 memory 不作为 P2.2 生产候选级过滤的证明对象。
+Qdrant payload 保存规范化控制投影；投影由后台 reconciler 按投影 generation 收敛，正式搜索不再逐次同步投影，而是在候选选择前确认投影已追上它所用的快照，然后在 dense/sparse 两路候选中统一下推 `storage_domain + active + not tombstoned` 和三路 OR 授权。返回前仍执行相同的契约层复核；候选不足时有界扩大召回并按公开 chunk ID 稳定去重。投影无法写入时搜索仍然失败关闭，且不会执行召回。完整门禁见 [ADR-007](../adr/007-qdrant-control-projection-and-filtering.md)，并发模型见 [ADR-013](../adr/013-immutable-control-snapshot-and-background-projection.md)。pgvector 与 memory 不作为 P2.2 生产候选级过滤的证明对象。
 
 控制状态和向量索引可以由 `go-web` 事实源重放重建；P2.1 验证服务端持久化、幂等恢复和接受事实重放的边界，P2.3 已完成 gin-backend 的持久化 Outbox、自动重试、对账和全量重建编排，P2.4 已在根 Compose 持续运行影子索引，P2.5 已在 Outbox 收敛后复核影子结果的权限、生命周期、活动版本与正式 SearchMine 范围。当前 KEEP_BM25 结论不改变本 v1 契约。
 

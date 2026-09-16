@@ -34,8 +34,13 @@ const (
 // ControlStore persists the complete contract control plane. Save implements
 // compare-and-swap: it may commit only when expectedGeneration is current and
 // returns the newly committed generation.
+//
+// Generation is the cheap staleness probe a reader uses to decide whether the
+// published snapshot is still current. It must observe the same generation Save
+// returns, without loading the control plane.
 type ControlStore interface {
 	Load(context.Context) (ControlState, error)
+	Generation(context.Context) (uint64, error)
 	Save(context.Context, uint64, ControlState) (uint64, error)
 	StorageDomain() string
 }
@@ -319,254 +324,220 @@ func controlOperationValue(operation ControlOperation) (any, error) {
 	}
 }
 
-func (s *DocumentIndexService) captureControlStateLocked() (ControlState, error) {
-	state := newControlState()
-	state.Generation = s.controlGeneration
-	for key, version := range s.versionsByKey {
-		state.VersionsByKey[key] = ControlVersion{
-			State:     version.state,
-			StorageID: version.storageID,
-			SourceURI: version.sourceURI,
-			Metadata:  cloneStringMap(version.metadata),
-		}
+// readSnapshot returns the snapshot a read-only RPC should serve.
+//
+// The steady state costs one control-generation probe and no lock: callers never
+// wait for a writer, never load the complete control plane, and never touch the
+// vector store. Only two things change that:
+//
+//   - the persisted generation moved, so the published snapshot is stale and
+//     must be reloaded. Reloads are serialized by reloadMu, not by the writer
+//     lock, so a reader never waits behind a writer's vector I/O.
+//   - the snapshot still needs control-plane maintenance (an expired write
+//     intent or a pending delete). That is opportunistic: a reader tries the
+//     writer lock without waiting and serves the current snapshot when a writer
+//     is busy, leaving the cleanup to that writer or to a later request.
+func (s *DocumentIndexService) readSnapshot(ctx context.Context) (*controlSnapshot, error) {
+	snapshot := s.snapshot.Load()
+	changed, err := s.controlStoreChanged(ctx, snapshot)
+	if err != nil {
+		return nil, err
 	}
-	for storageID, key := range s.versionsByStore {
-		state.VersionsByStore[storageID] = key
+	if changed {
+		s.reloadMu.Lock()
+		defer s.reloadMu.Unlock()
+		return s.reloadLocked(ctx, s.snapshot.Load())
 	}
-	for key, fingerprint := range s.versionFingerprints {
-		state.VersionFingerprints[key] = ControlVersionFingerprint{
-			ContentSHA256: fingerprint.contentSHA256,
-			OwnerSpaceID:  fingerprint.ownerSpaceID,
-		}
+	if !snapshot.needsMaintenance(time.Now().UnixMilli()) {
+		return snapshot, nil
 	}
-	for documentID, manifest := range s.manifests {
-		documentDeleteResults := make(map[uint64]DeleteDocumentResult, len(manifest.documentDeleteResults))
-		for revision, result := range manifest.documentDeleteResults {
-			documentDeleteResults[revision] = result
-		}
-		versionDeleteResults := make(map[string]map[uint64]DeleteDocumentVersionResult, len(manifest.versionDeleteResults))
-		for versionID, results := range manifest.versionDeleteResults {
-			resultCopies := make(map[uint64]DeleteDocumentVersionResult, len(results))
-			for revision, result := range results {
-				resultCopies[revision] = result
-			}
-			versionDeleteResults[versionID] = resultCopies
-		}
-		state.Manifests[documentID] = ControlDocumentManifest{
-			OwnerSpaceID:          manifest.ownerSpaceID,
-			ActiveVersionID:       manifest.activeVersionID,
-			ActivationVersionID:   manifest.activationVersionID,
-			ActivationRevision:    manifest.activationRevision,
-			ActivationState:       manifest.activationState,
-			AccessRevision:        manifest.accessRevision,
-			AuthenticatedPublic:   manifest.authenticatedPublic,
-			GrantedSpaceIDs:       cloneStrings(manifest.grantedSpaceIDs),
-			LifecycleRevision:     manifest.lifecycleRevision,
-			TombstoneRevision:     manifest.tombstoneRevision,
-			Tombstoned:            manifest.tombstoned,
-			DocumentDeleteResults: documentDeleteResults,
-			VersionDeleteResults:  versionDeleteResults,
-		}
+	if !s.writeMu.TryLock() {
+		return snapshot, nil
 	}
-	for operationID, record := range s.operations {
-		operation, err := controlOperationFromRecord(record)
-		if err != nil {
-			return ControlState{}, fmt.Errorf("capture operation %q: %w", operationID, err)
-		}
-		state.Operations[operationID] = operation
-	}
-	for storageID := range s.pendingVectorDeletes {
-		state.PendingVectorDeletes[storageID] = true
-	}
-	for storageID, pending := range s.pendingVectorWrites {
-		state.PendingVectorWrites[storageID] = pending
-	}
-	return cloneControlState(state)
+	defer s.writeMu.Unlock()
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	return s.reloadLocked(ctx, s.snapshot.Load())
 }
 
-func (s *DocumentIndexService) restoreControlStateLocked(state ControlState) error {
-	state, err := cloneControlState(state)
+func (s *DocumentIndexService) controlStoreChanged(ctx context.Context, snapshot *controlSnapshot) (bool, error) {
+	generation, err := s.controlStore.Generation(ctx)
 	if err != nil {
-		return err
+		return false, fmt.Errorf("%w: read control generation: %w", ErrControlStoreUnavailable, err)
 	}
-	versionsByKey := make(map[string]contractVersion, len(state.VersionsByKey))
-	for key, version := range state.VersionsByKey {
-		versionsByKey[key] = contractVersion{
-			state:     version.State,
-			storageID: version.StorageID,
-			sourceURI: version.SourceURI,
-			metadata:  cloneStringMap(version.Metadata),
-		}
-	}
-	versionsByStore := make(map[string]string, len(state.VersionsByStore))
-	for storageID, key := range state.VersionsByStore {
-		versionsByStore[storageID] = key
-	}
-	versionFingerprints := make(map[string]versionFingerprint, len(state.VersionFingerprints))
-	for key, fingerprint := range state.VersionFingerprints {
-		versionFingerprints[key] = versionFingerprint{
-			contentSHA256: fingerprint.ContentSHA256,
-			ownerSpaceID:  fingerprint.OwnerSpaceID,
-		}
-	}
-	manifests := make(map[string]*documentManifest, len(state.Manifests))
-	for documentID, manifest := range state.Manifests {
-		documentDeleteResults := make(map[uint64]DeleteDocumentResult, len(manifest.DocumentDeleteResults))
-		for revision, result := range manifest.DocumentDeleteResults {
-			documentDeleteResults[revision] = result
-		}
-		versionDeleteResults := make(map[string]map[uint64]DeleteDocumentVersionResult, len(manifest.VersionDeleteResults))
-		for versionID, results := range manifest.VersionDeleteResults {
-			resultCopies := make(map[uint64]DeleteDocumentVersionResult, len(results))
-			for revision, result := range results {
-				resultCopies[revision] = result
-			}
-			versionDeleteResults[versionID] = resultCopies
-		}
-		manifests[documentID] = &documentManifest{
-			ownerSpaceID:          manifest.OwnerSpaceID,
-			activeVersionID:       manifest.ActiveVersionID,
-			activationVersionID:   manifest.ActivationVersionID,
-			activationRevision:    manifest.ActivationRevision,
-			activationState:       manifest.ActivationState,
-			accessRevision:        manifest.AccessRevision,
-			authenticatedPublic:   manifest.AuthenticatedPublic,
-			grantedSpaceIDs:       cloneStrings(manifest.GrantedSpaceIDs),
-			lifecycleRevision:     manifest.LifecycleRevision,
-			tombstoneRevision:     manifest.TombstoneRevision,
-			tombstoned:            manifest.Tombstoned,
-			documentDeleteResults: documentDeleteResults,
-			versionDeleteResults:  versionDeleteResults,
-		}
-	}
-	operations := make(map[string]operationRecord, len(state.Operations))
-	for operationID, operation := range state.Operations {
-		result, err := controlOperationValue(operation)
-		if err != nil {
-			return fmt.Errorf("restore operation %q: %w", operationID, err)
-		}
-		operations[operationID] = operationRecord{
-			kind:        operation.Kind,
-			fingerprint: operation.Fingerprint,
-			result:      result,
-		}
-	}
-	pendingVectorDeletes := make(map[string]struct{}, len(state.PendingVectorDeletes))
-	for storageID := range state.PendingVectorDeletes {
-		pendingVectorDeletes[storageID] = struct{}{}
-	}
-	pendingVectorWrites := make(map[string]ControlPendingVectorWrite, len(state.PendingVectorWrites))
-	for storageID, pending := range state.PendingVectorWrites {
-		pendingVectorWrites[storageID] = pending
-	}
-
-	s.versionsByKey = versionsByKey
-	s.versionsByStore = versionsByStore
-	s.versionFingerprints = versionFingerprints
-	s.manifests = manifests
-	s.operations = operations
-	s.pendingVectorWrites = pendingVectorWrites
-	s.pendingVectorDeletes = pendingVectorDeletes
-	s.controlGeneration = state.Generation
-	return nil
-}
-
-func (s *DocumentIndexService) refreshControlStateLocked(ctx context.Context) error {
-	state, err := s.controlStore.Load(ctx)
-	if err != nil {
-		return fmt.Errorf("%w: refresh control state: %w", ErrControlStoreUnavailable, err)
-	}
-	if state.Generation < s.controlGeneration {
-		return fmt.Errorf(
+	if generation < snapshot.generation {
+		return false, fmt.Errorf(
 			"%w: control generation regressed from %d to %d",
 			ErrControlStoreUnavailable,
-			s.controlGeneration,
+			snapshot.generation,
+			generation,
+		)
+	}
+	return generation != snapshot.generation, nil
+}
+
+// lockWrite serializes control-plane mutations and returns the snapshot they
+// must build on. Vector and control-store I/O performed while it is held blocks
+// other writers only, never readers.
+func (s *DocumentIndexService) lockWrite(ctx context.Context) (*controlSnapshot, error) {
+	s.writeMu.Lock()
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	snapshot, err := s.reloadLocked(ctx, s.snapshot.Load())
+	if err != nil {
+		s.writeMu.Unlock()
+		return nil, err
+	}
+	return snapshot, nil
+}
+
+func (s *DocumentIndexService) unlockWrite() {
+	s.writeMu.Unlock()
+}
+
+// reloadLocked loads the durable control plane, fails closed on regression,
+// finishes pending vector maintenance, and publishes the result. The caller must
+// hold the writer lock.
+func (s *DocumentIndexService) reloadLocked(ctx context.Context, current *controlSnapshot) (*controlSnapshot, error) {
+	state, err := s.controlStore.Load(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: refresh control state: %w", ErrControlStoreUnavailable, err)
+	}
+	if state.Generation < current.generation {
+		return nil, fmt.Errorf(
+			"%w: control generation regressed from %d to %d",
+			ErrControlStoreUnavailable,
+			current.generation,
 			state.Generation,
 		)
 	}
-	if err := s.restoreControlStateLocked(state); err != nil {
-		return fmt.Errorf("%w: refresh control state: %w", ErrControlStoreUnavailable, err)
+	loaded, err := snapshotFromControlState(state)
+	if err != nil {
+		return nil, fmt.Errorf("%w: refresh control state: %w", ErrControlStoreUnavailable, err)
 	}
-	if err := s.reconcilePendingVectorWritesLocked(ctx); err != nil {
-		return err
+	s.publish(loaded)
+	if err := s.reconcilePendingVectorWrites(ctx, loaded); err != nil {
+		return nil, err
 	}
-	return s.reconcilePendingVectorDeletesLocked(ctx)
+	// Fencing an expired intent publishes a new snapshot that carries the pending
+	// delete, so the physical cleanup pass must read the newest one: passing the
+	// pre-fence snapshot would skip it and leave the orphaned vectors behind.
+	if err := s.reconcilePendingVectorDeletes(ctx, s.snapshot.Load()); err != nil {
+		return nil, err
+	}
+	return s.snapshot.Load(), nil
 }
 
-// reconcilePendingVectorWritesLocked first fences expired intents with a
-// durable pending-delete CAS. Physical cleanup runs only after that claim wins,
-// so it cannot delete a vector that another instance just made live.
-func (s *DocumentIndexService) reconcilePendingVectorWritesLocked(ctx context.Context) error {
-	if len(s.pendingVectorWrites) == 0 {
+// commit persists a writer-private snapshot with compare-and-swap and publishes
+// it only after the durable write succeeded. A conflict or failure simply leaves
+// the previous snapshot in place, so there is no rollback path and no window in
+// which readers observe a state that was never persisted.
+func (s *DocumentIndexService) commit(ctx context.Context, previous, next *controlSnapshot) error {
+	next.generation = previous.generation
+	generation, err := s.controlStore.Save(ctx, previous.generation, next.toControlState())
+	if err != nil {
+		if errors.Is(err, ErrControlStoreConflict) {
+			return fmt.Errorf("%w: persist control state: %v", ErrControlStoreConflict, err)
+		}
+		return fmt.Errorf("%w: persist control state: %w", ErrControlStoreUnavailable, err)
+	}
+	next.generation = generation
+	s.publish(next)
+	return nil
+}
+
+// publish makes snapshot current for readers and asks the projection reconciler
+// to bring the vector-store projection up to this generation.
+//
+// Publication never moves backwards: a reader that loaded the control plane
+// while a writer was committing could otherwise re-publish the older state it
+// read before that commit. Generation is the total order here, so the newest
+// persisted snapshot always wins.
+func (s *DocumentIndexService) publish(snapshot *controlSnapshot) {
+	for {
+		current := s.snapshot.Load()
+		if current != nil && snapshot.generation < current.generation {
+			return
+		}
+		if s.snapshot.CompareAndSwap(current, snapshot) {
+			break
+		}
+	}
+	s.signalProjection()
+}
+
+// reconcilePendingVectorWrites fences expired write intents with a durable
+// pending-delete compare-and-swap. Physical cleanup runs only after that claim
+// wins, so it cannot delete a vector that another instance just made live.
+func (s *DocumentIndexService) reconcilePendingVectorWrites(ctx context.Context, snapshot *controlSnapshot) error {
+	if len(snapshot.pendingVectorWrites) == 0 {
 		return nil
 	}
-	before, err := s.captureControlStateLocked()
-	if err != nil {
-		return fmt.Errorf("%w: capture vector write cleanup state: %w", ErrControlStoreUnavailable, err)
-	}
 	now := time.Now().UnixMilli()
-	claimed := false
-	for storageID, pending := range s.pendingVectorWrites {
+	expired := false
+	for _, pending := range snapshot.pendingVectorWrites {
+		if pending.LeaseExpiresAtUnixMilli <= now {
+			expired = true
+			break
+		}
+	}
+	if !expired {
+		return nil
+	}
+	next := snapshot.clone()
+	for storageID, pending := range next.pendingVectorWrites {
 		if pending.LeaseExpiresAtUnixMilli > now {
 			continue
 		}
-		delete(s.pendingVectorWrites, storageID)
-		s.pendingVectorDeletes[storageID] = struct{}{}
-		claimed = true
+		delete(next.pendingVectorWrites, storageID)
+		next.pendingVectorDeletes[storageID] = struct{}{}
 	}
-	if !claimed {
-		return nil
-	}
-	if err := s.persistControlMutationLocked(ctx, before); err != nil {
+	if err := s.commit(ctx, snapshot, next); err != nil {
 		return fmt.Errorf("claim expired vector write cleanup: %w", err)
 	}
 	return nil
 }
 
-// reconcilePendingVectorDeletesLocked performs only physical cleanup. The
-// logical delete and its replay result are already durable, so a vector-store
-// failure leaves an invisible, retryable orphan rather than resurrecting data.
-func (s *DocumentIndexService) reconcilePendingVectorDeletesLocked(ctx context.Context) error {
-	if len(s.pendingVectorDeletes) == 0 {
+// reconcilePendingVectorDeletes performs only physical cleanup. The logical
+// delete and its replay result are already durable, so a vector-store failure
+// leaves an invisible, retryable orphan rather than resurrecting data.
+func (s *DocumentIndexService) reconcilePendingVectorDeletes(ctx context.Context, snapshot *controlSnapshot) error {
+	if len(snapshot.pendingVectorDeletes) == 0 {
 		return nil
 	}
-	before, err := s.captureControlStateLocked()
-	if err != nil {
-		return fmt.Errorf("%w: capture vector cleanup state: %w", ErrControlStoreUnavailable, err)
-	}
+	next := snapshot.clone()
 	removed := false
-	for storageID := range s.pendingVectorDeletes {
+	for storageID := range next.pendingVectorDeletes {
 		if err := s.core.DeleteIndexedDocument(ctx, storageID); err != nil {
 			continue
 		}
-		delete(s.pendingVectorDeletes, storageID)
+		delete(next.pendingVectorDeletes, storageID)
 		removed = true
 	}
 	if !removed {
 		return nil
 	}
-	if err := s.persistControlMutationLocked(ctx, before); err != nil {
+	if err := s.commit(ctx, snapshot, next); err != nil {
 		return fmt.Errorf("persist vector cleanup progress: %w", err)
 	}
 	return nil
 }
 
-func (s *DocumentIndexService) persistControlMutationLocked(ctx context.Context, before ControlState) error {
-	next, err := s.captureControlStateLocked()
-	if err == nil {
-		var nextGeneration uint64
-		nextGeneration, err = s.controlStore.Save(ctx, before.Generation, next)
-		if err == nil {
-			s.controlGeneration = nextGeneration
-			return nil
-		}
+// abandonVectorWrite releases an unfinished write intent after a failed or
+// expired vector write, then cleans the orphaned vectors.
+func (s *DocumentIndexService) abandonVectorWrite(
+	ctx context.Context,
+	snapshot *controlSnapshot,
+	storageID string,
+) (*controlSnapshot, error) {
+	next := snapshot.clone()
+	delete(next.pendingVectorWrites, storageID)
+	next.pendingVectorDeletes[storageID] = struct{}{}
+	if err := s.commit(ctx, snapshot, next); err != nil {
+		return nil, fmt.Errorf("claim abandoned vector write: %w", err)
 	}
-
-	if restoreErr := s.restoreControlStateLocked(before); restoreErr != nil {
-		err = errors.Join(err, fmt.Errorf("restore previous control state: %w", restoreErr))
+	if err := s.reconcilePendingVectorDeletes(ctx, next); err != nil {
+		return nil, fmt.Errorf("clean abandoned vector write: %w", err)
 	}
-	if errors.Is(err, ErrControlStoreConflict) {
-		return fmt.Errorf("%w: persist control state: %v", ErrControlStoreConflict, err)
-	}
-	return fmt.Errorf("%w: persist control state: %w", ErrControlStoreUnavailable, err)
+	return s.snapshot.Load(), nil
 }

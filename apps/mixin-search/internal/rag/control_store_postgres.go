@@ -118,6 +118,23 @@ WHERE namespace = $1`, s.namespace).Scan(&generation, &payload); err != nil {
 	return cloneControlState(state)
 }
 
+// Generation reads only the generation column. A reader uses it to decide
+// whether its published snapshot is still current without transferring or
+// decoding the control-plane payload.
+func (s *PostgresControlStore) Generation(ctx context.Context) (uint64, error) {
+	var generation int64
+	if err := s.pool.QueryRow(ctx, `
+SELECT generation
+FROM mixin_search_control.control_states
+WHERE namespace = $1`, s.namespace).Scan(&generation); err != nil {
+		return 0, fmt.Errorf("read control generation: %w", err)
+	}
+	if generation < 0 {
+		return 0, fmt.Errorf("read control generation: negative generation %d", generation)
+	}
+	return uint64(generation), nil
+}
+
 func (s *PostgresControlStore) Save(
 	ctx context.Context,
 	expectedGeneration uint64,

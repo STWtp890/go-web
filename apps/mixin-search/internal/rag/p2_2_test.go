@@ -144,17 +144,28 @@ type recordingControlledStore struct {
 	filters     []VectorSearchFilter
 	denseCalls  int
 	sparseCalls int
+	syncCalls   int
 	syncErr     error
 }
 
 func (s *recordingControlledStore) SyncDocumentControls(_ context.Context, controls []VectorDocumentControl) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.syncCalls++
 	s.controls = append([]VectorDocumentControl(nil), controls...)
 	for index := range s.controls {
 		s.controls[index].GrantedSpaceIDs = cloneStrings(s.controls[index].GrantedSpaceIDs)
 	}
 	return s.syncErr
+}
+
+// projectionCalls reports how many times the vector store received a control
+// projection, which is how the read path proves it performed no projection
+// write of its own.
+func (s *recordingControlledStore) projectionCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.syncCalls
 }
 
 func (s *recordingControlledStore) DenseSearchFiltered(

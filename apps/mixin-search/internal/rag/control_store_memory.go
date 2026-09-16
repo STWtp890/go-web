@@ -33,6 +33,12 @@ func (s *MemoryControlStore) Load(_ context.Context) (ControlState, error) {
 	return cloneControlState(s.state)
 }
 
+func (s *MemoryControlStore) Generation(_ context.Context) (uint64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state.Generation, nil
+}
+
 func (s *MemoryControlStore) Save(
 	_ context.Context,
 	expectedGeneration uint64,
