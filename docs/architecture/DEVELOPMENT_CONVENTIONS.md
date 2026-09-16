@@ -2,7 +2,7 @@
 
 > 状态：**生效中**；新增代码必须遵守，存量遗留模块见第 5 节
 > 适用范围：`apps/gin-backend`、`apps/mixin-search`
-> 强制方式：`apps/mixin-search/internal/architecture` 以依赖测试强制单向边界；gin-backend 侧**当前无自动化约束**（曾有的测试已移除，见第 5 节），靠 review 与本文约定维持
+> 强制方式：两个应用各有 `internal/architecture` 依赖测试——mixin-search 强制单向边界；gin-backend 强制 8 条**方向性 import 断言**（不含文件清单快照，见第 5 节）
 > 上位文档：[ECOSYSTEM_EVOLUTION_GUIDE.md](../ECOSYSTEM_EVOLUTION_GUIDE.md)；目录职责见 [PROJECT_STRUCTURE.md](./PROJECT_STRUCTURE.md)
 
 ---
@@ -250,11 +250,13 @@ func ManagerAuthRequired(opts ...AuthOption) gin.HandlerFunc  // 管理面
 4. 每个遗留模块迁移完成时，在本文更新状态表与遗留清单。
 5. 遗留模块的生产文件清单记录在 [PROJECT_STRUCTURE.md](./PROJECT_STRUCTURE.md)，并在 code review 中核对；**不设精确清单自动化测试**。
 
-> **为什么不设「精确清单冻结」**：gin-backend 曾以 `internal/architecture` 记录 5 组共 70 个遗留文件的精确基线并做相等断言。该方式**已移除**，原因有二：
+> **为什么只保留方向性断言**：gin-backend 曾以 `internal/architecture` 记录 5 组共 70 个遗留文件的精确基线并做相等断言。该机制**已移除**，原因有二：
 > 1. 任何**合法**改动（迁移一个文件、加一个测试）都要同步改测试，长期会训练团队「顺手更新基线」，使信号衰减；
 > 2. 它禁止的是「文件数变化」，而不是「依赖方向错误」——真正要防的是后者。
 >
-> 约束改由 review 与本节约定维持。若将来恢复自动化，应优先采用**方向性断言**（禁止 import X、禁止新增顶层目录、必需路径存在），而非文件清单快照。
+> 移除后一度连方向性断言也一并消失，导致依赖方向**完全没有自动化护栏**，属治理能力回退。现已恢复为**仅方向性 import 断言**（`apps/gin-backend/internal/architecture`，8 条规则）：document 四层正向依赖、业务模块禁止依赖组合根、`common/base` 与 `common/service` 禁止依赖业务模块、`common/service/jwt` 禁止依赖 Gin。
+>
+> **不恢复**：遗留文件清单快照、`platform/httpserver` 的业务 import 冻结、废弃路径存在性断言。
 
 **`modules/chat` 与 `modules/aiagent`（合计 39 文件 / 3,211 行）已确认生产入口不可达**（对全部 6 个入口求 `go list -deps` 并集验证）。在给出产品去留结论前同样适用本节冻结约定；结论为保留时才纳入迁移计划。
 
@@ -283,7 +285,7 @@ func ManagerAuthRequired(opts ...AuthOption) gin.HandlerFunc  // 管理面
 | C6 | `responses.NewPageMeta` 统一分页 | **完成** |
 | C7 | 各域 `interfaces/http/errors.go` 唯一错误映射 | **完成** |
 | C8 | `middleware/recovery.go` 改走 `responses.AbortFail` | **完成** |
-| C9 | `internal/architecture` 升级为规则表 + 遗留基线冻结 | **已撤销**（实施后移除，不采用精确清单冻结；见第 5 节与 7.3） |
+| C9 | gin-backend 架构约束：精确清单冻结 → **改为仅方向性断言** | **完成**（8 条依赖方向规则；文件清单快照与 import 冻结基线未恢复，见第 5 节与 7.3） |
 | C10 | mixin-search 架构测试 | **完成** |
 | C11 | `common/service/jwt` 去除 gin 依赖 | **完成** |
 | C12 | `cmd/tools/` 归置非产品二进制 | **完成** |
@@ -320,19 +322,19 @@ func ManagerAuthRequired(opts ...AuthOption) gin.HandlerFunc  // 管理面
 
 ### 7.3 C9–C10 实施结果
 
-**C9 已撤销。** gin-backend 的 `internal/architecture`（8 条依赖规则 + 5 组遗留文件基线 + 2 条 import 冻结）在实施后被**移除**——不采用「精确文件清单冻结」方式，理由见第 5 节。以下条目仅作历史记录：
+**C9 经历一次撤销后重建。** 首版实现为「8 条依赖规则 + 5 组遗留文件基线 + 2 条 import 冻结」。其中**文件清单快照与 import 冻结基线被移除**（理由见第 5 节），**方向性 import 断言已恢复**并保留：
 
-- ~~gin-backend 架构测试改为规则表，覆盖 document 四层正向依赖、业务模块禁止依赖组合根、`common/base`/`common/service` 禁止依赖业务模块，以及 `common/service/jwt` 禁止依赖 Gin。~~
-- ~~`common/service/sessioncookie/cookie.go` 作为唯一依赖 Gin 的 service 文件被精确冻结；新增 Gin 依赖会失败。~~（该事实仍成立，但**不再由测试强制**；迁移目标见第 5 节）
-- ~~auth、manager、chat、aiagent 与 `internal/model` 的生产 Go 文件清单被冻结。~~（冻结约定保留在本节与第 5 节，**不再由测试强制**）
-- ~~`platform/httpserver` 的 auth/api 与 manager/api 两条遗留业务 import 被精确冻结。~~（同上；统一路由注入仍是待办）
+- ✅ **已恢复**：架构测试覆盖 document 四层正向依赖、业务模块禁止依赖组合根、`common/base` / `common/service` 禁止依赖业务模块、`common/service/jwt` 禁止依赖 Gin——共 8 条方向性 import 断言。
+- ❌ **未恢复**：`common/service/sessioncookie/cookie.go` 的 Gin 依赖不再由测试冻结（该事实仍成立，迁移目标见第 5 节）。
+- ❌ **未恢复**：auth、manager、chat、aiagent 与 `internal/model` 的生产 Go 文件清单快照。
+- ❌ **未恢复**：`platform/httpserver` 的 auth/api 与 manager/api 遗留业务 import 冻结（统一路由注入仍是待办）。
 
 **C10 保持生效**：mixin-search 新增 `internal/architecture`，强制 `document_pipeline → internal/rag → internal/transport` 的单向边界，并禁止 Protobuf 生成类型进入 rag 核心包。
 
 ### 7.4 C12 实施结果
 
 - `pemgenerator` 与 `runtimeapitest` 已迁移至 `cmd/tools/`，与 `server`、索引 Worker/Admin 和评估入口等产品进程分离。
-- 根验收脚本、应用 README 与结构文档已统一使用新路径。曾用于「要求新目录存在并禁止旧目录恢复」的架构测试已随 C9 一并移除（见 7.3），当前靠 review 维持。
+- 根验收脚本、应用 README 与结构文档已统一使用新路径。「要求新目录存在并禁止旧目录恢复」的**路径断言**未随方向性断言一并恢复（见 7.3），当前靠 review 维持。
 
 
 
@@ -343,6 +345,7 @@ func ManagerAuthRequired(opts ...AuthOption) gin.HandlerFunc  // 管理面
 在 `apps/gin-backend` 执行：
 
 ```powershell
+go test ./internal/architecture   # 依赖方向（8 条方向性 import 断言）
 go build ./...
 go test ./...
 go vet ./...

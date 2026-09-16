@@ -40,8 +40,8 @@
 > 注：`_test.go` 行占比**不是覆盖率**，也不代表测试质量，仅用于粗略比较测试投入分布。
 >
 > **上表为评估时点（H2）的实测值，其中「架构约束测试」一行已过时**——后续 C9/C10 落地为
-> gin-backend 1 个文件 / 8 条规则、mixin-search 1 个文件 / 3 条规则；**C9 随后被撤销**，
-> gin-backend 侧回归为 0。当前状态见 §3.5 的后续变化说明与 §7 优先级表。
+> gin-backend 1 个文件 / 8 条规则、mixin-search 1 个文件 / 3 条规则；随后 C9 的文件清单冻结被移除，
+> 但**方向性断言已恢复**，gin-backend 现为 8 条方向性 import 断言。当前状态见 §3.5 的后续变化说明与 §7 优先级表。
 
 ---
 
@@ -183,7 +183,7 @@ internal/platform/httpserver  -> modules/auth/api, modules/manager/api   ← 硬
 
 **准确表述**：已有 3 条全仓库级规则，但**全部是「禁止回退」型**；**正向分层方向只对 `document` 强制**，`auth`/`manager`/`chat`/`aiagent` 没有任何方向约束。这才是 D1 能长期存在的机制原因。
 
-> **后续变化（重要）**：本节描述的是评估时点的状态。此后该测试被升级为规则表（8 条依赖规则 + 5 组共 70 个文件的精确基线 + 2 条 import 冻结），**随后又被整体移除**——项目决定不采用「精确文件清单冻结」方式，理由见 [`DEVELOPMENT_CONVENTIONS.md`](./docs/architecture/DEVELOPMENT_CONVENTIONS.md) §5。因此 **gin-backend 当前没有任何自动化架构约束**，本节所述 5 条测试亦不再存在。mixin-search 侧的 `internal/architecture` 仍然生效。
+> **后续变化（重要）**：本节描述的是评估时点的状态。此后该测试被升级为规则表（8 条依赖规则 + 5 组共 70 个文件的精确基线 + 2 条 import 冻结），随后**文件清单冻结与 import 冻结基线被移除**（项目不采用「精确文件清单冻结」，理由见 [`DEVELOPMENT_CONVENTIONS.md`](./docs/architecture/DEVELOPMENT_CONVENTIONS.md) §5）；**方向性 import 断言已恢复**，`apps/gin-backend/internal/architecture` 现有 8 条规则。mixin-search 侧的 `internal/architecture` 同期落地（3 条单向边界规则）。
 
 ---
 
@@ -324,7 +324,7 @@ Go 的包是最小封装边界。同包意味着**没有任何机制阻止 `Docu
 | **P1** | **同包内**拆分 `internal/rag` 大文件，**不改变包边界** | M1/M2：机械整理，零依赖图风险 |
 | **P1** | ~~mixin-search 增加架构测试~~ | **已完成**（C10）：3 条单向依赖规则，全部 PASS |
 | **P1** | 统一 gin-backend 路由装配，全部经 `Dependencies` 注入，消除 `platform` 中的模块硬编码 | D2：消除双组合点 |
-| **P1** | ~~架构测试升级为规则表：遗留依赖「基线冻结、禁止新增」~~ | **实施后被撤销**：项目不采用精确清单冻结（`DEVELOPMENT_CONVENTIONS.md` §5）。若要恢复自动化，应改用**方向性断言**而非文件清单快照 |
+| **P1** | ~~架构测试升级为规则表：遗留依赖「基线冻结、禁止新增」~~ | **已按建议调整**：精确清单冻结被移除，改为**仅方向性 import 断言**（8 条），见 `DEVELOPMENT_CONVENTIONS.md` §5 |
 | **P1** | 消除 `connection.ServiceAuth` / `ServiceDocument` 的双连接键（同一份 `conf.PostgresConfig`） | §10.5：`ready()` 对同一库做两次健康检查，并暗示不存在的服务隔离 |
 | **P2** | 依据真实依赖图抽离 `rag` 的具体存储适配器（**不预设** `model/service/store` 横向切分） | M1：横向切分改变可见性并可能引入循环，风险等级不同于拆文件 |
 | **P2** | 若 chat 保留，将 `types/group/manager.go` 的 `Manager` 迁出 `types/` | 见 §8 勘误 E7 |

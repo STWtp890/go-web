@@ -2,7 +2,7 @@
 
 > **依据**：[STRUCTURE_ASSESSMENT.md](./STRUCTURE_ASSESSMENT.md)（结构与复用评估）、[MIXIN_SEARCH_SPLIT_ASSESSMENT.md](./MIXIN_SEARCH_SPLIT_ASSESSMENT.md)（服务边界评估）、[docs/architecture/DEVELOPMENT_CONVENTIONS.md](./docs/architecture/DEVELOPMENT_CONVENTIONS.md)（现行约定）
 > **文档性质**：外部改造提案，不属于 `docs/` 治理树。项目可自行归档，或将其条目并入 `docs/planning/CURRENT_IMPLEMENTATION_PLAN.md`。
-> **当前基线**：C1–C8、C10–C12 已完成（身份契约、出入口统一、mixin-search 架构测试、`cmd/tools` 归置）；**C9（gin-backend 架构规则表 + 遗留基线冻结）已撤销**——项目不采用精确清单冻结方式，见 [`DEVELOPMENT_CONVENTIONS.md`](./docs/architecture/DEVELOPMENT_CONVENTIONS.md) §5；C13（chat/aiagent）已搁置。
+> **当前基线**：C1–C12 已完成（身份契约、出入口统一、两个应用的架构测试、`cmd/tools` 归置）。其中 **C9 经历一次撤销后重建**：gin-backend 的架构约束由「规则表 + 70 文件精确清单冻结」改为**仅 8 条方向性 import 断言**，见 [`DEVELOPMENT_CONVENTIONS.md`](./docs/architecture/DEVELOPMENT_CONVENTIONS.md) §5。C13（chat/aiagent）已搁置。
 
 ---
 
@@ -19,7 +19,7 @@
 | 级别 | 含义 | 典型动作 | 验收 |
 |---|---|---|---|
 | **机** | 同包拆文件、重命名、移动目录 | 零依赖图变化 | `go build/vet/test` |
-| **语** | 改变可见性、依赖方向或包边界 | **无自动化护栏**，需人工核对 | 同上 + `go list` 依赖图人工确认 |
+| **语** | 改变可见性、依赖方向或包边界 | 方向性断言可覆盖已知规则，其余需人工核对 | 同上 + `go list` 依赖图人工确认 |
 | **行** | 改变运行时行为、并发或可用性 | 需集成测试与压测 | 同上 + 集成/端到端门禁 |
 
 **工作规模**：S ≤ 半天；M = 1–2 天；L ≥ 3 天或涉及架构决策。
@@ -116,7 +116,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 依据 | 它是唯一依赖 gin 的 `common/service` 文件，而约定 §1.3/§2 写的是绝对禁止——**规则与实际不一致**（此前由架构测试冻结为已知例外，该测试已撤销） |
+| 依据 | 它是唯一依赖 gin 的 `common/service` 文件，而约定 §1.3/§2 写的是绝对禁止——**规则与实际不一致** |
 | 动作 | gin 相关部分（`AccessToken`/`RefreshToken`/`SetTokens`/`ClearTokens`/`Resolve*Refresh`/`ValidateCSRF`）迁至 `platform/httpserver/sessioncookie`；纯 crypto（`csrfMAC`/`newCSRFToken`）留在 `common/service` |
 | 收益 | 规则与实际一致，`common/service` 可声明为完全 transport 无关 |
 | 规模 / 风险 | M / 语 |
@@ -303,7 +303,7 @@ go list -f '{{.ImportPath}}|{{range .Imports}}{{.}} {{end}}' ./...   # 与改造
 
 **约束纪律**
 
-- **gin-backend 当前没有自动化架构护栏**（C9 已撤销）。因此「语级」改动必须显式做 `go list` 依赖图 diff——这不是可选项，而是唯一护栏。
+- **方向性 import 断言已恢复**（两个应用各有 `internal/architecture`），但它只覆盖 8 条已知规则 + mixin-search 的 3 条单向边界。**超出这些规则的「语级」改动仍必须显式做 `go list` 依赖图 diff**。
 - `apps/mixin-search/internal/architecture` 仍然生效，不得为了通过改动而放宽其 3 条规则。
 - 若将来恢复 gin-backend 的自动化约束，**只加方向性断言**（禁止 import X、禁止新增顶层目录、必需路径存在），**不加文件清单快照**。新增任何规则都需给出「为何这条规则值得机器强制」。
 
@@ -345,7 +345,7 @@ go list -f '{{.ImportPath}}|{{range .Imports}}{{.}} {{end}}' ./...   # 与改造
 | 1 | 三份评估/方案文档（纯文档，零风险） | `docs: 新增结构与拆分评估及改造方案` |
 | 2 | P2.1–P2.5 检索链路 + 缓存加固（既有工作，量大） | `feat: 阶段2 检索链路与缓存加固` |
 | 3 | C1–C8 身份契约与出入口统一 | `refactor: 统一身份契约与 HTTP 出入口` |
-| 4 | C9–C12 架构测试 + `cmd/tools` 归置（**注意：C9 的 gin-backend 部分后续已撤销**） | `build: mixin-search 架构测试与工具归置` |
+| 4 | C9–C12 架构测试 + `cmd/tools` 归置（C9 后续重建为仅方向性断言） | `build: 架构测试与工具归置` |
 
 批次 2 约 40+ 文件，若过大可按 P2.x 再拆。**批次之间必须逐次跑门禁**——每批提交后 `go build/vet/test` 必须全绿；若某批失败，说明该批内部不自洽，应继续拆分而不是硬提。
 
@@ -369,7 +369,7 @@ go list -f '{{.ImportPath}}|{{range .Imports}}{{.}} {{end}}' ./...   # 与改造
 
 **三条硬性规则**
 
-- **语级改动必须显式做依赖图 diff**——gin-backend 已无自动化护栏，这是唯一防线（步骤 2/5）
+- **语级改动必须显式做依赖图 diff**——方向性断言只覆盖已知规则，未覆盖的部分只能靠它（步骤 2/5）
 - **不得为通过而放宽 `apps/mixin-search/internal/architecture` 的 3 条规则**
 - 机级改动**不得**触碰任何 `_test.go`（W1-3 本身除外）
 
@@ -404,7 +404,7 @@ go list -f '{{.ImportPath}}|{{range .Imports}}{{.}} {{end}}' ./...   # 与改造
 | 风险 | 回滚方式 | 备注 |
 |---|---|---|
 | 机 | `git revert <commit>` | 单提交即可 |
-| 语 | `git revert`，随后需**手工核对依赖图**（gin-backend 无自动化护栏） | 见 §14 |
+| 语 | `git revert`，随后**核对方向性断言并补做依赖图 diff** | 见 §14 |
 | 行 | 按步骤提交，每步独立可回滚 | **W3-1 的步 1/2/3 必须分三次提交** |
 | 行（数据模型变更） | 无法廉价回滚 —— 但控制状态是可重建派生数据，回滚 = 清空 namespace + 从 go-web 事实重放 | 这是 W3-1 步 3 的兜底，也是它敢做的根本原因 |
 
@@ -423,7 +423,7 @@ go list -f '{{.ImportPath}}|{{range .Imports}}{{.}} {{end}}' ./...   # 与改造
 
 **关于自动化约束的现状与门槛**
 
-- **gin-backend 当前没有自动化架构约束**。曾有的规则表 + 精确基线冻结已撤销，理由见约定 §5：文件清单断言会训练团队「顺手更新基线」，且禁止的是文件数变化而非依赖方向错误。
+- **gin-backend 现为「仅方向性 import 断言」**（8 条）。曾有的规则表 + 70 文件精确清单快照已移除，理由见约定 §5：文件清单断言会训练团队「顺手更新基线」，且禁止的是文件数变化而非依赖方向错误。**若再扩展，只加方向性规则，不加清单快照。**
 - **若将来恢复自动化，只加方向性断言**：禁止 import X、禁止新增顶层目录、必需路径存在。**不加文件清单快照。**
 - **新增任何规则的门槛**——必须同时满足：
   - (a) 对应**已发生**的真实问题，不是假想

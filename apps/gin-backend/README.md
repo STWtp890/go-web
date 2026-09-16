@@ -62,6 +62,7 @@ go run ./cmd/tools/runtimeapitest -help
 go run ./cmd/document-search-eval -mixin-search-address 127.0.0.1:19090
 
 # 质量检查
+go test ./internal/architecture   # 依赖方向（8 条方向性 import 断言）
 go test ./...
 go vet ./...
 

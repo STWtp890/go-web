@@ -126,7 +126,7 @@ cmd ──> app (composition root)
 | `platform/httpserver` | Gin、跨路由 middleware、模块路由注册接口 | 领域规则、具体仓储和连接初始化 |
 | `app` | 各层公开构造函数 | 领域规则和持久化细节 |
 
-上表是**结构约定**，靠 review 与 [DEVELOPMENT_CONVENTIONS.md](./DEVELOPMENT_CONVENTIONS.md) 维持。历史情况：gin-backend 曾在 `internal/architecture/dependencies_test.go` 中以依赖测试强制其中一部分，该测试**已移除**（不采用「精确文件清单冻结」的方式）；mixin-search 侧的 `internal/architecture` 仍然生效，强制 `document_pipeline → internal/rag → internal/transport` 的单向边界。
+上表由两个应用各自的 `internal/architecture/dependencies_test.go` **部分**强制：gin-backend 覆盖 document 四层正向依赖、业务模块禁止依赖组合根、`common/base` 与 `common/service` 禁止依赖业务模块、`common/service/jwt` 禁止依赖 Gin（共 8 条**方向性 import 断言**）；mixin-search 强制 `document_pipeline → internal/rag → internal/transport` 的单向边界。其余条目靠 review 与 [DEVELOPMENT_CONVENTIONS.md](./DEVELOPMENT_CONVENTIONS.md) 维持。**不含遗留文件清单快照**——该机制曾被移除，理由见约定第 5 节。
 
 ## 6. 阶段性边界与待清理项
 
@@ -168,6 +168,7 @@ modules/document/
 在 `apps/gin-backend` 执行：
 
 ```bash
+go test ./internal/architecture
 go test ./...
 go vet ./...
 ```
