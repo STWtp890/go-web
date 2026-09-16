@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -16,6 +17,19 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// 刷新凭据解析失败的原因, 供 HTTP 适配层映射为统一失败响应。
+var (
+	ErrRefreshTokenMissing = errors.New("sessioncookie: refresh token 缺失")
+	ErrRefreshTokenInvalid = errors.New("sessioncookie: refresh token 无效")
+	ErrRefreshCSRFInvalid  = errors.New("sessioncookie: refresh CSRF 校验失败")
+)
+
+// RefreshCredential 是 refresh cookie 校验通过后的可信凭据。
+type RefreshCredential struct {
+	Token    string
+	Identity jwt.RefreshIdentity
+}
 
 const (
 	UserAccessCookie     = "pp_user_at"
@@ -92,14 +106,31 @@ func ValidateCSRF(c *gin.Context, cookieName, sessionID string) bool {
 	return subtle.ConstantTimeCompare(mac, expected) == 1
 }
 
-// ValidateRefreshCSRF 验证在刷新令牌被使用和轮换之前的 cookie 认证的刷新请求。
-func ValidateRefreshCSRF(c *gin.Context, csrfCookieName, refreshToken string) bool {
-	claims, err := jwt.ParseTokenClaims(refreshToken, config.CustomConfig().JWT.GetPublicKey(), jwt.TokenUseRefresh)
-	if err != nil {
-		return false
+// ResolveUserRefresh 读取用户 refresh cookie, 验签 token 并校验 CSRF。
+//
+// 这是刷新流程的唯一凭据入口: 调用方一次取得类型化身份, 无需自行解析 token。
+func ResolveUserRefresh(c *gin.Context) (RefreshCredential, error) {
+	return resolveRefresh(c, UserRefreshCookie, UserCSRFCookie)
+}
+
+// ResolveManagerRefresh 读取管理员 refresh cookie, 验签 token 并校验 CSRF。
+func ResolveManagerRefresh(c *gin.Context) (RefreshCredential, error) {
+	return resolveRefresh(c, ManagerRefreshCookie, ManagerCSRFCookie)
+}
+
+func resolveRefresh(c *gin.Context, refreshCookieName, csrfCookieName string) (RefreshCredential, error) {
+	token := RefreshToken(c, refreshCookieName)
+	if token == "" {
+		return RefreshCredential{}, ErrRefreshTokenMissing
 	}
-	sessionID, ok := jwt.SessionIDFromClaims(*claims)
-	return ok && ValidateCSRF(c, csrfCookieName, sessionID)
+	identity, err := jwt.VerifyRefreshToken(token, config.CustomConfig().JWT.GetPublicKey())
+	if err != nil {
+		return RefreshCredential{}, ErrRefreshTokenInvalid
+	}
+	if !ValidateCSRF(c, csrfCookieName, identity.SessionID) {
+		return RefreshCredential{}, ErrRefreshCSRFInvalid
+	}
+	return RefreshCredential{Token: token, Identity: identity}, nil
 }
 
 func setTokens(c *gin.Context, accessName, refreshName, csrfName, accessPath, refreshPath, accessToken, refreshToken string) error {

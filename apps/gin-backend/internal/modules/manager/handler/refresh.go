@@ -1,4 +1,4 @@
-// 管理员刷新 token 对（公开路由；Handler 内部验签、角色与 sid）。
+// 管理员刷新 token 对（公开路由；凭据由 sessioncookie 解析）。
 package handler
 
 import (
@@ -14,22 +14,18 @@ import (
 
 // RefreshHandler 刷新管理员 token 对: POST /api/v1/public/manager/refresh
 func RefreshHandler(c *gin.Context) {
-	token := sessioncookie.RefreshToken(c, sessioncookie.ManagerRefreshCookie)
-	if token == "" {
-		responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "无效的Token")
-		return
-	}
-	if !sessioncookie.ValidateRefreshCSRF(c, sessioncookie.ManagerCSRFCookie, token) {
-		responses.Fail(c, http.StatusForbidden, eror.CodeForbidden, "CSRF 校验失败")
+	credential, err := sessioncookie.ResolveManagerRefresh(c)
+	if err != nil {
+		failRefresh(c, err)
 		return
 	}
 
-	tokenMap, err := logic.RefreshLogic(c.Request.Context(), token)
+	tokens, err := logic.RefreshLogic(c.Request.Context(), credential.Token, credential.Identity)
 	if err != nil {
 		responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, err.Error())
 		return
 	}
-	if err := sessioncookie.SetManagerTokens(c, (*tokenMap)["accessToken"], (*tokenMap)["refreshToken"]); err != nil {
+	if err := sessioncookie.SetManagerTokens(c, tokens.AccessToken, tokens.RefreshToken); err != nil {
 		responses.Fail(c, http.StatusInternalServerError, eror.CodeInternalError, "刷新会话写入失败")
 		return
 	}

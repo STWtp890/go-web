@@ -11,9 +11,9 @@ import (
 
 	"gin-backend/internal/modules/document/application"
 	"gin-backend/internal/modules/document/domain"
+	"gin-backend/internal/platform/httpserver/identity"
 
 	"github.com/gin-gonic/gin"
-	jwtlib "github.com/golang-jwt/jwt/v5"
 )
 
 type commandStub struct {
@@ -88,7 +88,7 @@ func TestCreateParsesJWTSubjectAsUsersID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.POST("/upload", func(c *gin.Context) {
-		c.Set("claims", jwtlib.MapClaims{"sub": "42"})
+		identity.Set(c, identity.Principal{Kind: identity.KindUser, Subject: "42", UserID: 42, SessionID: "session-1"})
 		handler.create(c)
 	})
 
@@ -115,7 +115,8 @@ func TestCreateRejectsNonNumericJWTSubject(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.POST("/upload", func(c *gin.Context) {
-		c.Set("claims", jwtlib.MapClaims{"sub": "not-a-user-id"})
+		// 主体无法解析为数值时, 中间件注入的 Principal.UserID 为 0
+		identity.Set(c, identity.Principal{Kind: identity.KindUser, Subject: "not-a-user-id", SessionID: "session-1"})
 		handler.create(c)
 	})
 

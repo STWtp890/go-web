@@ -28,6 +28,25 @@ type Meta struct {
 	TotalPages int `json:"total_pages"`
 }
 
+// NewPageMeta 构造统一的分页元信息, 收敛各模块自行计算 total_pages 的差异。
+// perPage <= 0 回退为 1 以避免除零; page <= 0 回退为 1; total < 0 视为 0。
+func NewPageMeta(page, perPage, total int) *Meta {
+	if page <= 0 {
+		page = 1
+	}
+	if perPage <= 0 {
+		perPage = 1
+	}
+	if total < 0 {
+		total = 0
+	}
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + perPage - 1) / perPage
+	}
+	return &Meta{Page: page, PerPage: perPage, Total: total, TotalPages: totalPages}
+}
+
 /* 函数 */
 
 // OK 返回成功响应

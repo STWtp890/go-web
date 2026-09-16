@@ -13,22 +13,18 @@ import (
 
 // RefreshTokenHandler 刷新令牌
 func RefreshTokenHandler(c *gin.Context) {
-	token := sessioncookie.RefreshToken(c, sessioncookie.UserRefreshCookie)
-	if token == "" {
-		responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "无效的Token")
-		return
-	}
-	if !sessioncookie.ValidateRefreshCSRF(c, sessioncookie.UserCSRFCookie, token) {
-		responses.Fail(c, http.StatusForbidden, eror.CodeForbidden, "CSRF 校验失败")
+	credential, err := sessioncookie.ResolveUserRefresh(c)
+	if err != nil {
+		failRefresh(c, err)
 		return
 	}
 
-	tokenMap, err := logic.RefreshTokenLogic(c.Request.Context(), token)
+	tokens, err := logic.RefreshTokenLogic(c.Request.Context(), credential.Token, credential.Identity)
 	if err != nil {
 		responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, err.Error())
 		return
 	}
-	if err := sessioncookie.SetUserTokens(c, (*tokenMap)["accessToken"], (*tokenMap)["refreshToken"]); err != nil {
+	if err := sessioncookie.SetUserTokens(c, tokens.AccessToken, tokens.RefreshToken); err != nil {
 		responses.Fail(c, http.StatusInternalServerError, eror.CodeInternalError, "刷新会话写入失败")
 		return
 	}

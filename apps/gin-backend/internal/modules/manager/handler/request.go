@@ -9,10 +9,9 @@ import (
 
 	eror "gin-backend/internal/common/base/errors"
 	"gin-backend/internal/common/base/responses"
-	"gin-backend/internal/common/service/jwt"
 	logic "gin-backend/internal/modules/manager/logic"
-	tc "gin-backend/internal/modules/manager/types/constant"
 	req "gin-backend/internal/modules/manager/types/requests"
+	"gin-backend/internal/platform/httpserver/identity"
 
 	"github.com/gin-gonic/gin"
 )
@@ -35,19 +34,13 @@ func ListRequestsHandler(c *gin.Context) {
 
 	// 归一化分页参数用于响应元信息
 	page, pageSize := normalizePage(q.Page, q.PageSize)
-	totalPages := (int(total) + pageSize - 1) / pageSize
-	responses.OKWithMeta(c, gin.H{"requests": list}, &responses.Meta{
-		Page:       page,
-		PerPage:    pageSize,
-		Total:      int(total),
-		TotalPages: totalPages,
-	})
+	responses.OKWithMeta(c, gin.H{"requests": list}, responses.NewPageMeta(page, pageSize, int(total)))
 }
 
 // ApproveHandler 通过申请: POST /api/v1/protected/manager/requests/:id/approve
 // 请求: {comment?}; 响应: {managerId, username, status}
 func ApproveHandler(c *gin.Context) {
-	reviewerID, ok := jwt.SubjectUint(c)
+	reviewer, ok := identity.UserID(c)
 	if !ok {
 		responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "无效的Token")
 		return
@@ -66,18 +59,9 @@ func ApproveHandler(c *gin.Context) {
 		return
 	}
 
-	m, err := logic.ApproveLogic(c.Request.Context(), requestID, reviewerID, rb.Comment)
+	m, err := logic.ApproveLogic(c.Request.Context(), requestID, uint(reviewer), rb.Comment)
 	if err != nil {
-		switch {
-		case errors.Is(err, tc.ErrRequestNotFound):
-			responses.Fail(c, http.StatusNotFound, eror.CodeNotFound, "申请单不存在")
-		case errors.Is(err, tc.ErrRequestReviewed):
-			responses.Fail(c, http.StatusConflict, eror.CodeConflict, "申请单已审批")
-		case errors.Is(err, tc.ErrUsernameTaken):
-			responses.Fail(c, http.StatusConflict, eror.CodeConflict, "用户名已被占用")
-		default:
-			responses.Fail(c, http.StatusInternalServerError, eror.CodeInternalError, "审批失败")
-		}
+		failReview(c, err, true)
 		return
 	}
 
@@ -91,7 +75,7 @@ func ApproveHandler(c *gin.Context) {
 // RejectHandler 拒绝申请: POST /api/v1/protected/manager/requests/:id/reject
 // 请求: {comment?}; 响应: {requestId, status}
 func RejectHandler(c *gin.Context) {
-	reviewerID, ok := jwt.SubjectUint(c)
+	reviewer, ok := identity.UserID(c)
 	if !ok {
 		responses.Fail(c, http.StatusUnauthorized, eror.CodeUnauthorized, "无效的Token")
 		return
@@ -108,16 +92,9 @@ func RejectHandler(c *gin.Context) {
 		return
 	}
 
-	err := logic.RejectLogic(c.Request.Context(), requestID, reviewerID, rb.Comment)
+	err := logic.RejectLogic(c.Request.Context(), requestID, uint(reviewer), rb.Comment)
 	if err != nil {
-		switch {
-		case errors.Is(err, tc.ErrRequestNotFound):
-			responses.Fail(c, http.StatusNotFound, eror.CodeNotFound, "申请单不存在")
-		case errors.Is(err, tc.ErrRequestReviewed):
-			responses.Fail(c, http.StatusConflict, eror.CodeConflict, "申请单已审批")
-		default:
-			responses.Fail(c, http.StatusInternalServerError, eror.CodeInternalError, "审批失败")
-		}
+		failReview(c, err, false)
 		return
 	}
 

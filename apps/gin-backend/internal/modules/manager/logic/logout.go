@@ -6,22 +6,15 @@ import (
 	"errors"
 
 	"gin-backend/internal/common/service/jwt"
-
-	jwtlib "github.com/golang-jwt/jwt/v5"
 )
 
 // LogoutLogic 管理员登出: 当前 sid 会话删除后，AT 与 RT 均立即失效。
-func LogoutLogic(ctx context.Context, claims jwtlib.MapClaims) error {
-	// 提取 manager id
-	sub, err := claims.GetSubject()
-	if err != nil || sub == "" {
+//
+// 身份由 HTTP 适配层从中间件注入的 identity.Principal 提供, 本层不接触 JWT claims。
+func LogoutLogic(ctx context.Context, subject, sessionID string) error {
+	if subject == "" || sessionID == "" {
 		return errors.New("无法解析管理员身份")
 	}
-	sessionID, ok := jwt.SessionIDFromClaims(claims)
-	if !ok {
-		return errors.New("无法解析会话信息")
-	}
-
-	_, err = jwt.RevokeManagerSessionIfCurrent(ctx, sub, sessionID)
+	_, err := jwt.RevokeManagerSessionIfCurrent(ctx, subject, sessionID)
 	return err
 }

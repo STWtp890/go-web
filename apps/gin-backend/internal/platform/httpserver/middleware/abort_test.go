@@ -8,9 +8,9 @@ import (
 	"testing"
 
 	"gin-backend/internal/common/service/sessioncookie"
+	"gin-backend/internal/platform/httpserver/identity"
 
 	"github.com/gin-gonic/gin"
-	jwtlib "github.com/golang-jwt/jwt/v5"
 )
 
 func TestAuthRequiredAbortsHandlerWhenAccessCookieMissing(t *testing.T) {
@@ -29,7 +29,12 @@ func TestCSRFProtectionAbortsHandlerWhenTokenMissing(t *testing.T) {
 	executed := false
 	router.POST("/protected",
 		func(c *gin.Context) {
-			c.Set("claims", jwtlib.MapClaims{"sid": "session-1"})
+			identity.Set(c, identity.Principal{
+				Kind:      identity.KindUser,
+				Subject:   "1",
+				UserID:    1,
+				SessionID: "session-1",
+			})
 			c.Next()
 		},
 		CSRFProtection(sessioncookie.UserCSRFCookie),

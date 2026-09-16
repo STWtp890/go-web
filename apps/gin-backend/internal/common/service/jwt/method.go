@@ -1,5 +1,8 @@
-// jwt 包方法级定义: token 提取 / 解析 / claims 提取 (收敛自分散方法级文件)
-// rediscache.go 保留独立 (Redis token 状态管理)
+// jwt 包方法级定义: token 验签与 claims 提取。
+//
+// 身份读取不属于本包职责: 鉴权中间件把解析结果收敛为
+// platform/httpserver/identity.Principal 注入请求上下文, 业务层读取该类型即可,
+// 因此本包不依赖 gin。
 package jwt
 
 import (
@@ -9,40 +12,8 @@ import (
 
 	"gin-backend/internal/config"
 
-	"github.com/gin-gonic/gin"
 	jwtlib "github.com/golang-jwt/jwt/v5"
 )
-
-// ExtractClaims 从 gin.Context 中提取 JWT Claims
-// 中间件 (AuthRequired/ManagerAuthRequired) 注入的是 jwtlib.MapClaims 值类型,
-// 此处值断言后返回指针, 保持调用方接口兼容
-func ExtractClaims(c *gin.Context) (*jwtlib.MapClaims, bool) {
-	claims, exists := c.Get("claims") // 此处 claims 是值类型, 需要断言为 jwtlib.MapClaims
-	if !exists {
-		return nil, false
-	}
-
-	mapClaims, ok := claims.(jwtlib.MapClaims)
-	if !ok {
-		return nil, false
-	}
-
-	return &mapClaims, true
-}
-
-// Subject 从 gin.Context 的 JWT claims 提取 subject (sub)
-// 便捷封装: ExtractClaims + GetSubject, 供业务 handler 直接获取当前主体标识 (users.id / managers.id)
-func Subject(c *gin.Context) (string, bool) {
-	claims, ok := ExtractClaims(c)
-	if !ok {
-		return "", false
-	}
-	sub, err := claims.GetSubject()
-	if err != nil || sub == "" {
-		return "", false
-	}
-	return sub, true
-}
 
 // ParseSubject 将 JWT sub (数字字符串) 解析为 uint (users.id / managers.id)
 func ParseSubject(sub string) (uint, bool) {
@@ -51,16 +22,6 @@ func ParseSubject(sub string) (uint, bool) {
 		return 0, false
 	}
 	return uint(id), true
-}
-
-// SubjectUint 从 gin.Context 提取 subject 并解析为 uint
-// 便捷封装: Subject + ParseSubject, 供业务 handler 直接获取当前主体 uint 标识
-func SubjectUint(c *gin.Context) (uint, bool) {
-	sub, ok := Subject(c)
-	if !ok {
-		return 0, false
-	}
-	return ParseSubject(sub)
 }
 
 // SessionIDFromClaims 从 JWT claims 提取会话标识 sid。

@@ -5,15 +5,14 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"math"
 	"net/http"
 	"strconv"
 
 	baseerrors "gin-backend/internal/common/base/errors"
 	"gin-backend/internal/common/base/responses"
-	"gin-backend/internal/common/service/jwt"
 	"gin-backend/internal/modules/document/application"
 	"gin-backend/internal/modules/document/domain"
+	"gin-backend/internal/platform/httpserver/identity"
 
 	"github.com/gin-gonic/gin"
 )
@@ -83,7 +82,7 @@ type documentSummaryResponse struct {
 }
 
 func (handler *Handler) create(c *gin.Context) {
-	ownerID, ok := subjectID(c)
+	ownerID, ok := identity.UserID(c)
 	if !ok {
 		writeUnauthorized(c)
 		return
@@ -110,7 +109,7 @@ func (handler *Handler) create(c *gin.Context) {
 }
 
 func (handler *Handler) update(c *gin.Context) {
-	ownerID, ok := subjectID(c)
+	ownerID, ok := identity.UserID(c)
 	if !ok {
 		writeUnauthorized(c)
 		return
@@ -138,7 +137,7 @@ func (handler *Handler) update(c *gin.Context) {
 }
 
 func (handler *Handler) trash(c *gin.Context) {
-	ownerID, ok := subjectID(c)
+	ownerID, ok := identity.UserID(c)
 	if !ok {
 		writeUnauthorized(c)
 		return
@@ -152,7 +151,7 @@ func (handler *Handler) trash(c *gin.Context) {
 }
 
 func (handler *Handler) get(c *gin.Context) {
-	viewerID, ok := subjectID(c)
+	viewerID, ok := identity.UserID(c)
 	if !ok {
 		writeUnauthorized(c)
 		return
@@ -170,7 +169,7 @@ func (handler *Handler) get(c *gin.Context) {
 }
 
 func (handler *Handler) listMine(c *gin.Context) {
-	ownerID, ok := subjectID(c)
+	ownerID, ok := identity.UserID(c)
 	if !ok {
 		writeUnauthorized(c)
 		return
@@ -203,7 +202,7 @@ func (handler *Handler) listPublic(c *gin.Context) {
 }
 
 func (handler *Handler) searchMine(c *gin.Context) {
-	ownerID, ok := subjectID(c)
+	ownerID, ok := identity.UserID(c)
 	if !ok {
 		writeUnauthorized(c)
 		return
@@ -239,21 +238,7 @@ func writeList(c *gin.Context, items []domain.DocumentSummary, page application.
 	if keyword != "" {
 		data["keyword"] = keyword
 	}
-	totalPages := 0
-	if page.Total > 0 {
-		totalPages = (int(page.Total) + page.Size - 1) / page.Size
-	}
-	responses.OKWithMeta(c, data, &responses.Meta{
-		Page: page.Number, PerPage: page.Size, Total: int(page.Total), TotalPages: totalPages,
-	})
-}
-
-func subjectID(c *gin.Context) (int64, bool) {
-	identifier, ok := jwt.SubjectUint(c)
-	if !ok || identifier == 0 || uint64(identifier) > math.MaxInt64 {
-		return 0, false
-	}
-	return int64(identifier), true
+	responses.OKWithMeta(c, data, responses.NewPageMeta(page.Number, page.Size, int(page.Total)))
 }
 
 func visibility(public bool) string {
@@ -261,21 +246,4 @@ func visibility(public bool) string {
 		return "public"
 	}
 	return "private"
-}
-
-func writeUnauthorized(c *gin.Context) {
-	responses.Fail(c, http.StatusUnauthorized, baseerrors.CodeUnauthorized, "无法识别用户身份")
-}
-
-func writeApplicationError(c *gin.Context, err error, internalMessage string) {
-	switch {
-	case errors.Is(err, application.ErrInvalidInput), errors.Is(err, application.ErrQueryInvalidInput):
-		responses.Fail(c, http.StatusBadRequest, baseerrors.CodeValidationFailed, err.Error())
-	case errors.Is(err, application.ErrDocumentNotFound), errors.Is(err, application.ErrDocumentNotActive), errors.Is(err, application.ErrQueryNotFound):
-		responses.Fail(c, http.StatusNotFound, baseerrors.CodeNotFound, "文章不存在")
-	case errors.Is(err, application.ErrDocumentForbidden), errors.Is(err, application.ErrQueryForbidden):
-		responses.Fail(c, http.StatusForbidden, baseerrors.CodeForbidden, "无权操作该文章")
-	default:
-		responses.Fail(c, http.StatusInternalServerError, baseerrors.CodeInternalError, internalMessage)
-	}
 }
