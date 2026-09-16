@@ -583,7 +583,7 @@ internal/platform/httpserver/middleware
          common/service/jwt, common/service/sessioncookie, config
 ```
 
-未出现在本图中的内部包（含 `modules/document/domain`、`modules/document/evaluation`、`modules/aiagent` 等）均为**零内部依赖**。（`internal/architecture` 已随 C9 撤销而移除，故不在此列。）
+未出现在本图中的内部包（含 `modules/document/domain`、`modules/document/evaluation`、`modules/aiagent`、`internal/architecture` 等）均为**零内部依赖**。（`internal/architecture` 仅测试、无生产代码：其精确清单冻结版曾被移除，**方向性断言版已恢复**。）
 
 ### B.2 mixin-search（仅内部 + 共享生成代码 import）
 

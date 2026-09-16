@@ -25,7 +25,10 @@ if (-not (Test-Path -LiteralPath $resultsDirectory -PathType Container)) {
 #   older:   <family>-<YYYYMMDD>_<HHMMSS>.<ext>
 $pattern = '^(?<family>.+?)[_-](?<stamp>\d{8}_\d{6})\.(?<ext>json|md)$'
 
-$stampsByFamily = @{}
+# Group the actual file objects. Never rebuild a file name from the regex groups:
+# the older generation uses '-' before the date, so a rebuilt '<family>_<stamp>'
+# would not exist and the deletion would be skipped silently.
+$filesByFamily = @{}
 $unrecognised = New-Object System.Collections.Generic.List[string]
 
 foreach ($file in (Get-ChildItem -LiteralPath $resultsDirectory -File)) {
@@ -35,37 +38,42 @@ foreach ($file in (Get-ChildItem -LiteralPath $resultsDirectory -File)) {
     }
     $family = $Matches['family']
     $stamp = $Matches['stamp']
-    if (-not $stampsByFamily.ContainsKey($family)) {
-        $stampsByFamily[$family] = New-Object System.Collections.Generic.HashSet[string]
+
+    if (-not $filesByFamily.ContainsKey($family)) {
+        $filesByFamily[$family] = @{}
     }
-    $null = $stampsByFamily[$family].Add($stamp)
+    if (-not $filesByFamily[$family].ContainsKey($stamp)) {
+        $filesByFamily[$family][$stamp] = New-Object System.Collections.Generic.List[System.IO.FileInfo]
+    }
+    $null = $filesByFamily[$family][$stamp].Add($file)
 }
 
 $removed = 0
 $kept = 0
-foreach ($family in ($stampsByFamily.Keys | Sort-Object)) {
-    $ordered = @($stampsByFamily[$family]) | Sort-Object -Descending
-    $stale = @($ordered | Select-Object -Skip $KeepRuns)
-    Write-Host ("{0,-32} runs={1} keep={2} stale={3}" -f `
-        $family, $ordered.Count, [Math]::Min($KeepRuns, $ordered.Count), $stale.Count)
+foreach ($family in ($filesByFamily.Keys | Sort-Object)) {
+    $stamps = @($filesByFamily[$family].Keys) | Sort-Object -Descending
+    $keepStamps = @($stamps | Select-Object -First $KeepRuns)
+    $staleStamps = @($stamps | Select-Object -Skip $KeepRuns)
 
-    foreach ($stamp in $stale) {
-        foreach ($extension in @('json', 'md')) {
-            $candidate = Join-Path -Path $resultsDirectory -ChildPath ("{0}_{1}.{2}" -f $family, $stamp, $extension)
-            if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
-                continue
-            }
+    Write-Host ("{0,-32} runs={1} keep={2} stale={3}" -f `
+        $family, $stamps.Count, $keepStamps.Count, $staleStamps.Count)
+
+    foreach ($stamp in $keepStamps) {
+        $kept += $filesByFamily[$family][$stamp].Count
+    }
+
+    foreach ($stamp in $staleStamps) {
+        foreach ($file in $filesByFamily[$family][$stamp]) {
             if ($DryRun) {
-                Write-Host "  would remove: $candidate"
+                Write-Host "  would remove: $($file.FullName)"
             }
             else {
-                Remove-Item -LiteralPath $candidate -Force
-                Write-Host "  removed: $candidate"
+                Remove-Item -LiteralPath $file.FullName -Force
+                Write-Host "  removed: $($file.FullName)"
             }
             $removed++
         }
     }
-    $kept += ([Math]::Min($KeepRuns, $ordered.Count) * 2)
 }
 
 if ($unrecognised.Count -gt 0) {
@@ -78,4 +86,4 @@ if ($unrecognised.Count -gt 0) {
 
 Write-Host ""
 Write-Host ("PRUNE done: families={0} keptFiles={1} removedFiles={2} keepRuns={3} skipped={4} dryRun={5}" -f `
-    $stampsByFamily.Count, $kept, $removed, $KeepRuns, $unrecognised.Count, [bool]$DryRun)
+    $filesByFamily.Count, $kept, $removed, $KeepRuns, $unrecognised.Count, [bool]$DryRun)
