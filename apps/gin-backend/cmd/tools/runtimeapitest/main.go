@@ -1,3 +1,4 @@
+// runtimeapitest executes the deployed HTTP acceptance suite.
 package main
 
 import (

@@ -21,13 +21,15 @@ docs/
 1. [生态演进核心目标](./ECOSYSTEM_EVOLUTION_GUIDE.md)
 2. [当前实施计划](./planning/CURRENT_IMPLEMENTATION_PLAN.md)
 3. [项目结构与依赖约束](./architecture/PROJECT_STRUCTURE.md)
-4. [mixin-search/v1 契约](./contracts/MIXIN_SEARCH_V1_CONTRACT.md)
-5. [阶段 1 实施日志](./reports/PHASE1_IMPLEMENTATION_LOG.md)
-6. 需要追溯决策时阅读 [ADR](./adr/)；需要理解历史方案时阅读 [history](./history/)
+4. [结构与复用开发约定](./architecture/DEVELOPMENT_CONVENTIONS.md)（新增代码落位与复用规则的唯一约定）
+5. [mixin-search/v1 契约](./contracts/MIXIN_SEARCH_V1_CONTRACT.md)
+6. [阶段 1 实施日志](./reports/PHASE1_IMPLEMENTATION_LOG.md)
+7. [阶段 2 实施日志](./reports/PHASE2_IMPLEMENTATION_LOG.md)
+8. 需要追溯决策时阅读 [ADR](./adr/)；需要理解历史方案时阅读 [history](./history/)
 
 ## 当前执行重点
 
-生态阶段二仍在进行：go-web 阶段 1 已完成文档事实源、Documents HTTP、BM25 基线和 mixin-search/v1 契约收口；下一步进入阶段 2，依次建设 mixin-search 持久化控制状态、Qdrant 授权过滤、gin-backend 可靠索引投递、根 Compose 影子索引和影子查询评估。阶段 2 全程保留 PostgreSQL BM25 作为正式读取方。
+生态阶段二的 go-web 阶段 1 与阶段 2 已完成，P2.0-P2.5 均通过。P2.5 已建立异步影子查询、来源分层观测和七类质量评估；当前 local-hash-v1 不满足正式语义读取切换条件，因此 PostgreSQL BM25 继续作为正式读取方。
 
 具体任务、依赖和验收门禁以 [当前实施计划](./planning/CURRENT_IMPLEMENTATION_PLAN.md) 为准。
 ## 分类索引
@@ -37,8 +39,9 @@ docs/
 | 上位目标 | [ECOSYSTEM_EVOLUTION_GUIDE.md](./ECOSYSTEM_EVOLUTION_GUIDE.md) | 定义跨项目产品定位、数据所有权、知识域隔离和宏观阶段 |
 | 当前计划 | [planning/CURRENT_IMPLEMENTATION_PLAN.md](./planning/CURRENT_IMPLEMENTATION_PLAN.md) | 当前唯一排期与实施入口 |
 | 架构 | [architecture/PROJECT_STRUCTURE.md](./architecture/PROJECT_STRUCTURE.md) | 目录职责、领域分层和依赖方向 |
+| 约定 | [architecture/DEVELOPMENT_CONVENTIONS.md](./architecture/DEVELOPMENT_CONVENTIONS.md) | 新增代码落位规则、身份与 HTTP 出入口契约、遗留模块冻结基线与迁移待办 |
 | 契约 | [contracts/MIXIN_SEARCH_V1_CONTRACT.md](./contracts/MIXIN_SEARCH_V1_CONTRACT.md) | 当前 RPC 边界和字段语义 |
-| 实施证据 | [reports/PHASE0_COMPLETION_REPORT.md](./reports/PHASE0_COMPLETION_REPORT.md)、[reports/PHASE1_IMPLEMENTATION_LOG.md](./reports/PHASE1_IMPLEMENTATION_LOG.md) | 记录已经验证的结果，不承担后续排期 |
+| 实施证据 | [reports/PHASE0_COMPLETION_REPORT.md](./reports/PHASE0_COMPLETION_REPORT.md)、[reports/PHASE1_IMPLEMENTATION_LOG.md](./reports/PHASE1_IMPLEMENTATION_LOG.md)、[reports/PHASE2_IMPLEMENTATION_LOG.md](./reports/PHASE2_IMPLEMENTATION_LOG.md) | 记录已经验证的结果，不承担后续排期 |
 | 决策 | [adr/](./adr/) | 保存已接受、被取代或附条件的架构决策 |
 | 历史 | [history/](./history/) | 保存初始方案、冻结基线和已被取代的专项记录 |
 
@@ -55,7 +58,7 @@ docs/
 | 生态宏观阶段 | go-web 本地阶段 | 当前状态 |
 | --- | --- | --- |
 | 阶段一：现状审计与边界确认 | 阶段 0 | 已完成并冻结 |
-| 阶段二：文档知识链路贯通 | 阶段 1 → 阶段 2 | 阶段 1 已完成；阶段 2 可靠索引与影子检索待启动 |
+| 阶段二：文档知识链路贯通 | 阶段 1 → 阶段 2 | 已完成；P2.5 结论为 KEEP_BM25 |
 | 阶段三：QQ 身份与知识空间融合 | 后续专项阶段 | 未进入 |
 | 阶段四：聊天记录域建设 | 后续专项阶段 | 未进入；Chat/WebSocket 保持代码存在但不接入 |
 | 阶段五：治理、可靠性与持续演进 | 持续治理阶段 | 未进入 |

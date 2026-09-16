@@ -2,9 +2,11 @@
 //
 // 用法:
 //
-//	go run ./cmd/pemgenerator             # 默认输出到 configs/
-//	go run ./cmd/pemgenerator -out ./keys # 指定输出目录
-//	go run ./cmd/pemgenerator -bits 4096  # 指定密钥长度
+//	go run ./cmd/tools/pemgenerator             # 默认输出到 configs/
+//	go run ./cmd/tools/pemgenerator -out ./keys # 指定输出目录
+//	go run ./cmd/tools/pemgenerator -bits 4096  # 指定密钥长度
+//
+// Command pemgenerator generates RSA keys for local gin-backend operation.
 package main
 
 import (

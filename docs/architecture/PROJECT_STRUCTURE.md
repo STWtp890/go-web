@@ -1,7 +1,7 @@
 # go-web 项目结构与依赖约束
 
-> 状态：阶段 1 结构基线，P1.3 已落地
-> 生效日期：2026-09-12
+> 状态：阶段 1 结构基线，P2.1-P2.5 控制面、Qdrant 过滤、可靠投递、影子索引与影子查询评估已落地
+> 生效日期：2026-09-14
 
 ## 1. 结构原则
 
@@ -39,9 +39,13 @@ go-web/
 ```text
 apps/gin-backend/
 ├── cmd/
+│   ├── document-index-admin/   # 对账、重建和失败项管理入口
+│   ├── document-index-worker/  # 索引 Outbox 独立消费入口
+│   ├── document-search-eval/   # P2.5 固定样本检索质量评估入口
 │   ├── server/                 # 生产服务入口
-│   ├── pemgenerator/           # 密钥生成工具
-│   └── runtimeapitest/         # 运行时 API 验证工具
+│   └── tools/                  # 不参与产品部署的开发与验收工具
+│       ├── pemgenerator/       # 密钥生成工具
+│       └── runtimeapitest/     # 运行时 API 验证工具
 ├── configs/                    # 配置模板
 └── internal/
     ├── app/                    # 组合根：启动、配置、依赖和生命周期
@@ -49,12 +53,14 @@ apps/gin-backend/
     ├── modules/
     │   ├── document/
     │   │   ├── domain/         # 聚合、值对象、命令/查询端口
-    │   │   ├── application/    # CommandService 与 QueryService
+    │   │   ├── application/    # 文档用例、索引投递与异步影子查询
+    │   │   ├── evaluation/     # 检索数据集校验、指标和报告生成
     │   │   ├── interfaces/
     │   │   │   └── http/       # Documents HTTP 契约的 Gin 适配器
     │   │   └── infrastructure/
     │   │       ├── cache/      # 修订号参与键的版本化读缓存
-    │   │       └── postgresql/ # 命令/查询端口的 PostgreSQL 实现
+    │   │       ├── mixinsearch/# mixin-search/v1 gRPC 端口适配器
+    │   │       └── postgresql/ # 文档、投递和影子观测的 PostgreSQL 实现
     │   ├── auth/               # 认证领域，待按用例渐进内聚
     │   ├── manager/            # 管理员领域，待按用例渐进内聚
     │   ├── chat/               # 代码保留但不注册
@@ -67,7 +73,40 @@ apps/gin-backend/
 
 `document` 是阶段 1 的目标结构样板。其他领域已完成纵向归组，但原有的 `api/handler/logic/types` 内部分层暂时保留；后续只在对应领域发生功能改造时迁移，不做无业务收益的一次性重写。
 
-## 4. 依赖方向
+## 4. mixin-search 结构与控制面依赖
+
+```text
+apps/mixin-search/
+├── cmd/
+│   ├── rag-server/                         # 向量存储、控制存储和 gRPC 的组合根
+│   ├── rag-healthcheck/                    # 标准 gRPC Health 容器探针
+│   ├── rag-grpc-client/                    # 最小远程调用客户端
+│   └── demo/                               # 文档管道与检索演示
+├── internal/
+│   ├── rag/
+│   │   ├── contract.go                     # 文档索引用例、幂等、fencing 与提交编排
+│   │   ├── control_store.go                # ControlStore 端口、持久化模型和故障收敛
+│   │   ├── control_store_memory.go         # 单元测试/显式本地演示适配器
+│   │   ├── control_store_postgres.go       # 默认 PostgreSQL 控制存储适配器
+│   │   ├── control_schema.sql              # mixin_search_control schema 基线
+│   │   ├── control_store_test.go           # 重启、并发、失败关闭和意图清理测试
+│   │   ├── control_store_integration_test.go # 真实 PostgreSQL 恢复与 CAS 测试
+│   │   ├── store.go                        # VectorStore 端口与 memory 实现
+│   │   ├── store_qdrant.go                 # Qdrant 控制投影与候选级过滤实现
+│   │   └── store_pgvector.go               # 实验性 pgvector 实现
+│   └── transport/grpc/                     # Protobuf DTO 与业务 Service 的适配层
+├── compose.yaml                            # 控制 PostgreSQL、Qdrant、pgvector 本地依赖
+├── verify-control-store.ps1                # 一次性 PostgreSQL P2.1 验收入口
+└── verify-qdrant-control.ps1               # 一次性 Qdrant P2.2 验收入口
+```
+
+`internal/rag` 中的 `ControlState` 是独立持久化模型，不依赖 Protobuf DTO。`DocumentIndexService` 同时依赖 `ControlStore` 和向量业务 `Service`；`cmd/rag-server` 作为组合根选择 PostgreSQL 或 memory 控制适配器。gRPC 层只完成协议转换和错误码映射，不读取数据库，也不复制幂等、修订或提交顺序规则。
+
+控制 PostgreSQL 与 VectorStore 之间没有共享事务。索引使用持久化 pending write 租约进行两阶段提交，删除先持久化逻辑删除与 pending delete 后执行物理清理；完整顺序见 [ADR-006](../adr/006-mixin-search-control-state-commit-order.md)。
+
+Qdrant 通过 `ControlledVectorStore` 能力接口接收规范化控制投影；正式搜索在候选选择前统一下推 storage domain、活动/墓碑状态和三路 OR 授权，随后仍由 `DocumentIndexService` 复核并在不足时有界回填。memory 与 pgvector 保持基础 `VectorStore` 兼容，但不作为 P2.2 候选级过滤的验收后端。完整决策见 [ADR-007](../adr/007-qdrant-control-projection-and-filtering.md)。
+
+## 5. 依赖方向
 
 ```text
 cmd ──> app (composition root)
@@ -87,16 +126,19 @@ cmd ──> app (composition root)
 | `platform/httpserver` | Gin、跨路由 middleware、模块路由注册接口 | 领域规则、具体仓储和连接初始化 |
 | `app` | 各层公开构造函数 | 领域规则和持久化细节 |
 
-这些约束由 `internal/architecture/dependencies_test.go` 检查。新增代码若反向依赖组合根、重新使用旧 `internal/service` 路径，或使 `document` 依赖旧 Markdown 存储，测试会失败。
+上表是**结构约定**，靠 review 与 [DEVELOPMENT_CONVENTIONS.md](./DEVELOPMENT_CONVENTIONS.md) 维持。历史情况：gin-backend 曾在 `internal/architecture/dependencies_test.go` 中以依赖测试强制其中一部分，该测试**已移除**（不采用「精确文件清单冻结」的方式）；mixin-search 侧的 `internal/architecture` 仍然生效，强制 `document_pipeline → internal/rag → internal/transport` 的单向边界。
 
-## 5. 阶段性边界与待清理项
+## 6. 阶段性边界与待清理项
 
 - 旧 `modules/markdown`、`model/orm/markdown`、`model/store/markdown` 与 `model/cache/markdown` 已从运行时删除；旧数据库表、索引与版本迁移资产已在 P1.4 删除；空库只建立当前 document 基线。
 - `common` 与 `model` 不是长期业务归属地。共享设施应在确认被多个领域稳定复用后再提取；领域专属实现应迁回对应模块。
 - Chat/WebSocket 保持“代码存在、服务不注册”的状态；目录归组不代表重新启用。
-- `mixin-search/v1` 是跨进程边界，不应被伪装成 gin-backend 内部模块。阶段 1 当前仍不从文档写路径调用该 RPC。
+- `mixin-search/v1` 是跨进程边界，不应被伪装成 gin-backend 内部模块。P2.3 已通过事务 Outbox 与独立 Worker 调用该边界；HTTP 文档事务不直接发起 RPC。
+- P2.1 的 PostgreSQL 控制状态和向量索引均为可重建派生数据；P2.3 已提供失败重放、差异对账和 repeatable-read 全量重建编排。
+- P2.2 已完成 Qdrant 授权、活动版本、墓碑与 storage domain 过滤下推；P2.3 已完成 gin-backend 可靠投递；P2.4 已完成根 Compose、分层健康状态与持续影子索引；P2.5 已完成非阻塞影子查询、事实复核、来源分层观测和质量报告。当前结论为 KEEP_BM25，正式读取方地位仍未改变。
+- P2.5 完成后的缓存加固统一了进程级 Redis/内存/singleflight 运行时。内存回退按实体与文档分区受 TTL、LRU、条目和字节预算约束；User/Manager 使用 PostgreSQL 单调 `cache_revision` 版本键隔离延迟旧回填，JWT 会话状态继续保持 Redis 故障时失败关闭。完整边界见 [ADR-011](../adr/011-bounded-cache-runtime-and-revision-fencing.md)。
 
-## 6. P1.3 的结构结果
+## 7. P1.3 的结构结果
 
 P1.3 已在 `modules/document` 内落地查询、缓存与 HTTP 适配层：
 
@@ -113,7 +155,7 @@ modules/document/
 
 组合根只注册 document HTTP 适配器；运行时不再引用旧 Markdown ORM、store、cache 或 handler。当前没有新旧表双写；P1.4 已同步更新仓库内前端和测试，并删除旧表、旧索引与旧 HTTP 路径。
 
-## 7. 新增代码的落位规则
+## 8. 新增代码的落位规则
 
 1. 先判断代码属于哪个业务能力，再决定技术层；不能确定领域归属的代码不得直接放进 `common`。
 2. 只被一个领域使用的请求类型、错误、仓储和工具函数均留在该领域。
@@ -121,14 +163,23 @@ modules/document/
 4. 目录名称使用完整、稳定的领域词；Go 包名不使用下划线，因此统一使用 `aiagent`。
 5. 每次结构调整必须同时更新导入路径、测试、开发初始化入口、验收门禁和本文件中的阶段状态。
 
-## 8. 验收命令
+## 9. 验收命令
 
 在 `apps/gin-backend` 执行：
 
 ```bash
-go test ./internal/architecture
 go test ./...
 go vet ./...
 ```
 
 涉及文档持久化或应用服务的改造，还必须从仓库根目录执行当前计划定义的空库初始化与集成门禁；涉及部署边界时执行 `deployments/verify.ps1`。P1.0-P1.3 的生产式迁移专项脚本已在 P1.4 清理，历史结论保留在实施日志。
+
+涉及 mixin-search 控制状态时，在 `apps/mixin-search` 执行：
+
+```powershell
+go test ./...
+go vet ./...
+./verify-control-store.ps1
+```
+
+最后一项使用一次性 PostgreSQL 空数据卷验证真实持久化、服务实例恢复和 generation CAS，并在结束时默认删除该环境。
