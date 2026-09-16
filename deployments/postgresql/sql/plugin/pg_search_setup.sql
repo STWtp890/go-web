@@ -17,4 +17,3 @@ CREATE EXTENSION IF NOT EXISTS pg_search CASCADE;
 
 -- 2. 验证 jieba 中文分词 (应输出 {中文,全文,检索,测试} 等分词结果)
 SELECT '中文全文检索测试'::pdb.jieba::text[];
-

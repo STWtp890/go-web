@@ -1,6 +1,6 @@
 # AI 私有知识库生态演进方向
 
-> 文档性质：跨项目宏观参考与演进约束  
+> 文档性质：跨项目宏观参考与演进约束
 > 适用项目：`go-web`、`mixin-search`（前 `go-rag`）、`py-agent/314`
 > 当前状态：上位目标与边界基线；当前实施入口见 [`CURRENT_IMPLEMENTATION_PLAN.md`](./planning/CURRENT_IMPLEMENTATION_PLAN.md)
 
