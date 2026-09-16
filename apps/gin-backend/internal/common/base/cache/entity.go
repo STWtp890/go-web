@@ -3,15 +3,16 @@
 // 缓存模式: Cache-Aside (旁路缓存)。
 //
 //	Get  : 主存储(Redis) → 未命中/故障 → [singleflight 单飞] 内存回退 → DB 回源 → 回填两级
-//	Evict: 写库后调用, 删除两级缓存 (保证一致性)
+//	Evict: 删除两级缓存，负责旧键回收；可变实体的一致性由业务版本键保证
 //
-// 并发防护: 同一 key 的并发 Get 经 singleflight.Group 合并为一次 DB 回源,
-// 高并发热点 (如登录查用户) 不会击穿到数据库。
+// 并发防护: 同进程、同命名空间、同 key 的并发 Get 合并为一次 DB 回源。
 package cache
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -28,22 +29,25 @@ type Loader[T any] func(ctx context.Context) (T, error)
 // - `ttl` 缓存过期时间
 // - `group` singleflight 单飞组件 (防击穿)
 type EntityCache[T any] struct {
-	primary  Store
-	fallback Store
-	ttl      time.Duration
-	group    singleflight.Group
+	primary   Store
+	fallback  Store
+	ttl       time.Duration
+	group     *singleflight.Group
+	namespace string
+	stats     *entityCounters
 }
 
-// NewEntityCache 创建实体缓存器
-// :Param
-// - `primary` 主存储 (通常为 NewRedisCache())
-// - `fallback` 回退存储 (通常为 NewMemCache())
-// - `ttl` 缓存过期时间 (<= 0 不过期)
-func NewEntityCache[T any](primary, fallback Store, ttl time.Duration) *EntityCache[T] {
+func newEntityCache[T any](
+	primary Store,
+	fallback Store,
+	group *singleflight.Group,
+	namespace string,
+	stats *entityCounters,
+	ttl time.Duration,
+) *EntityCache[T] {
 	return &EntityCache[T]{
-		primary:  primary,
-		fallback: fallback,
-		ttl:      ttl,
+		primary: primary, fallback: fallback, ttl: ttl, group: group,
+		namespace: namespace, stats: stats,
 	}
 }
 
@@ -58,50 +62,78 @@ func NewEntityCache[T any](primary, fallback Store, ttl time.Duration) *EntityCa
 func (e *EntityCache[T]) Get(ctx context.Context, key string, load Loader[T]) (T, error) {
 	var zero T
 
-	// 1. Redis 命中直接返回
 	if raw, err := e.primary.Get(ctx, key); err == nil {
+		e.stats.primaryHits.Add(1)
 		return decode[T](raw)
-	} else if err != ErrMiss {
-		// 主存储故障 (连接不可用等) → 降级走回源路径, 内部先查内存
+	} else if errors.Is(err, ErrMiss) {
+		e.stats.primaryMisses.Add(1)
+	} else {
+		e.stats.primaryErrors.Add(1)
 	}
 
-	// 2. 单飞回源: 同 key 并发只放行一个 (防击穿 / 合并回源)
-	v, err, _ := e.group.Do(key, func() (any, error) {
-		// 2a. 内存回退: 命中直接返回, 并尽力回填主存储
+	v, err, shared := e.group.Do(e.namespace+"\x00"+key, func() (any, error) {
 		if raw, err := e.fallback.Get(ctx, key); err == nil {
-			_ = e.primary.Set(ctx, key, raw, e.ttl) // 回填失败不影响读
-			return decode[T](raw)
-		} else if err != ErrMiss {
-			// 内存也故障 → 直接 DB
+			e.stats.fallbackHits.Add(1)
+			if fillErr := e.primary.Set(ctx, key, raw, e.ttl); fillErr != nil {
+				e.stats.fillErrors.Add(1)
+			}
+			return raw, nil
+		} else if errors.Is(err, ErrMiss) {
+			e.stats.fallbackMisses.Add(1)
+		} else {
+			e.stats.fallbackErrors.Add(1)
 		}
 
-		// 2b. DB 回源
-		t, err := load(ctx)
+		e.stats.loads.Add(1)
+		loaded, err := load(ctx)
 		if err != nil {
-			return zero, err // 回源失败不缓存 (错误透传, 下次重试)
+			return nil, err
 		}
-
-		raw, err := json.Marshal(&t)
+		encoded, err := json.Marshal(&loaded)
 		if err != nil {
-			return zero, err
+			return nil, err
 		}
-		// 回填两级缓存 (尽力而为)
-		_ = e.primary.Set(ctx, key, string(raw), e.ttl)
-		_ = e.fallback.Set(ctx, key, string(raw), e.ttl)
-		return t, nil
+		raw := string(encoded)
+		if fillErr := e.primary.Set(ctx, key, raw, e.ttl); fillErr != nil {
+			e.stats.fillErrors.Add(1)
+		}
+		if fillErr := e.fallback.Set(ctx, key, raw, e.ttl); fillErr != nil {
+			e.stats.fillErrors.Add(1)
+		}
+		return raw, nil
 	})
+	if shared {
+		e.stats.shared.Add(1)
+	}
 	if err != nil {
 		return zero, err
 	}
-	return v.(T), nil
+	raw, ok := v.(string)
+	if !ok {
+		return zero, fmt.Errorf("cache %s: singleflight result type %T", e.namespace, v)
+	}
+	return decode[T](raw)
 }
 
-// Evict 失效实体缓存 (两级删除; 幂等)
-// 业务层在写库后调用, 保证下次读取回源新数据 (Cache-Aside 一致性)
+// Evict 删除实体缓存 (两级删除; 幂等)。
+// 删除失败会聚合返回；调用方决定重试或记录。它本身不仲裁在途回填。
 func (e *EntityCache[T]) Evict(ctx context.Context, key string) error {
-	_ = e.primary.Del(ctx, key)
-	_ = e.fallback.Del(ctx, key)
-	return nil
+	primaryErr := e.primary.Del(ctx, key)
+	fallbackErr := e.fallback.Del(ctx, key)
+	if primaryErr != nil || fallbackErr != nil {
+		e.stats.evictErrors.Add(1)
+	}
+	return errors.Join(
+		wrapCacheOperationError("primary delete", primaryErr),
+		wrapCacheOperationError("fallback delete", fallbackErr),
+	)
+}
+
+func wrapCacheOperationError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("cache %s: %w", operation, err)
 }
 
 // decode 反序列化缓存值

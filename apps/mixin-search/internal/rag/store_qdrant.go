@@ -14,6 +14,20 @@ import (
 const (
 	qdrantDenseVector  = "content_dense"
 	qdrantSparseVector = "content_sparse"
+
+	qdrantPayloadStorageID           = "storage_id"
+	qdrantPayloadStorageDomain       = "storage_domain"
+	qdrantPayloadDocumentID          = "document_id"
+	qdrantPayloadVersionID           = "version_id"
+	qdrantPayloadOwnerSpaceID        = "owner_space_id"
+	qdrantPayloadAuthenticatedPublic = "authenticated_public"
+	qdrantPayloadGrantedSpaceIDs     = "granted_space_ids"
+	qdrantPayloadActive              = "active"
+	qdrantPayloadTombstoned          = "tombstoned"
+	qdrantPayloadActivationRevision  = "activation_revision"
+	qdrantPayloadAccessRevision      = "access_revision"
+	qdrantPayloadLifecycleRevision   = "lifecycle_revision"
+	qdrantPayloadContentSHA256       = "content_sha256"
 )
 
 type QdrantConfig struct {
@@ -61,23 +75,62 @@ func (s *QdrantStore) ensureCollection(ctx context.Context, dimensions uint64) e
 	if err != nil {
 		return fmt.Errorf("check qdrant collection: %w", err)
 	}
-	if exists {
-		return nil
+	if !exists {
+		modifier := qdrant.Modifier_Idf
+		if err := s.client.CreateCollection(ctx, &qdrant.CreateCollection{
+			CollectionName: s.collection,
+			VectorsConfig: qdrant.NewVectorsConfigMap(map[string]*qdrant.VectorParams{
+				qdrantDenseVector: {
+					Size:     dimensions,
+					Distance: qdrant.Distance_Cosine,
+				},
+			}),
+			SparseVectorsConfig: qdrant.NewSparseVectorsConfig(map[string]*qdrant.SparseVectorParams{
+				qdrantSparseVector: {Modifier: &modifier},
+			}),
+		}); err != nil {
+			return fmt.Errorf("create qdrant collection: %w", err)
+		}
 	}
-	modifier := qdrant.Modifier_Idf
-	if err := s.client.CreateCollection(ctx, &qdrant.CreateCollection{
-		CollectionName: s.collection,
-		VectorsConfig: qdrant.NewVectorsConfigMap(map[string]*qdrant.VectorParams{
-			qdrantDenseVector: {
-				Size:     dimensions,
-				Distance: qdrant.Distance_Cosine,
-			},
-		}),
-		SparseVectorsConfig: qdrant.NewSparseVectorsConfig(map[string]*qdrant.SparseVectorParams{
-			qdrantSparseVector: {Modifier: &modifier},
-		}),
-	}); err != nil {
-		return fmt.Errorf("create qdrant collection: %w", err)
+	return s.ensureControlPayloadIndexes(ctx)
+}
+
+func (s *QdrantStore) ensureControlPayloadIndexes(ctx context.Context) error {
+	info, err := s.client.GetCollectionInfo(ctx, s.collection)
+	if err != nil {
+		return fmt.Errorf("inspect qdrant payload indexes: %w", err)
+	}
+	fields := map[string]qdrant.FieldType{
+		qdrantPayloadStorageID:           qdrant.FieldType_FieldTypeKeyword,
+		qdrantPayloadStorageDomain:       qdrant.FieldType_FieldTypeKeyword,
+		qdrantPayloadDocumentID:          qdrant.FieldType_FieldTypeKeyword,
+		qdrantPayloadVersionID:           qdrant.FieldType_FieldTypeKeyword,
+		qdrantPayloadOwnerSpaceID:        qdrant.FieldType_FieldTypeKeyword,
+		qdrantPayloadAuthenticatedPublic: qdrant.FieldType_FieldTypeBool,
+		qdrantPayloadGrantedSpaceIDs:     qdrant.FieldType_FieldTypeKeyword,
+		qdrantPayloadActive:              qdrant.FieldType_FieldTypeBool,
+		qdrantPayloadTombstoned:          qdrant.FieldType_FieldTypeBool,
+	}
+	wait := true
+	for field, fieldType := range fields {
+		if _, ok := info.PayloadSchema[field]; ok {
+			continue
+		}
+		fieldType := fieldType
+		if _, err := s.client.CreateFieldIndex(ctx, &qdrant.CreateFieldIndexCollection{
+			CollectionName: s.collection,
+			Wait:           &wait,
+			FieldName:      field,
+			FieldType:      &fieldType,
+		}); err != nil {
+			refreshed, inspectErr := s.client.GetCollectionInfo(ctx, s.collection)
+			if inspectErr != nil {
+				return fmt.Errorf("create qdrant payload index %q: %w", field, errors.Join(err, inspectErr))
+			}
+			if _, ok := refreshed.PayloadSchema[field]; !ok {
+				return fmt.Errorf("create qdrant payload index %q: %w", field, err)
+			}
+		}
 	}
 	return nil
 }
@@ -88,7 +141,7 @@ func (s *QdrantStore) ReplaceDocument(ctx context.Context, documentID string, ch
 		CollectionName: s.collection,
 		Wait:           &wait,
 		Points: qdrant.NewPointsSelectorFilter(&qdrant.Filter{
-			Must: []*qdrant.Condition{qdrant.NewMatchKeyword("document_id", documentID)},
+			Must: []*qdrant.Condition{qdrant.NewMatchKeyword(qdrantPayloadStorageID, documentID)},
 		}),
 	})
 	if err != nil {
@@ -101,22 +154,38 @@ func (s *QdrantStore) ReplaceDocument(ctx context.Context, documentID string, ch
 	points := make([]*qdrant.PointStruct, 0, len(chunks))
 	for _, chunk := range chunks {
 		indices, values := termsToSparseVector(chunk.Terms)
+		payload, err := qdrant.TryValueMap(map[string]any{
+			"chunk_id":                       chunk.Chunk.ID,
+			qdrantPayloadStorageID:           chunk.Chunk.DocumentID,
+			qdrantPayloadStorageDomain:       "",
+			qdrantPayloadDocumentID:          "",
+			qdrantPayloadVersionID:           "",
+			qdrantPayloadOwnerSpaceID:        "",
+			qdrantPayloadAuthenticatedPublic: false,
+			qdrantPayloadGrantedSpaceIDs:     []any{},
+			qdrantPayloadActive:              false,
+			qdrantPayloadTombstoned:          false,
+			qdrantPayloadActivationRevision:  0,
+			qdrantPayloadAccessRevision:      0,
+			qdrantPayloadLifecycleRevision:   0,
+			qdrantPayloadContentSHA256:       "",
+			"title":                          chunk.Chunk.Title,
+			"content":                        chunk.Chunk.Content,
+			"position":                       chunk.Chunk.Position,
+			"format":                         chunk.Chunk.Format,
+			"source":                         chunk.Chunk.Source,
+			"section":                        chunk.Chunk.Section,
+		})
+		if err != nil {
+			return fmt.Errorf("build qdrant payload for %q: %w", chunk.Chunk.ID, err)
+		}
 		points = append(points, &qdrant.PointStruct{
 			Id: qdrant.NewID(deterministicUUID(chunk.Chunk.ID)),
 			Vectors: qdrant.NewVectorsMap(map[string]*qdrant.Vector{
 				qdrantDenseVector:  qdrant.NewVectorDense(toFloat32(chunk.Dense)),
 				qdrantSparseVector: qdrant.NewVectorSparse(indices, values),
 			}),
-			Payload: qdrant.NewValueMap(map[string]any{
-				"chunk_id":    chunk.Chunk.ID,
-				"document_id": chunk.Chunk.DocumentID,
-				"title":       chunk.Chunk.Title,
-				"content":     chunk.Chunk.Content,
-				"position":    chunk.Chunk.Position,
-				"format":      chunk.Chunk.Format,
-				"source":      chunk.Chunk.Source,
-				"section":     chunk.Chunk.Section,
-			}),
+			Payload: payload,
 		})
 	}
 	if _, err := s.client.Upsert(ctx, &qdrant.UpsertPoints{
@@ -129,8 +198,55 @@ func (s *QdrantStore) ReplaceDocument(ctx context.Context, documentID string, ch
 	return nil
 }
 
+func (s *QdrantStore) SyncDocumentControls(ctx context.Context, controls []VectorDocumentControl) error {
+	wait := true
+	for _, control := range controls {
+		if control.StorageID == "" {
+			return errors.New("qdrant control storage id is required")
+		}
+		payload, err := qdrant.TryValueMap(map[string]any{
+			qdrantPayloadStorageDomain:       control.StorageDomain,
+			qdrantPayloadDocumentID:          control.DocumentID,
+			qdrantPayloadVersionID:           control.VersionID,
+			qdrantPayloadOwnerSpaceID:        control.OwnerSpaceID,
+			qdrantPayloadAuthenticatedPublic: control.AuthenticatedPublic,
+			qdrantPayloadGrantedSpaceIDs:     qdrantStringList(control.GrantedSpaceIDs),
+			qdrantPayloadActive:              control.Active,
+			qdrantPayloadTombstoned:          control.Tombstoned,
+			qdrantPayloadActivationRevision:  control.ActivationRevision,
+			qdrantPayloadAccessRevision:      control.AccessRevision,
+			qdrantPayloadLifecycleRevision:   control.LifecycleRevision,
+			qdrantPayloadContentSHA256:       control.ContentSHA256,
+		})
+		if err != nil {
+			return fmt.Errorf("build qdrant control payload for %q: %w", control.StorageID, err)
+		}
+		_, err = s.client.SetPayload(ctx, &qdrant.SetPayloadPoints{
+			CollectionName: s.collection,
+			Wait:           &wait,
+			Payload:        payload,
+			PointsSelector: qdrant.NewPointsSelectorFilter(&qdrant.Filter{
+				Must: []*qdrant.Condition{qdrant.NewMatchKeyword(qdrantPayloadStorageID, control.StorageID)},
+			}),
+		})
+		if err != nil {
+			return fmt.Errorf("sync qdrant control for %q: %w", control.StorageID, err)
+		}
+	}
+	return nil
+}
+
 func (s *QdrantStore) DenseSearch(ctx context.Context, query []float64, limit int) ([]ScoredChunk, error) {
-	return s.query(ctx, qdrant.NewQueryDense(toFloat32(query)), qdrantDenseVector, limit)
+	return s.query(ctx, qdrant.NewQueryDense(toFloat32(query)), qdrantDenseVector, limit, nil)
+}
+
+func (s *QdrantStore) DenseSearchFiltered(
+	ctx context.Context,
+	query []float64,
+	limit int,
+	filter VectorSearchFilter,
+) ([]ScoredChunk, error) {
+	return s.query(ctx, qdrant.NewQueryDense(toFloat32(query)), qdrantDenseVector, limit, qdrantControlFilter(filter))
 }
 
 func (s *QdrantStore) SparseSearch(ctx context.Context, queryTokens []string, limit int) ([]ScoredChunk, error) {
@@ -142,7 +258,24 @@ func (s *QdrantStore) SparseSearch(ctx context.Context, queryTokens []string, li
 	if len(indices) == 0 {
 		return nil, nil
 	}
-	return s.query(ctx, qdrant.NewQuerySparse(indices, values), qdrantSparseVector, limit)
+	return s.query(ctx, qdrant.NewQuerySparse(indices, values), qdrantSparseVector, limit, nil)
+}
+
+func (s *QdrantStore) SparseSearchFiltered(
+	ctx context.Context,
+	queryTokens []string,
+	limit int,
+	filter VectorSearchFilter,
+) ([]ScoredChunk, error) {
+	terms := make(map[string]int, len(queryTokens))
+	for _, token := range queryTokens {
+		terms[token]++
+	}
+	indices, values := termsToSparseVector(terms)
+	if len(indices) == 0 {
+		return nil, nil
+	}
+	return s.query(ctx, qdrant.NewQuerySparse(indices, values), qdrantSparseVector, limit, qdrantControlFilter(filter))
 }
 
 func (s *QdrantStore) query(
@@ -150,6 +283,7 @@ func (s *QdrantStore) query(
 	query *qdrant.Query,
 	vectorName string,
 	limit int,
+	filter *qdrant.Filter,
 ) ([]ScoredChunk, error) {
 	if limit <= 0 {
 		return nil, nil
@@ -161,6 +295,7 @@ func (s *QdrantStore) query(
 		Using:          qdrant.PtrOf(vectorName),
 		Limit:          &queryLimit,
 		WithPayload:    qdrant.NewWithPayload(true),
+		Filter:         filter,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("query qdrant %s: %w", vectorName, err)
@@ -175,6 +310,33 @@ func (s *QdrantStore) query(
 		hits = append(hits, ScoredChunk{Chunk: chunk, Score: float64(point.Score)})
 	}
 	return hits, nil
+}
+
+func qdrantControlFilter(filter VectorSearchFilter) *qdrant.Filter {
+	must := []*qdrant.Condition{
+		qdrant.NewMatchBool(qdrantPayloadActive, true),
+		qdrant.NewMatchBool(qdrantPayloadTombstoned, false),
+	}
+	if filter.StorageDomain != "" {
+		must = append(must, qdrant.NewMatchKeyword(qdrantPayloadStorageDomain, filter.StorageDomain))
+	}
+	authorization := []*qdrant.Condition{
+		qdrant.NewMatchBool(qdrantPayloadAuthenticatedPublic, true),
+	}
+	if documents := normalizeStrings(filter.AllowedDocumentIDs); len(documents) > 0 {
+		authorization = append(authorization, qdrant.NewMatchKeywords(qdrantPayloadDocumentID, documents...))
+	}
+	if spaces := normalizeStrings(filter.AllowedSpaceIDs); len(spaces) > 0 {
+		authorization = append(
+			authorization,
+			qdrant.NewMatchKeywords(qdrantPayloadOwnerSpaceID, spaces...),
+			qdrant.NewMatchKeywords(qdrantPayloadGrantedSpaceIDs, spaces...),
+		)
+	}
+	return &qdrant.Filter{
+		Must:      must,
+		MinShould: &qdrant.MinShould{Conditions: authorization, MinCount: 1},
+	}
 }
 
 func (s *QdrantStore) Close() error {
@@ -197,7 +359,7 @@ func chunkFromQdrantPayload(payload map[string]*qdrant.Value) (Chunk, error) {
 	if err != nil {
 		return Chunk{}, err
 	}
-	documentID, err := required("document_id")
+	documentID, err := required(qdrantPayloadStorageID)
 	if err != nil {
 		return Chunk{}, err
 	}
@@ -230,6 +392,15 @@ func optionalQdrantString(payload map[string]*qdrant.Value, key string) string {
 		return value.GetStringValue()
 	}
 	return ""
+}
+
+func qdrantStringList(values []string) []any {
+	normalized := normalizeStrings(values)
+	result := make([]any, len(normalized))
+	for index, value := range normalized {
+		result[index] = value
+	}
+	return result
 }
 
 func termsToSparseVector(terms map[string]int) ([]uint32, []float32) {

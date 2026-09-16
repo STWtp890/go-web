@@ -262,6 +262,10 @@ func mapServiceError(err error) error {
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, rag.ErrNotFound):
 		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, rag.ErrControlStoreConflict):
+		return status.Error(codes.Aborted, err.Error())
+	case errors.Is(err, rag.ErrControlStoreUnavailable):
+		return status.Error(codes.Unavailable, err.Error())
 	case errors.Is(err, rag.ErrConflict),
 		errors.Is(err, rag.ErrStaleActivation),
 		errors.Is(err, rag.ErrStaleAccess),

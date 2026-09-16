@@ -1,0 +1,50 @@
+{
+  "name": "document-search-v1",
+  "description": "P2.5 bilingual, code, field, exact-token and semantic-expression retrieval gate",
+  "documents": [
+    {
+      "key": "zh-concurrency",
+      "title": "Go 并发控制指南",
+      "content": "使用 goroutine、channel 与 context 组织并发任务，并通过取消信号及时释放资源。"
+    },
+    {
+      "key": "en-outbox",
+      "title": "Reliable Event Delivery",
+      "content": "A transactional outbox commits business facts and delivery intent together, then retries failed dispatches."
+    },
+    {
+      "key": "code-timeout",
+      "title": "Go HTTP 超时示例",
+      "content": "```go\nctx, cancel := context.WithTimeout(parent, 750*time.Millisecond)\ndefer cancel()\n```"
+    },
+    {
+      "key": "title-beidou",
+      "title": "北斗索引运行手册",
+      "content": "本页描述日常维护、巡检和故障记录。"
+    },
+    {
+      "key": "body-mars",
+      "title": "深空设备维护",
+      "content": "火星信标回收流程要求先断开遥测通道，再归档最后一份状态快照。"
+    },
+    {
+      "key": "exact-quasar",
+      "title": "发布标记",
+      "content": "本次可重复验收使用唯一标记 quasar-p25-token 定位目标文档。"
+    },
+    {
+      "key": "semantic-recovery",
+      "title": "投递恢复策略",
+      "content": "服务故障后会自动重新投递未确认事件，并在依赖恢复后把积压逐步排空。"
+    }
+  ],
+  "queries": [
+    {"id": "q-zh", "category": "chinese", "text": "并发控制", "relevant": ["zh-concurrency"]},
+    {"id": "q-en", "category": "english", "text": "transactional outbox", "relevant": ["en-outbox"]},
+    {"id": "q-code", "category": "code", "text": "context.WithTimeout", "relevant": ["code-timeout"]},
+    {"id": "q-title", "category": "title", "text": "北斗索引", "relevant": ["title-beidou"]},
+    {"id": "q-body", "category": "body", "text": "火星信标", "relevant": ["body-mars"]},
+    {"id": "q-exact", "category": "exact_keyword", "text": "quasar-p25-token", "relevant": ["exact-quasar"]},
+    {"id": "q-semantic", "category": "semantic_expression", "text": "系统恢复后怎样保证消息不会丢失", "relevant": ["semantic-recovery"]}
+  ]
+}

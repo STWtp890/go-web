@@ -1,7 +1,7 @@
 # mixin-search/v1 文档索引契约
 
-> 状态：P1.5 定型契约
-> 日期：2026-09-13
+> 状态：P1.5 定型契约，P2.1 持久化控制面与 P2.2 Qdrant 候选过滤已落地
+> 日期：2026-09-14
 > Proto：`packages/proto/mixin-search/v1/mixin-search.proto`
 
 ## 1. 适用范围
@@ -10,7 +10,7 @@
 
 `go-web` 是文档、版本、归属空间、访问策略、授权和生命周期的唯一事实源，负责分配 `activation_revision`、`access_revision`、`lifecycle_revision`，并在完成身份、成员和资源权限校验后计算搜索请求中的 allow-list。
 
-`mixin-search` 只保存可重建的文档索引和执行访问快照，不解释用户、角色、成员或 QQ 身份，也不反向修改业务文档。P1.5 只验证协议和内存/测试适配器；正式 RPC 流量、Outbox 消费/重试/重放、持久化控制面和生产后端 ACL 下推均未接入。
+`mixin-search` 只保存可重建的文档索引、执行访问快照和索引控制状态，不解释用户、角色、成员或 QQ 身份，也不反向修改业务文档。P2.1 已为控制状态接入独立 PostgreSQL 持久化和 memory 测试适配器；P2.2 已为 Qdrant 接入候选级 ACL、活动版本、墓碑和 storage domain 过滤；P2.3/P2.4 已完成 gin-backend Outbox 消费、自动重试、对账、全量重建和根 Compose 持续影子索引；P2.5 已通过同一 SearchDocuments 契约运行异步影子查询和来源分层评估，未改变协议字段。
 
 ## 2. RPC
 
@@ -102,18 +102,32 @@ INDEXED --Activate(non-decreasing activation)--> ACTIVE
 |---|---|
 | 缺少字段、摘要不匹配、不支持的文件类型、非法 `top_k` | `INVALID_ARGUMENT` |
 | 激活不存在或尚未索引的版本 | `NOT_FOUND` |
-| CAS 失败、低修订、同修订冲突 payload、墓碑后的旧事件、不可变版本内容冲突 | `FAILED_PRECONDITION` |
+| 业务 CAS 失败、低修订、同修订冲突 payload、墓碑后的旧事件、不可变版本内容冲突 | `FAILED_PRECONDITION` |
+| 控制状态 generation CAS 失败，即另一实例已先提交 | `ABORTED` |
+| 控制存储不可读/不可写、generation 回退或持久化快照损坏 | `UNAVAILABLE` |
 | 上下文取消或超时 | `CANCELLED` / `DEADLINE_EXCEEDED` |
-| 存储或处理失败 | `INTERNAL` |
+| 其他向量存储或处理失败 | `INTERNAL` |
 
-## 7. P1.5 实现与验证边界
+## 7. 实现与验证边界
+
+### P1.5 历史边界
 
 P1.5 的 `DocumentIndexService` 通过进程内控制状态验证七个 RPC、`operation_id` 载荷绑定与首次响应重放、三类高水位、完整访问快照、墓碑和重新发布语义。memory store 用于单元测试和本地演示；Qdrant、pgvector 可以继续保存文档块，但本阶段不以它们证明生产级 ACL 或 fencing。
 
-当前过滤仍可能在召回候选集上执行：它必须防止越权结果返回，但可能牺牲召回率。接入真实流量前必须把 ACL、活动版本和生命周期过滤下推到真实存储查询，并按过滤后的命中数补召回。
+P1.5 时进程重启后内存控制状态不会恢复，因此所有版本均视为非活动并停止返回。该限制已由 P2.1 的持久化控制面替代。
 
-进程重启后内存控制状态不会恢复，因此所有版本均视为非活动并停止返回，属于失败关闭。持久化清单、Outbox 重放或上游全量重建必须在接入真实流量前另行实现。
+### P2.1/P2.2 当前边界
 
-契约测试至少覆盖：`operation_id` 同载荷精确重放、跨载荷/跨 RPC 改绑冲突、重复业务键、同修订冲突 payload、三类低修订事件、乱序事件、删除后迟到索引/激活、撤销授权后迟到授权、空 allow-list 的公开搜索、显式文档授权，以及更高 lifecycle 下先索引再激活的重新发布。
+`rag-server` 默认使用由 mixin-search 独立拥有的 PostgreSQL 控制存储，持久化文档清单、版本映射与指纹、三类修订高水位、访问快照、墓碑、`operation_id` 首次结果以及未完成的向量写入/删除意图。持久化模型位于业务 Service 内部，不复用 Protobuf DTO。memory 控制存储仅用于单元测试和显式本地演示，不承诺进程重启恢复。PostgreSQL schema 可幂等创建，但新的控制 namespace 必须通过显式 bootstrap 创建，避免拼写错误静默形成空控制面。
+
+索引采用持久化 `pending_vector_write` 租约、向量写入、最终控制提交的两阶段顺序；删除先持久化逻辑删除、墓碑、首次响应与 pending delete，再清理物理向量。具体提交顺序和故障收敛见 [ADR-006](../adr/006-mixin-search-control-state-commit-order.md)。
+
+每次请求都以持久化 generation 为判定基础。控制存储 generation 冲突返回 `ABORTED`，调用方使用相同 `operation_id` 重新读取并重试；业务 revision/CAS 冲突返回 `FAILED_PRECONDITION`；无法证明控制状态有效时返回 `UNAVAILABLE` 并停止读写。
+
+Qdrant payload 保存规范化控制投影；每次正式搜索在读取最新持久化 generation 并收敛 pending 操作后，先同步投影，再在 dense/sparse 两路候选选择中统一下推 `storage_domain + active + not tombstoned` 和三路 OR 授权。返回前仍执行相同的契约层复核；候选不足时有界扩大召回并按公开 chunk ID 稳定去重。完整门禁见 [ADR-007](../adr/007-qdrant-control-projection-and-filtering.md)。pgvector 与 memory 不作为 P2.2 生产候选级过滤的证明对象。
+
+控制状态和向量索引可以由 `go-web` 事实源重放重建；P2.1 验证服务端持久化、幂等恢复和接受事实重放的边界，P2.3 已完成 gin-backend 的持久化 Outbox、自动重试、对账和全量重建编排，P2.4 已在根 Compose 持续运行影子索引，P2.5 已在 Outbox 收敛后复核影子结果的权限、生命周期、活动版本与正式 SearchMine 范围。当前 KEEP_BM25 结论不改变本 v1 契约。
+
+契约测试至少覆盖：`operation_id` 同载荷精确重放、跨载荷/跨 RPC 改绑冲突、重复业务键、同修订冲突 payload、三类低修订事件、乱序事件、删除后迟到索引/激活、撤销授权后迟到授权、空 allow-list 的公开搜索、显式文档授权、更高 lifecycle 下先索引再激活的重新发布、Qdrant payload/候选过滤、授权撤销、版本切换、回填和 storage domain 隔离。
 
 协议修改后必须重新生成 `packages/gen/mixin-search/v1`，并通过 `packages/proto/verify-generated.ps1` 与 `apps/mixin-search` 的测试和静态检查。

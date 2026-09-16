@@ -74,8 +74,9 @@ type IngestResult struct {
 
 // SearchRequest asks the Eino search workflow for hybrid results.
 type SearchRequest struct {
-	Query string `json:"query"`
-	TopK  int    `json:"top_k"`
+	Query  string              `json:"query"`
+	TopK   int                 `json:"top_k"`
+	Filter *VectorSearchFilter `json:"-"`
 }
 
 // SearchHit exposes both recall paths and the final RRF score.

@@ -15,8 +15,8 @@ func TestQdrantStoreIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	store, err := NewQdrantStore(ctx, QdrantConfig{
-		Host:       "localhost",
-		Port:       6334,
+		Host:       qdrantIntegrationHost(),
+		Port:       qdrantIntegrationPort(t),
 		Collection: "rag_chunks_test",
 		Dimensions: localEmbeddingDimensions,
 	})

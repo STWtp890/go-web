@@ -4,6 +4,8 @@ package postgresql
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -34,6 +36,15 @@ func (repository *Repository) InTransaction(ctx context.Context, fn func(domain.
 	return repository.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		return fn(&Repository{db: tx})
 	})
+}
+
+func (repository *Repository) InRepeatableRead(ctx context.Context, fn func(domain.Repository) error) error {
+	if fn == nil {
+		return errors.New("document repository: repeatable-read callback is nil")
+	}
+	return repository.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return fn(&Repository{db: tx})
+	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
 }
 
 func (repository *Repository) EnsurePrivateSpace(ctx context.Context, entity *domain.KnowledgeSpace) (bool, error) {
@@ -202,6 +213,44 @@ func (repository *Repository) DeleteSearchProjection(ctx context.Context, docume
 	}
 	return requireAffectedRow(result)
 }
+
+func (repository *Repository) AppendIndexDeliveryEvent(ctx context.Context, entity *domain.IndexDeliveryEvent) error {
+	if entity == nil {
+		return errors.New("append document index delivery event: entity is nil")
+	}
+	record, err := indexDeliveryEventToRecord(entity)
+	if err != nil {
+		return fmt.Errorf("append document index delivery event: %w", err)
+	}
+	if err := repository.db.WithContext(ctx).Create(record).Error; err != nil {
+		return fmt.Errorf("append document index delivery event: %w", err)
+	}
+	entity.CreatedAt = record.CreatedAt
+	entity.UpdatedAt = record.UpdatedAt
+	return nil
+}
+
+func (repository *Repository) AppendIndexDeliveryEventIfAbsent(ctx context.Context, entity *domain.IndexDeliveryEvent) (bool, error) {
+	if entity == nil {
+		return false, errors.New("append document index delivery event if absent: entity is nil")
+	}
+	record, err := indexDeliveryEventToRecord(entity)
+	if err != nil {
+		return false, fmt.Errorf("append document index delivery event if absent: %w", err)
+	}
+	result := repository.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "dedupe_key"}}, DoNothing: true,
+	}).Create(record)
+	if result.Error != nil {
+		return false, fmt.Errorf("append document index delivery event if absent: %w", result.Error)
+	}
+	if result.RowsAffected == 1 {
+		entity.CreatedAt, entity.UpdatedAt = record.CreatedAt, record.UpdatedAt
+		return true, nil
+	}
+	return false, nil
+}
+
 func (repository *Repository) GetDocument(ctx context.Context, documentID string) (*domain.Document, error) {
 	var record documentRecord
 	if err := repository.db.WithContext(ctx).Where("document_id = ?", documentID).First(&record).Error; err != nil {
@@ -216,6 +265,14 @@ func (repository *Repository) GetAccessPolicy(ctx context.Context, documentID st
 		return nil, wrapRepositoryError("get document access policy", err)
 	}
 	return accessPolicyFromRecord(&record), nil
+}
+
+func (repository *Repository) GetDocumentVersion(ctx context.Context, versionID string) (*domain.DocumentVersion, error) {
+	var record documentVersionRecord
+	if err := repository.db.WithContext(ctx).Where("version_id = ?", versionID).First(&record).Error; err != nil {
+		return nil, wrapRepositoryError("get document version", err)
+	}
+	return documentVersionFromRecord(&record), nil
 }
 
 func (repository *Repository) GetLatestDocumentVersion(ctx context.Context, documentID string) (*domain.DocumentVersion, error) {
@@ -241,6 +298,42 @@ func (repository *Repository) ListDocumentVersions(ctx context.Context, document
 		entities = append(entities, *documentVersionFromRecord(&records[index]))
 	}
 	return entities, nil
+}
+
+func (repository *Repository) ListDocumentsForIndexing(ctx context.Context, afterDocumentID string, limit int) ([]domain.Document, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	query := repository.db.WithContext(ctx).Order("document_id ASC").Limit(limit)
+	if afterDocumentID != "" {
+		query = query.Where("document_id > ?", afterDocumentID)
+	}
+	var records []documentRecord
+	if err := query.Find(&records).Error; err != nil {
+		return nil, fmt.Errorf("list documents for indexing: %w", err)
+	}
+	documents := make([]domain.Document, 0, len(records))
+	for index := range records {
+		documents = append(documents, *documentFromRecord(&records[index]))
+	}
+	return documents, nil
+}
+
+func (repository *Repository) ListActiveGrantedSpaceIDs(ctx context.Context, documentID string) ([]string, error) {
+	var records []documentGrantRecord
+	if err := repository.db.WithContext(ctx).
+		Where("document_id = ? AND subject_type = ? AND revoked_at IS NULL", documentID, string(domain.GrantSubjectSpace)).
+		Order("grantee_space_id ASC").
+		Find(&records).Error; err != nil {
+		return nil, fmt.Errorf("list active document space grants: %w", err)
+	}
+	spaceIDs := make([]string, 0, len(records))
+	for index := range records {
+		if records[index].GranteeSpaceID != nil {
+			spaceIDs = append(spaceIDs, *records[index].GranteeSpaceID)
+		}
+	}
+	return spaceIDs, nil
 }
 
 func (repository *Repository) LockDocument(ctx context.Context, documentID string) (*domain.Document, error) {
@@ -308,4 +401,53 @@ func documentGrantToRecord(entity *domain.DocumentGrant) *documentGrantRecord {
 
 func searchProjectionToRecord(entity *domain.SearchProjection) *searchProjectionRecord {
 	return &searchProjectionRecord{DocumentID: entity.DocumentID, VersionID: entity.VersionID, OwnerID: entity.OwnerID, OwnerSpaceID: entity.OwnerSpaceID, AuthenticatedPublic: entity.AuthenticatedPublic, Title: entity.Title, Summary: entity.Summary, SearchText: entity.SearchText, ActivationRevision: entity.ActivationRevision, AccessRevision: entity.AccessRevision, LifecycleRevision: entity.LifecycleRevision, UpdatedAt: entity.UpdatedAt}
+}
+
+func indexDeliveryEventToRecord(entity *domain.IndexDeliveryEvent) (*indexDeliveryEventRecord, error) {
+	spaceIDs := entity.GrantedSpaceIDs
+	if spaceIDs == nil {
+		spaceIDs = []string{}
+	}
+	grantedSpaceIDs, err := json.Marshal(spaceIDs)
+	if err != nil {
+		return nil, fmt.Errorf("encode granted space ids: %w", err)
+	}
+	var ownerSpaceID *string
+	if entity.OwnerSpaceID != "" {
+		ownerSpaceID = &entity.OwnerSpaceID
+	}
+	return &indexDeliveryEventRecord{
+		EventID: entity.EventID, DedupeKey: entity.DedupeKey, Source: string(entity.Source), SourceRunID: entity.SourceRunID,
+		DocumentID: entity.DocumentID, AggregateRevision: entity.AggregateRevision, EventKind: string(entity.Kind),
+		VersionID: entity.VersionID, PreviousVersionID: entity.PreviousVersionID, OwnerSpaceID: ownerSpaceID,
+		ActivationRevision: entity.ActivationRevision, AccessRevision: entity.AccessRevision, LifecycleRevision: entity.LifecycleRevision,
+		AuthenticatedPublic: entity.AuthenticatedPublic, GrantedSpaceIDsJSON: string(grantedSpaceIDs),
+		ContentSHA256: entity.ContentSHA256, IndexProfile: entity.IndexProfile, State: string(entity.State),
+		AttemptCount: entity.AttemptCount, AvailableAt: entity.AvailableAt, LeaseOwner: entity.LeaseOwner,
+		LeaseToken: entity.LeaseToken, LeaseExpiresAt: entity.LeaseExpiresAt, LastGRPCCode: entity.LastGRPCCode,
+		LastError: entity.LastError, LastAttemptAt: entity.LastAttemptAt, DeliveredAt: entity.DeliveredAt,
+		CreatedAt: entity.CreatedAt, UpdatedAt: entity.UpdatedAt,
+	}, nil
+}
+
+func indexDeliveryEventFromRecord(record *indexDeliveryEventRecord) (*domain.IndexDeliveryEvent, error) {
+	var grantedSpaceIDs []string
+	if err := json.Unmarshal([]byte(record.GrantedSpaceIDsJSON), &grantedSpaceIDs); err != nil {
+		return nil, fmt.Errorf("decode granted space ids: %w", err)
+	}
+	ownerSpaceID := ""
+	if record.OwnerSpaceID != nil {
+		ownerSpaceID = *record.OwnerSpaceID
+	}
+	return &domain.IndexDeliveryEvent{
+		EventID: record.EventID, DedupeKey: record.DedupeKey, Source: domain.IndexDeliverySource(record.Source), SourceRunID: record.SourceRunID,
+		DocumentID: record.DocumentID, AggregateRevision: record.AggregateRevision, Kind: domain.IndexDeliveryKind(record.EventKind),
+		VersionID: record.VersionID, PreviousVersionID: record.PreviousVersionID, OwnerSpaceID: ownerSpaceID,
+		ActivationRevision: record.ActivationRevision, AccessRevision: record.AccessRevision, LifecycleRevision: record.LifecycleRevision,
+		AuthenticatedPublic: record.AuthenticatedPublic, GrantedSpaceIDs: grantedSpaceIDs, ContentSHA256: record.ContentSHA256,
+		IndexProfile: record.IndexProfile, State: domain.IndexDeliveryState(record.State), AttemptCount: record.AttemptCount,
+		AvailableAt: record.AvailableAt, LeaseOwner: record.LeaseOwner, LeaseToken: record.LeaseToken,
+		LeaseExpiresAt: record.LeaseExpiresAt, LastGRPCCode: record.LastGRPCCode, LastError: record.LastError,
+		LastAttemptAt: record.LastAttemptAt, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, DeliveredAt: record.DeliveredAt,
+	}, nil
 }

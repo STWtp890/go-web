@@ -4,6 +4,7 @@ package logic
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	managermodel "gin-backend/internal/model/orm/manager"
@@ -119,8 +120,14 @@ func ApproveLogic(ctx context.Context, requestID, reviewerID uint, comment strin
 			}).Error
 	})
 	if err == nil {
-		// 5. 失效管理员缓存 (新账号下次登录/刷新回源新数据; Cache-Aside 一致性)
-		_ = store.Manager.Evict(ctx, m.ID, m.Username)
+		// 5. 新建记录通常没有旧缓存；删除同 revision 键只用于并发预热场景的回收。
+		if cacheErr := store.Manager.Evict(ctx, m.ID, m.CacheRevision); cacheErr != nil {
+			slog.ErrorContext(ctx, "回收管理员实体缓存失败",
+				slog.Uint64("manager_id", uint64(m.ID)),
+				slog.Int64("cache_revision", m.CacheRevision),
+				slog.String("error", cacheErr.Error()),
+			)
+		}
 	}
 	return m, err
 }

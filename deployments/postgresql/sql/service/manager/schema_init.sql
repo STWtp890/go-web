@@ -5,11 +5,24 @@ CREATE TABLE IF NOT EXISTS managers (
     password   varchar(128) NOT NULL,
     email      varchar(128) DEFAULT '',
     status     varchar(16)  NOT NULL DEFAULT 'active',
+    cache_revision bigint   NOT NULL DEFAULT 1 CHECK (cache_revision > 0),
     created_at bigint,
     updated_at bigint,
     deleted_at timestamptz
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uni_managers_username ON managers (username);
+
+CREATE OR REPLACE FUNCTION bump_manager_cache_revision() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    NEW.cache_revision := OLD.cache_revision + 1;
+    RETURN NEW;
+END
+$$;
+
+DROP TRIGGER IF EXISTS trg_managers_cache_revision ON managers;
+CREATE TRIGGER trg_managers_cache_revision
+    BEFORE UPDATE OF username, password, email, status, deleted_at, cache_revision ON managers
+    FOR EACH ROW EXECUTE FUNCTION bump_manager_cache_revision();
 
 CREATE TABLE IF NOT EXISTS manager_registration_requests (
     id             bigserial PRIMARY KEY,

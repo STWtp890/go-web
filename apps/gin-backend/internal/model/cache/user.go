@@ -9,26 +9,28 @@ import "gin-backend/internal/model/orm/auth"
 
 // UserCache 用户缓存对象 (字段齐全, 含 Password)
 type UserCache struct {
-	ID        uint   `json:"id"`
-	Email     string `json:"email"`
-	Password  string `json:"password"` // 缓存需要, 不对外返回
-	Nickname  string `json:"nickname"`
-	Avatar    string `json:"avatar"`
-	Banned    bool   `json:"banned"`
-	CreatedAt int64  `json:"created_at"`
-	UpdatedAt int64  `json:"updated_at"`
+	ID            uint   `json:"id"`
+	Email         string `json:"email"`
+	Password      string `json:"password"` // 缓存需要, 不对外返回
+	Nickname      string `json:"nickname"`
+	Avatar        string `json:"avatar"`
+	Banned        bool   `json:"banned"`
+	CacheRevision int64  `json:"cache_revision"`
+	CreatedAt     int64  `json:"created_at"`
+	UpdatedAt     int64  `json:"updated_at"`
 }
 
 // FromUser 由 ORM 用户模型构造缓存对象
 func FromUser(u *auth.User) *UserCache {
 	return &UserCache{
-		ID:        u.ID,
-		Email:     u.Email,
-		Password:  u.Password,
-		Nickname:  u.Nickname,
-		Avatar:    u.Avatar,
-		Banned:    u.Banned,
-		CreatedAt: u.CreatedAt,
-		UpdatedAt: u.UpdatedAt,
+		ID:            u.ID,
+		Email:         u.Email,
+		Password:      u.Password,
+		Nickname:      u.Nickname,
+		Avatar:        u.Avatar,
+		Banned:        u.Banned,
+		CacheRevision: u.CacheRevision,
+		CreatedAt:     u.CreatedAt,
+		UpdatedAt:     u.UpdatedAt,
 	}
 }

@@ -202,7 +202,7 @@ AI Agent 的职责是理解用户意图、选择合适的知识域、组织工�
 - 先完成持久化控制状态、真实存储授权过滤、重试重放、状态对账和影子评估，再讨论受控切换检索读取方；
 - 在保持 Web 搜索产品语义清晰的前提下，形成统一的文档检索入口。
 
-当前进度：go-web 阶段 1 已完成文档事实源、Documents HTTP、BM25 投影与 mixin-search/v1 契约收口；阶段 2 待启动，正式搜索仍由 PostgreSQL BM25 提供。
+当前进度：go-web 阶段 1 和阶段 2 的 P2.0-P2.5 已完成，已经贯通文档事实、BM25、可靠影子索引、异步影子查询与来源分层评估。P2.5 的七类基线质量和收敛后正确性通过，但当前检索仍使用 local-hash-v1 评估 embedding，书面结论为 KEEP_BM25；正式搜索继续由 PostgreSQL BM25 提供。
 
 ### 阶段三：QQ 身份与知识空间融合
 
@@ -264,4 +264,4 @@ AI Agent 的职责是理解用户意图、选择合适的知识域、组织工�
 
 后续实现方案可以调整技术选型和内部结构，但如果变更会改变本文定义的产品定位、数据所有权、知识域隔离或权限边界，应先更新宏观决策，再进入代码实施。
 
-当前映射：宏观阶段一已由 go-web 阶段 0 完成并冻结；宏观阶段二由 go-web 阶段 1 与阶段 2 共同推进。阶段 1 的 P1.0-P1.5 已完成，文档事实源和 mixin-search/v1 契约已经定型；阶段 2 将建设可靠索引投递、持久化控制状态、真实存储授权过滤和影子检索评估。具体范围、顺序和门禁只在 [`CURRENT_IMPLEMENTATION_PLAN.md`](./planning/CURRENT_IMPLEMENTATION_PLAN.md) 维护，阶段 1 完成证据保存在 [`PHASE1_IMPLEMENTATION_LOG.md`](./reports/PHASE1_IMPLEMENTATION_LOG.md)。
+当前映射：宏观阶段一已由 go-web 阶段 0 完成并冻结；宏观阶段二中的 go-web 阶段 1 和阶段 2 已完成，P2.5 已给出 KEEP_BM25 结论。后续只有在接入真实语义 embedding 并重新通过扩大后的评测门禁后，才进入受控读取切换；QQ 身份与知识空间融合仍按宏观阶段三单独启动。具体范围、顺序和门禁只在 [`CURRENT_IMPLEMENTATION_PLAN.md`](./planning/CURRENT_IMPLEMENTATION_PLAN.md) 维护，阶段 1 完成证据保存在 [`PHASE1_IMPLEMENTATION_LOG.md`](./reports/PHASE1_IMPLEMENTATION_LOG.md)，阶段 2 实施证据保存在 [`PHASE2_IMPLEMENTATION_LOG.md`](./reports/PHASE2_IMPLEMENTATION_LOG.md)。

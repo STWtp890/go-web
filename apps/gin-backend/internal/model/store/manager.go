@@ -1,11 +1,11 @@
-// manager.go — 管理员实体缓存 (manager 业务)
+// manager.go — 管理员实体版本缓存 (manager 业务)
 //
-// 查询键: 按主键 id / 唯一用户名 username 双维度, 登录/刷新场景按 username 回源。
-// 审批通过创建管理员 / 停用账号后调用 Evict 失效, 保证下次读取回源新数据。
+// ID 与用户名只用于定位权威 head；缓存统一按 (id, cache_revision) 建键。
 package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	basecache "gin-backend/internal/common/base/cache"
@@ -15,72 +15,84 @@ import (
 	"gorm.io/gorm"
 )
 
-// 管理员缓存键命名空间
-const (
-	managerKeyByID       = "cache:manager:id:%d"
-	managerKeyByUsername = "cache:manager:username:%s"
-)
+const managerVersionKey = "cache:manager:v2:%d:revision:%d"
 
-// ManagerStore 管理员实体缓存存储器
+type managerCacheHead struct {
+	ID            uint
+	CacheRevision int64
+}
+
+// ManagerStore 管理员实体缓存存储器。ID 与用户名查询共享一个实体缓存。
 type ManagerStore struct {
-	byID       *basecache.EntityCache[dtocache.ManagerCache]
-	byUsername *basecache.EntityCache[dtocache.ManagerCache]
+	entities *basecache.EntityCache[dtocache.ManagerCache]
 }
 
-// Manager 管理员实体缓存包级单例
+// Manager 管理员实体缓存包级单例。
 var Manager = &ManagerStore{
-	byID:       NewEntity[dtocache.ManagerCache](DefaultTTL),
-	byUsername: NewEntity[dtocache.ManagerCache](DefaultTTL),
+	entities: NewEntity[dtocache.ManagerCache]("manager", DefaultTTL),
 }
 
-// GetByID 按主键读取管理员 (透传 gorm.ErrRecordNotFound)
+// GetByID 按主键读取管理员。head 查询始终直达 PostgreSQL。
 func (s *ManagerStore) GetByID(ctx context.Context, id uint) (*dtocache.ManagerCache, error) {
-	key := fmt.Sprintf(managerKeyByID, id)
-	m, err := s.byID.Get(ctx, key, func(ctx context.Context) (dtocache.ManagerCache, error) {
-		db, err := authDB.get(ctx)
-		if err != nil {
-			return dtocache.ManagerCache{}, err
-		}
-		var row managermodel.Manager
-		if err := db.Where("id = ?", id).First(&row).Error; err != nil {
-			return dtocache.ManagerCache{}, err
-		}
-		return *dtocache.FromManager(&row), nil
+	return s.get(ctx, func(db *gorm.DB, head *managerCacheHead) error {
+		return db.Model(&managermodel.Manager{}).
+			Select("id", "cache_revision").
+			Where("id = ?", id).
+			Take(head).Error
 	})
-	if err != nil {
-		return nil, err
-	}
-	return &m, nil
 }
 
-// GetByUsername 按唯一用户名读取管理员 (登录/刷新校验场景)
+// GetByUsername 按唯一用户名读取管理员。用户名不进入缓存键。
 func (s *ManagerStore) GetByUsername(ctx context.Context, username string) (*dtocache.ManagerCache, error) {
-	key := fmt.Sprintf(managerKeyByUsername, username)
-	m, err := s.byUsername.Get(ctx, key, func(ctx context.Context) (dtocache.ManagerCache, error) {
+	return s.get(ctx, func(db *gorm.DB, head *managerCacheHead) error {
+		return db.Model(&managermodel.Manager{}).
+			Select("id", "cache_revision").
+			Where("username = ?", username).
+			Take(head).Error
+	})
+}
+
+func (s *ManagerStore) get(
+	ctx context.Context,
+	loadHead func(db *gorm.DB, head *managerCacheHead) error,
+) (*dtocache.ManagerCache, error) {
+	for attempt := 0; attempt < revisionReadAttempts; attempt++ {
 		db, err := authDB.get(ctx)
 		if err != nil {
-			return dtocache.ManagerCache{}, err
+			return nil, err
 		}
-		var row managermodel.Manager
-		if err := db.Where("username = ?", username).First(&row).Error; err != nil {
-			return dtocache.ManagerCache{}, err
+		var head managerCacheHead
+		if err := loadHead(db, &head); err != nil {
+			return nil, err
 		}
-		return *dtocache.FromManager(&row), nil
-	})
-	if err != nil {
-		return nil, err
+
+		key := managerCacheKey(head.ID, head.CacheRevision)
+		cached, err := s.entities.Get(ctx, key, func(ctx context.Context) (dtocache.ManagerCache, error) {
+			var row managermodel.Manager
+			err := db.WithContext(ctx).
+				Where("id = ? AND cache_revision = ?", head.ID, head.CacheRevision).
+				First(&row).Error
+			if err != nil {
+				return dtocache.ManagerCache{}, err
+			}
+			return *dtocache.FromManager(&row), nil
+		})
+		if err == nil {
+			return &cached, nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+		// head 与实体读取之间发生了更新或删除；重读权威 head。
 	}
-	return &m, nil
+	return nil, fmt.Errorf("%w: manager", ErrCacheRevisionChanged)
 }
 
-// Evict 失效管理员缓存 (id 维度 + username 维度)
-func (s *ManagerStore) Evict(ctx context.Context, id uint, username string) error {
-	_ = s.byID.Evict(ctx, fmt.Sprintf(managerKeyByID, id))
-	if username != "" {
-		_ = s.byUsername.Evict(ctx, fmt.Sprintf(managerKeyByUsername, username))
-	}
-	return nil
+// Evict 删除指定 revision 的两级缓存。版本键保证正确性；删除只负责及时回收旧键。
+func (s *ManagerStore) Evict(ctx context.Context, id uint, revision int64) error {
+	return s.entities.Evict(ctx, managerCacheKey(id, revision))
 }
 
-// 编译期断言: ManagerStore 依赖的 gorm 错误由调用方经 errors.Is 判断
-var _ = gorm.ErrRecordNotFound
+func managerCacheKey(id uint, revision int64) string {
+	return fmt.Sprintf(managerVersionKey, id, revision)
+}

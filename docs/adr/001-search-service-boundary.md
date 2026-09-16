@@ -14,7 +14,7 @@
 2. 服务默认监听 127.0.0.1:9090，注册 mixin_search.v1.RAGService、标准 gRPC Health 和 reflection。
 3. Qdrant 是首个生产候选后端；memory 仅用于单元测试和本地演示；pgvector 保留为实验性替代实现，不作为首发路径。
 4. 阶段 0 保持独立 Compose 依赖栈，不加入根 docker-compose.yaml。根栈接入推迟到阶段 2 的影子写入前。
-5. Qdrant 接入真实流量前，必须完成 ACL、active revision 与 lifecycle revision 的服务端过滤；当前进程内契约包装层只作为接口验证实现。
+5. Qdrant 接入真实流量前，必须完成 ACL、active revision 与 lifecycle revision 的服务端过滤；P2.1 已按 [ADR-006](./006-mixin-search-control-state-commit-order.md) 将控制状态升级为 PostgreSQL 持久化，P2.2 已按 [ADR-007](./007-qdrant-control-projection-and-filtering.md) 完成候选级过滤，P2.3/P2.4 已完成可靠投递、对账与根 Compose 影子索引，P2.5 已按 [ADR-010](./010-shadow-query-evaluation-gate.md) 完成影子查询评估。当前 local-hash-v1 结论为 KEEP_BM25，正式读取尚未切换。
 
 ## 结果
 

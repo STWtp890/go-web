@@ -1,0 +1,26 @@
+services:
+  postgres:
+    build:
+      context: ../../deployments/postgresql
+      dockerfile: Dockerfile
+    image: gin-postgres:local
+    ports:
+      - "127.0.0.1:${INDEX_DELIVERY_POSTGRES_PORT:-25432}:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: gin_demo
+    command: ["postgres", "-c", "shared_preload_libraries=timescaledb,pg_search"]
+    volumes:
+      - index-delivery-pgdata:/var/lib/postgresql/data
+      - ../../deployments/postgresql/sql:/sql:ro
+      - ../../deployments/postgresql:/database:ro
+      - ../../deployments/postgresql/entryscript:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d gin_demo"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  index-delivery-pgdata:

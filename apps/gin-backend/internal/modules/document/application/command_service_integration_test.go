@@ -39,6 +39,7 @@ func TestCommandServiceIntegration(t *testing.T) {
 		assertScopedCount(t, db, "knowledge_spaces", "space_id = ?", created.Document.OwnerSpaceID, 1)
 		assertScopedCount(t, db, "space_members", "space_id = ?", created.Document.OwnerSpaceID, 1)
 		assertDocumentCounts(t, db, created.Document.DocumentID, 1, 1)
+		assertScopedCount(t, db, "document_index_delivery_events", "document_id = ?", created.Document.DocumentID, 1)
 
 		firstVersionID := created.Version.VersionID
 		updated, err := service.Update(ctx, command.UpdateCommand{
@@ -54,6 +55,7 @@ func TestCommandServiceIntegration(t *testing.T) {
 		assertDocumentRevisions(t, updated.Document, 2, 2, 0, 3)
 		assertVersionStatus(t, db, firstVersionID, domain.PublicationSuperseded)
 		assertVersionStatus(t, db, updated.Version.VersionID, domain.PublicationPublished)
+		assertScopedCount(t, db, "document_index_delivery_events", "document_id = ?", created.Document.DocumentID, 2)
 
 		third, err := service.Update(ctx, command.UpdateCommand{
 			OwnerID: ownerID, DocumentID: created.Document.DocumentID,
@@ -64,6 +66,7 @@ func TestCommandServiceIntegration(t *testing.T) {
 		}
 		assertDocumentRevisions(t, third.Document, 3, 2, 0, 4)
 		assertDocumentCounts(t, db, created.Document.DocumentID, 3, 1)
+		assertScopedCount(t, db, "document_index_delivery_events", "document_id = ?", created.Document.DocumentID, 3)
 
 		if err := service.Trash(ctx, command.TrashCommand{
 			OwnerID: ownerID, DocumentID: created.Document.DocumentID,
@@ -79,9 +82,42 @@ func TestCommandServiceIntegration(t *testing.T) {
 		}
 		assertDocumentRevisions(t, stored, 3, 2, 1, 5)
 		assertDocumentCounts(t, db, stored.DocumentID, 3, 0)
+		assertScopedCount(t, db, "document_index_delivery_events", "document_id = ?", stored.DocumentID, 4)
+		assertIndexDeliveryOrder(t, db, stored.DocumentID,
+			[]int64{1, 3, 4, 5},
+			[]domain.IndexDeliveryKind{
+				domain.IndexDeliverySyncDocument, domain.IndexDeliverySyncDocument,
+				domain.IndexDeliverySyncDocument, domain.IndexDeliveryDeleteDocument,
+			},
+		)
 		if err := service.Trash(ctx, command.TrashCommand{OwnerID: ownerID, DocumentID: stored.DocumentID}); !errors.Is(err, command.ErrDocumentNotActive) {
 			t.Fatalf("second trash error = %v, want ErrDocumentNotActive", err)
 		}
+	})
+
+	t.Run("outbox failure rolls back the complete document mutation", func(t *testing.T) {
+		ownerID := createCommandUser(t, db, "outbox-rollback")
+		ids := []string{
+			"018f3f0e-7b20-7000-8000-000000000301",
+			"018f3f0e-7b20-7000-8000-000000000302",
+			"018f3f0e-7b20-7000-8000-000000000303",
+			"invalid-event-id",
+		}
+		index := 0
+		service, err := command.NewCommandService(store, command.WithIDGenerator(func() string {
+			value := ids[index]
+			index++
+			return value
+		}))
+		if err != nil {
+			t.Fatalf("new rollback command service: %v", err)
+		}
+		_, err = service.Create(ctx, command.CreateCommand{OwnerID: ownerID, Title: "rollback", Content: "rollback"})
+		if err == nil {
+			t.Fatal("create succeeded despite invalid outbox event id")
+		}
+		assertScopedCount(t, db, "documents", "document_id = ?", ids[1], 0)
+		assertScopedCount(t, db, "document_index_delivery_events", "document_id = ?", ids[1], 0)
 	})
 
 	t.Run("concurrent updates allocate distinct revisions", func(t *testing.T) {
@@ -236,5 +272,26 @@ func assertVersionStatus(t *testing.T, db *gorm.DB, versionID string, want domai
 	}
 	if status != string(want) {
 		t.Fatalf("version %s status = %s, want %s", versionID, status, want)
+	}
+}
+
+func assertIndexDeliveryOrder(t *testing.T, db *gorm.DB, documentID string, wantRevisions []int64, wantKinds []domain.IndexDeliveryKind) {
+	t.Helper()
+	var rows []struct {
+		AggregateRevision int64  `gorm:"column:aggregate_revision"`
+		EventKind         string `gorm:"column:event_kind"`
+	}
+	if err := db.Table("document_index_delivery_events").
+		Select("aggregate_revision, event_kind").Where("document_id = ?", documentID).
+		Order("aggregate_revision ASC, created_at ASC, event_id ASC").Scan(&rows).Error; err != nil {
+		t.Fatalf("read index delivery order: %v", err)
+	}
+	if len(rows) != len(wantRevisions) {
+		t.Fatalf("delivery count = %d, want %d", len(rows), len(wantRevisions))
+	}
+	for index := range rows {
+		if rows[index].AggregateRevision != wantRevisions[index] || rows[index].EventKind != string(wantKinds[index]) {
+			t.Fatalf("delivery[%d] = (%d,%s), want (%d,%s)", index, rows[index].AggregateRevision, rows[index].EventKind, wantRevisions[index], wantKinds[index])
+		}
 	}
 }

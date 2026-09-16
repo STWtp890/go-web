@@ -2,9 +2,9 @@
 
 > 文档职责：当前唯一阶段排期与实施入口
 > 上位目标：[ECOSYSTEM_EVOLUTION_GUIDE.md](../ECOSYSTEM_EVOLUTION_GUIDE.md)
-> 相关决策：[ADR-001](../adr/001-search-service-boundary.md)、[ADR-002](../adr/002-document-index-ownership.md)、[ADR-004](../adr/004-bm25-migration-strategy.md)、[ADR-005](../adr/005-development-baseline-over-production-migration.md)
-> 当前状态：生态阶段二 / go-web 阶段 2 待启动
-> 更新日期：2026-09-13
+> 相关决策：[ADR-001](../adr/001-search-service-boundary.md)、[ADR-002](../adr/002-document-index-ownership.md)、[ADR-004](../adr/004-bm25-migration-strategy.md)、[ADR-005](../adr/005-development-baseline-over-production-migration.md)、[ADR-006](../adr/006-mixin-search-control-state-commit-order.md)、[ADR-007](../adr/007-qdrant-control-projection-and-filtering.md)、[ADR-008](../adr/008-document-index-transactional-outbox.md)、[ADR-009](../adr/009-shadow-index-compose-and-health-boundary.md)、[ADR-010](../adr/010-shadow-query-evaluation-gate.md)、[ADR-011](../adr/011-bounded-cache-runtime-and-revision-fencing.md)
+> 当前状态：生态阶段二 / go-web 阶段 2 已完成，P2.0-P2.5 全部通过；正式读取仍保持 PostgreSQL BM25
+> 更新日期：2026-09-14
 
 ## 1. 当前结论
 
@@ -17,9 +17,11 @@
 - Qdrant 是首个持久化检索候选，pgvector 仍为实验性替代，memory 只用于测试和演示；
 - Chat/WebSocket 源码保留但不注册，py-agent/QQ 与聊天记录域不进入本阶段。
 
-当前缺口不是协议数量，而是跨服务可靠性和真实存储语义：mixin-search 的控制状态仍主要保存在进程内，Qdrant 尚未完成生产候选级 ACL/活动版本过滤，gin-backend 尚未建立可靠投递、重试、重放和对账。因此阶段 2 的目标是先形成可靠影子索引，再用数据判断是否切换检索读取方。
+P2.1-P2.4 已完成持久化控制状态、Qdrant 候选级过滤、可靠投递/重建和根 Compose 影子索引。P2.5 已在正式 BM25 返回之后通过有界非阻塞队列执行 mixin-search 影子查询，按 runtime/evaluation 来源记录结果差异、延迟、错误及授权/生命周期/活动版本复核，并建立七类固定评测集。当前实测质量达标但检索仍使用 local-hash-v1 评估型 embedding，因此书面结论为 KEEP_BM25，不进入读取切换。
 
 阶段 1 的完成事实与实测证据只在 [PHASE1_IMPLEMENTATION_LOG.md](../reports/PHASE1_IMPLEMENTATION_LOG.md) 维护，本计划不重复改写历史过程。
+
+阶段 2 的完成事实、实测证据和当前有效限制记录在 [PHASE2_IMPLEMENTATION_LOG.md](../reports/PHASE2_IMPLEMENTATION_LOG.md)。
 
 ## 2. 阶段 2 目标
 
@@ -46,14 +48,16 @@
 
 | 实施包 | 目标 | 依赖 | 状态 |
 | --- | --- | --- | --- |
-| P2.0 | 冻结阶段 1 基线 | 无 | 待开始 |
-| P2.1 | 持久化 mixin-search 控制状态 | P2.0 | 待开始 |
-| P2.2 | 完成 Qdrant 授权与生命周期过滤 | P2.1 | 待开始 |
-| P2.3 | 建立 gin-backend 可靠索引投递与对账 | P2.1、P2.2 | 待开始 |
-| P2.4 | 接入根 Compose 并运行影子索引 | P2.3 | 待开始 |
-| P2.5 | 运行影子查询和检索质量评估 | P2.4 | 待开始 |
+| P2.0 | 冻结阶段 1 基线 | 无 | 已完成 |
+| P2.1 | 持久化 mixin-search 控制状态 | P2.0 | 已完成 |
+| P2.2 | 完成 Qdrant 授权与生命周期过滤 | P2.1 | 已完成 |
+| P2.3 | 建立 gin-backend 可靠索引投递与对账 | P2.1、P2.2 | 已完成 |
+| P2.4 | 接入根 Compose 并运行影子索引 | P2.3 | 已完成 |
+| P2.5 | 运行影子查询和检索质量评估 | P2.4 | 已完成 |
 
 P2.1 与 P2.2 都在 mixin-search 内实施，可以连续推进；正式文档流量必须等两者通过后再由 P2.3 接入。
+
+阶段 2 已完成。根 Compose 已通过正常、故障和恢复三段影子索引/查询验收，收敛后的 evaluation 观测没有权限、生命周期或活动版本违规；故障期间影子失败单独记录，正式 BM25 与 HTTP readiness 不受影响。P2.0-P2.5 完成事实和实测证据见 [PHASE2_IMPLEMENTATION_LOG.md](../reports/PHASE2_IMPLEMENTATION_LOG.md)。
 
 ## 4. P2.0：冻结阶段 1 基线
 
@@ -117,6 +121,10 @@ P2.1 与 P2.2 都在 mixin-search 内实施，可以连续推进；正式文档�
 - 授权撤销、版本切换和回收在规定的本地验收窗口内生效；
 - 过滤不会因为固定候选集过小而产生可复现的系统性漏召回。
 
+### 完成状态
+
+P2.2 已于 2026-09-14 完成。Qdrant payload、候选级过滤、storage domain 隔离、契约层复核和有界回填已经落地；真实 Qdrant 验收覆盖授权、撤销、版本切换、删除、重新发布和共享 collection 隔离。提交与搜索门禁细节见 [ADR-007](../adr/007-qdrant-control-projection-and-filtering.md)。
+
 ## 7. P2.3：建立 gin-backend 可靠索引投递与对账
 
 ### 目标
@@ -140,6 +148,10 @@ P2.1 与 P2.2 都在 mixin-search 内实施，可以连续推进；正式文档�
 - mixin-search 长时间不可用不阻断正式文档写入，恢复后可继续投递；
 - 全量重建后，活动版本、权限和删除状态与 gin-backend 一致。
 
+### 完成状态
+
+P2.3 已于 2026-09-14 完成。文档创建、更新和回收在原事务内写入只引用不可变版本的小型投递事件；独立 Worker 使用按文档顺序的租约领取、稳定子操作 ID、确定性退避、死信阻塞与人工重放完成跨服务传播。管理命令已经提供差异对账和 repeatable-read 全量重建，正式 BM25 查询路径保持不变。可靠投递真实 PostgreSQL 验收输出 `P2.3_INDEX_DELIVERY=PASS`，从空控制存储和空 Qdrant 重建的跨服务验收输出 `P2.3_INDEX_REBUILD_E2E=PASS`。事务、幂等和恢复边界见 [ADR-008](../adr/008-document-index-transactional-outbox.md)。
+
 ## 8. P2.4：根 Compose 与影子索引
 
 ### 目标
@@ -160,6 +172,10 @@ P2.1 与 P2.2 都在 mixin-search 内实施，可以连续推进；正式文档�
 - Documents 操作在 PostgreSQL 成功后最终反映到 mixin-search；
 - mixin-search 故障期间正式文档读写和 PostgreSQL BM25 仍可工作；
 - 服务恢复后积压能够自动收敛，端到端测试不依赖手工修复。
+
+### 完成状态
+
+P2.4 已于 2026-09-14 完成。根 Compose 统一运行 PostgreSQL、Redis、gin-backend、simple-frontend、控制 PostgreSQL、Qdrant、mixin-search 与 document-index-worker；HTTP readiness 与影子依赖解耦，管理命令提供 gRPC 健康、积压、失败、最老未完成事件和投递延迟状态。正常与 mixin-search 停机期间的两轮 API 回归均为 `95 passed / 0 failed / 95 total`，恢复后积压自动排空，最终输出 `P2.4_SHADOW_INDEX=PASS`。装配、健康和开关边界见 [ADR-009](../adr/009-shadow-index-compose-and-health-boundary.md)。
 
 ## 9. P2.5：影子查询与质量评估
 
@@ -182,6 +198,12 @@ P2.1 与 P2.2 都在 mixin-search 内实施，可以连续推进；正式文档�
 - 影子请求不会扩大正式请求延迟或影响可用性；
 - 检索质量、延迟和失败率具有可重复报告；
 - 不满足门禁时可以继续以 BM25 为正式读取方，不删除现有投影。
+
+### 完成状态
+
+P2.5 已于 2026-09-14 完成。正式 SearchMine 在 PostgreSQL BM25 查询完成后只向有界内存队列提交观测任务；队列满、mixin-search 超时或不可用都不会改变 HTTP 返回。观察器使用独立 deadline 调用 SearchDocuments，再以 gin-backend 当前事实复核权限、生命周期、活动版本和 owner-only 正式语义，并将查询 SHA-256、两路结果、差异、延迟和错误写入 document_search_shadow_observations。边界与来源分层见 [ADR-010](../adr/010-shadow-query-evaluation-gate.md)。
+
+固定评测集覆盖中文、英文、代码、标题、正文、精确关键词和语义表达。成功报告 [document-search-evaluation-p25_20260914_231537.md](../../deployments/test-results/document-search-evaluation-p25_20260914_231537.md) 中，BM25 的 Recall@5/MRR/nDCG@5 均为 1.0000，mixin-search 为 1.0000 / 0.9048 / 0.9286，影子 p95 为 459029 us，7 条收敛后 evaluation 观测的权限、生命周期、活动版本和正式范围差异均为 0。由于当前 embedding profile 是评估用 local-hash-v1，最终结论为 KEEP_BM25；P2.5 完成不代表读取切换获批。
 
 ## 10. 阶段 2 统一门禁
 
@@ -212,6 +234,6 @@ P2.1 与 P2.2 都在 mixin-search 内实施，可以连续推进；正式文档�
 
 ## 12. 后续阶段
 
-阶段 2 通过后，下一阶段才建立 gin-backend 的稳定 `DocumentSearchProvider` 边界，在 PostgreSQL BM25 与 mixin-search 之间进行受控读取切换。只有当授权、删除传播、重建、检索质量和故障回退全部达标后，才能讨论移除 go-web 内部 BM25 投影。
+阶段 2 已通过，但 P2.5 的当前结论是 KEEP_BM25。只有接入非评估型语义 embedding、扩大真实标注样本并重新通过同一正确性/质量/延迟门禁后，下一阶段才建立 gin-backend 的稳定 DocumentSearchProvider 边界，在 PostgreSQL BM25 与 mixin-search 之间进行受控读取切换。只有授权、删除传播、重建、检索质量和故障回退全部达标后，才能讨论移除 go-web 内部 BM25 投影。
 
 QQ 身份、私人/团队知识空间流通和聊天记录域仍按照 [ECOSYSTEM_EVOLUTION_GUIDE.md](../ECOSYSTEM_EVOLUTION_GUIDE.md) 的宏观阶段推进，不与本阶段的文档索引基础链路并行混入。

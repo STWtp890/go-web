@@ -1,0 +1,13 @@
+.git
+.agents
+.codex
+.idea
+.vscode
+**/node_modules
+**/dist
+**/storage
+**/*.log
+**/*.out
+**/*.test
+**/*.exe
+deployments/test-results

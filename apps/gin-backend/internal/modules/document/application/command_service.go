@@ -156,6 +156,11 @@ func (service *CommandService) Create(ctx context.Context, command CreateCommand
 		if err := repository.PutSearchProjection(ctx, newProjection(document, version, policy.AuthenticatedPublic, now)); err != nil {
 			return err
 		}
+		if err := repository.AppendIndexDeliveryEvent(ctx, newSyncIndexDeliveryEvent(
+			service.newID(), document, version, nil, policy, []string{}, now,
+		)); err != nil {
+			return err
+		}
 
 		result = &MutationResult{Document: document, Version: version, Policy: policy}
 		return nil
@@ -189,6 +194,7 @@ func (service *CommandService) Update(ctx context.Context, command UpdateCommand
 		if document.LifecycleStatus != domain.LifecycleActive || document.ActiveVersionID == nil {
 			return ErrDocumentNotActive
 		}
+		previousVersionID := *document.ActiveVersionID
 
 		latest, err := repository.GetLatestDocumentVersion(ctx, documentID)
 		if err != nil {
@@ -241,6 +247,15 @@ func (service *CommandService) Update(ctx context.Context, command UpdateCommand
 		if err := repository.PutSearchProjection(ctx, newProjection(document, version, policy.AuthenticatedPublic, now)); err != nil {
 			return err
 		}
+		grantedSpaceIDs, err := repository.ListActiveGrantedSpaceIDs(ctx, documentID)
+		if err != nil {
+			return err
+		}
+		if err := repository.AppendIndexDeliveryEvent(ctx, newSyncIndexDeliveryEvent(
+			service.newID(), document, version, &previousVersionID, policy, grantedSpaceIDs, now,
+		)); err != nil {
+			return err
+		}
 		result = &MutationResult{Document: document, Version: version, Policy: policy}
 		return nil
 	})
@@ -284,6 +299,11 @@ func (service *CommandService) Trash(ctx context.Context, command TrashCommand) 
 			return err
 		}
 		if err := repository.DeleteSearchProjection(ctx, documentID); err != nil {
+			return err
+		}
+		if err := repository.AppendIndexDeliveryEvent(ctx, newDeleteDocumentIndexDeliveryEvent(
+			service.newID(), document, now,
+		)); err != nil {
 			return err
 		}
 		return nil
@@ -340,6 +360,60 @@ func newProjection(document *domain.Document, version *domain.DocumentVersion, p
 		ActivationRevision: document.ActivationRevision,
 		AccessRevision:     document.AccessRevision, LifecycleRevision: document.LifecycleRevision,
 		UpdatedAt: now,
+	}
+}
+
+func newSyncIndexDeliveryEvent(
+	eventID string,
+	document *domain.Document,
+	version *domain.DocumentVersion,
+	previousVersionID *string,
+	policy *domain.AccessPolicy,
+	grantedSpaceIDs []string,
+	now time.Time,
+) *domain.IndexDeliveryEvent {
+	return &domain.IndexDeliveryEvent{
+		EventID:             eventID,
+		DedupeKey:           fmt.Sprintf("transaction:%s:%d:%s", document.DocumentID, document.AggregateRevision, domain.IndexDeliverySyncDocument),
+		Source:              domain.IndexDeliverySourceTransaction,
+		DocumentID:          document.DocumentID,
+		AggregateRevision:   document.AggregateRevision,
+		Kind:                domain.IndexDeliverySyncDocument,
+		VersionID:           stringPointer(version.VersionID),
+		PreviousVersionID:   previousVersionID,
+		OwnerSpaceID:        document.OwnerSpaceID,
+		ActivationRevision:  document.ActivationRevision,
+		AccessRevision:      document.AccessRevision,
+		LifecycleRevision:   document.LifecycleRevision,
+		AuthenticatedPublic: policy.AuthenticatedPublic,
+		GrantedSpaceIDs:     append([]string{}, grantedSpaceIDs...),
+		ContentSHA256:       version.ContentSHA256,
+		IndexProfile:        domain.DefaultIndexProfile,
+		State:               domain.IndexDeliveryPending,
+		AvailableAt:         now,
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}
+}
+
+func newDeleteDocumentIndexDeliveryEvent(eventID string, document *domain.Document, now time.Time) *domain.IndexDeliveryEvent {
+	return &domain.IndexDeliveryEvent{
+		EventID:            eventID,
+		DedupeKey:          fmt.Sprintf("transaction:%s:%d:%s", document.DocumentID, document.AggregateRevision, domain.IndexDeliveryDeleteDocument),
+		Source:             domain.IndexDeliverySourceTransaction,
+		DocumentID:         document.DocumentID,
+		AggregateRevision:  document.AggregateRevision,
+		Kind:               domain.IndexDeliveryDeleteDocument,
+		OwnerSpaceID:       document.OwnerSpaceID,
+		ActivationRevision: document.ActivationRevision,
+		AccessRevision:     document.AccessRevision,
+		LifecycleRevision:  document.LifecycleRevision,
+		GrantedSpaceIDs:    []string{},
+		IndexProfile:       domain.DefaultIndexProfile,
+		State:              domain.IndexDeliveryPending,
+		AvailableAt:        now,
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 }
 

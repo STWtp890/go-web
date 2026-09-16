@@ -1,6 +1,6 @@
 # 本地依赖与验证
 
-当前后端运行时依赖 PostgreSQL 和 Redis；根目录 Compose 负责构建并启动 PostgreSQL、Redis、gin-backend 与 simple-frontend。Chat/ WebSocket schema 和源码保留，但服务、连接、路由和前端入口均未注册。mixin-search 不在根 Compose 中，也不接收正式 RPC 流量。
+根目录 Compose 默认构建并启动 PostgreSQL、Redis、gin-backend、simple-frontend、控制 PostgreSQL、Qdrant、mixin-search 与 document-index-worker。前四者承载正式 Web/Documents/BM25 链路，后四者承载可重建的影子索引和查询链路；mixin-search 故障不改变 gin-backend `/readyz` 或正式搜索结果。Chat/WebSocket schema 和源码保留，但服务、连接、路由和前端入口均未注册。
 
 | 依赖 | 当前作用 | 宿主机端口 |
 | --- | --- | --- |
@@ -33,10 +33,14 @@ docker compose -f docker-compose.yaml up -d --build --wait
 1. Compose 与 `mixin-search/v1` 生成代码检查；
 2. Vue/TypeScript 构建；
 3. 从空卷构建并启动完整栈；
-4. PostgreSQL 目标 schema、BM25-only 边界和管理员测试种子；
+4. PostgreSQL 目标 schema、BM25-only 边界、User/Manager cache revision fencing 和管理员测试种子；
 5. 三个 Go module 的 `go test ./...` 与 `go vet ./...`；
 6. 认证、Documents、管理员、Nginx 代理、旧 Markdown 404 和 Chat 未注册的运行时 API 回归；
-7. HTTP 健康检查，并默认销毁容器和测试数据卷。
+7. 等待影子索引收敛，使用七类固定样本生成 BM25/mixin-search Recall@K、MRR、nDCG、延迟和正确性报告；
+8. 停止 mixin-search，确认第二轮 95 项 API 回归仍通过、影子失败被记录，再恢复服务并自动排空 Outbox；
+9. HTTP 健康检查，输出 P2.5_SHADOW_QUERY_EVALUATION=PASS，并默认销毁容器和测试数据卷。
+
+成功运行会在 test-results 生成 document-search-evaluation-<run-id>.json/.md。当前 local-hash-v1 只用于确定性评估，因此报告即使数值门禁通过也会给出 KEEP_BM25；正式读取不会由脚本自动切换。
 
 镜像已确认无需重建时可使用 `-SkipImageBuild`；排查失败并希望保留临时环境时可使用 `-KeepEnvironment`。
 

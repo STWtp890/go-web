@@ -35,6 +35,35 @@ BEGIN
         RAISE EXCEPTION 'BM25 boundary violation: idx_document_search_projection_bm25 is missing or invalid';
     END IF;
 
+    IF to_regclass('public.document_index_delivery_events') IS NULL
+       OR to_regclass('public.document_index_rebuild_runs') IS NULL THEN
+        RAISE EXCEPTION 'P2.3 boundary violation: document index delivery tables are missing';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+          FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'document_index_delivery_events'
+           AND column_name = 'content'
+    ) THEN
+        RAISE EXCEPTION 'P2.3 boundary violation: Outbox must reference immutable content instead of copying it';
+    END IF;
+
+    IF to_regclass('public.document_search_shadow_observations') IS NULL THEN
+        RAISE EXCEPTION 'P2.5 boundary violation: document search shadow observations table is missing';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+          FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'document_search_shadow_observations'
+           AND column_name IN ('query', 'query_text', 'query_body', 'content')
+    ) THEN
+        RAISE EXCEPTION 'P2.5 boundary violation: shadow observations must not store query plaintext';
+    END IF;
+
     SELECT string_agg(
                format('%I.%I.%I', table_schema, table_name, column_name),
                ', ' ORDER BY table_name, ordinal_position

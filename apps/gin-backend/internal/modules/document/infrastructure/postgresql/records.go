@@ -97,3 +97,51 @@ type searchProjectionRecord struct {
 }
 
 func (*searchProjectionRecord) TableName() string { return "document_search_projection" }
+
+type indexDeliveryEventRecord struct {
+	EventID             string     `gorm:"column:event_id;type:uuid;primaryKey"`
+	DedupeKey           string     `gorm:"column:dedupe_key;size:255;not null"`
+	Source              string     `gorm:"column:source;size:16;not null"`
+	SourceRunID         *string    `gorm:"column:source_run_id;type:uuid"`
+	DocumentID          string     `gorm:"column:document_id;type:uuid;not null"`
+	AggregateRevision   int64      `gorm:"column:aggregate_revision;not null"`
+	EventKind           string     `gorm:"column:event_kind;size:24;not null"`
+	VersionID           *string    `gorm:"column:version_id;type:uuid"`
+	PreviousVersionID   *string    `gorm:"column:previous_version_id;type:uuid"`
+	OwnerSpaceID        *string    `gorm:"column:owner_space_id;type:uuid"`
+	ActivationRevision  int64      `gorm:"column:activation_revision;not null"`
+	AccessRevision      int64      `gorm:"column:access_revision;not null"`
+	LifecycleRevision   int64      `gorm:"column:lifecycle_revision;not null"`
+	AuthenticatedPublic bool       `gorm:"column:authenticated_public;not null"`
+	GrantedSpaceIDsJSON string     `gorm:"column:granted_space_ids;type:jsonb;not null"`
+	ContentSHA256       string     `gorm:"column:content_sha256;size:64;not null"`
+	IndexProfile        string     `gorm:"column:index_profile;size:32;not null"`
+	State               string     `gorm:"column:state;size:16;not null"`
+	AttemptCount        int        `gorm:"column:attempt_count;not null"`
+	AvailableAt         time.Time  `gorm:"column:available_at;not null"`
+	LeaseOwner          *string    `gorm:"column:lease_owner;size:128"`
+	LeaseToken          *string    `gorm:"column:lease_token;type:uuid"`
+	LeaseExpiresAt      *time.Time `gorm:"column:lease_expires_at"`
+	LastGRPCCode        string     `gorm:"column:last_grpc_code;size:32;not null"`
+	LastError           string     `gorm:"column:last_error;type:text;not null"`
+	LastAttemptAt       *time.Time `gorm:"column:last_attempt_at"`
+	DeliveredAt         *time.Time `gorm:"column:delivered_at"`
+	CreatedAt           time.Time  `gorm:"column:created_at;autoCreateTime"`
+	UpdatedAt           time.Time  `gorm:"column:updated_at;autoCreateTime;autoUpdateTime"`
+}
+
+func (*indexDeliveryEventRecord) TableName() string { return "document_index_delivery_events" }
+
+type indexRebuildRunRecord struct {
+	RunID             string     `gorm:"column:run_id;type:uuid;primaryKey"`
+	State             string     `gorm:"column:state;size:16;not null"`
+	SnapshotStartedAt time.Time  `gorm:"column:snapshot_started_at;not null"`
+	CompletedAt       *time.Time `gorm:"column:completed_at"`
+	EventCount        int64      `gorm:"column:event_count;not null"`
+	FailureCount      int64      `gorm:"column:failure_count;not null"`
+	LastError         string     `gorm:"column:last_error;type:text;not null"`
+	CreatedAt         time.Time  `gorm:"column:created_at;autoCreateTime"`
+	UpdatedAt         time.Time  `gorm:"column:updated_at;autoCreateTime;autoUpdateTime"`
+}
+
+func (*indexRebuildRunRecord) TableName() string { return "document_index_rebuild_runs" }

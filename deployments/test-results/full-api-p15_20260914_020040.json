@@ -1,0 +1,770 @@
+{
+  "runId": "p15_20260914_020040",
+  "generatedAt": "2026-09-14T02:00:43.9255432+08:00",
+  "baseUrl": "http://127.0.0.1:8080",
+  "frontendUrl": "http://127.0.0.1:15173",
+  "passed": 95,
+  "failed": 0,
+  "results": [
+    {
+      "name": "后端存活检查",
+      "endpoint": "GET /healthz",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "marker=\"status\":\"ok\""
+    },
+    {
+      "name": "后端就绪检查",
+      "endpoint": "GET /readyz",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "marker=\"status\":\"ready\""
+    },
+    {
+      "name": "Nginx 代理存活检查",
+      "endpoint": "GET /healthz",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "marker=\"status\":\"ok\""
+    },
+    {
+      "name": "Nginx 代理就绪检查",
+      "endpoint": "GET /readyz",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "marker=\"status\":\"ready\""
+    },
+    {
+      "name": "前端静态入口",
+      "endpoint": "GET /",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "marker=\u003cdiv id=\"app\"\u003e"
+    },
+    {
+      "name": "前端 History fallback",
+      "endpoint": "GET /app/library",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "marker=\u003cdiv id=\"app\"\u003e"
+    },
+    {
+      "name": "允许来源 CORS 预检",
+      "endpoint": "OPTIONS /api/v1/public/auth/login",
+      "expected": "HTTP 204",
+      "actual": "HTTP 204",
+      "passed": true,
+      "evidence": "allow-origin=http://localhost:15173"
+    },
+    {
+      "name": "拒绝未配置 CORS 来源",
+      "endpoint": "OPTIONS /api/v1/public/auth/login",
+      "expected": "HTTP 403",
+      "actual": "HTTP 403",
+      "passed": true,
+      "evidence": "allow-origin absent"
+    },
+    {
+      "name": "已停用的 Chat 路由不可达",
+      "endpoint": "GET /api/v1/protected/chat/ws",
+      "expected": "HTTP 404",
+      "actual": "HTTP 404",
+      "passed": true,
+      "evidence": "code=INVALID_JSON"
+    },
+    {
+      "name": "已停用的 Chat 路由不可达",
+      "endpoint": "GET /api/v1/protected/chat/sse",
+      "expected": "HTTP 404",
+      "actual": "HTTP 404",
+      "passed": true,
+      "evidence": "code=INVALID_JSON"
+    },
+    {
+      "name": "已停用的 Chat 路由不可达",
+      "endpoint": "POST /api/v1/protected/chat/messages",
+      "expected": "HTTP 404",
+      "actual": "HTTP 404",
+      "passed": true,
+      "evidence": "code=INVALID_JSON"
+    },
+    {
+      "name": "已停用的 Chat 路由不可达",
+      "endpoint": "POST /api/v1/protected/chat/sse/messages",
+      "expected": "HTTP 404",
+      "actual": "HTTP 404",
+      "passed": true,
+      "evidence": "code=INVALID_JSON"
+    },
+    {
+      "name": "已停用的 Chat 路由不可达",
+      "endpoint": "POST /api/v1/protected/chat/deliveries/00000000-0000-0000-0000-000000000000/ack",
+      "expected": "HTTP 404",
+      "actual": "HTTP 404",
+      "passed": true,
+      "evidence": "code=INVALID_JSON"
+    },
+    {
+      "name": "旧 Markdown 路由不可达",
+      "endpoint": "GET /api/v1/protected/markdown/mine",
+      "expected": "HTTP 404",
+      "actual": "HTTP 404",
+      "passed": true,
+      "evidence": "code=INVALID_JSON"
+    },
+    {
+      "name": "旧 Markdown 路由不可达",
+      "endpoint": "POST /api/v1/protected/markdown/upload",
+      "expected": "HTTP 404",
+      "actual": "HTTP 404",
+      "passed": true,
+      "evidence": "code=INVALID_JSON"
+    },
+    {
+      "name": "旧 Markdown 路由不可达",
+      "endpoint": "GET /api/v1/protected/markdown/00000000-0000-0000-0000-000000000000",
+      "expected": "HTTP 404",
+      "actual": "HTTP 404",
+      "passed": true,
+      "evidence": "code=INVALID_JSON"
+    },
+    {
+      "name": "未登录访问保护接口",
+      "endpoint": "GET /api/v1/protected/documents/mine",
+      "expected": "HTTP 401",
+      "actual": "HTTP 401",
+      "passed": true,
+      "evidence": "code=UNAUTHORIZED"
+    },
+    {
+      "name": "用户注册参数校验",
+      "endpoint": "POST /api/v1/public/auth/register",
+      "expected": "HTTP 400",
+      "actual": "HTTP 400",
+      "passed": true,
+      "evidence": "code=VALIDATION_FAILED"
+    },
+    {
+      "name": "注册用户 A",
+      "endpoint": "POST /api/v1/public/auth/register",
+      "expected": "HTTP 201",
+      "actual": "HTTP 201",
+      "passed": true,
+      "evidence": "userId=1, passwordFieldAbsent=true"
+    },
+    {
+      "name": "注册用户 B",
+      "endpoint": "POST /api/v1/public/auth/register",
+      "expected": "HTTP 201",
+      "actual": "HTTP 201",
+      "passed": true,
+      "evidence": "userId=2"
+    },
+    {
+      "name": "重复邮箱注册冲突",
+      "endpoint": "POST /api/v1/public/auth/register",
+      "expected": "HTTP 409",
+      "actual": "HTTP 409",
+      "passed": true,
+      "evidence": "code=CONFLICT"
+    },
+    {
+      "name": "错误密码登录",
+      "endpoint": "POST /api/v1/public/auth/login",
+      "expected": "HTTP 401",
+      "actual": "HTTP 401",
+      "passed": true,
+      "evidence": "code=UNAUTHORIZED"
+    },
+    {
+      "name": "用户 Cookie-only 登录与属性",
+      "endpoint": "POST /api/v1/public/auth/login",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "access=true refresh=true csrf=true scopedPaths=true httpOnlyTokens=true sameSiteLax=true"
+    },
+    {
+      "name": "Bearer 凭据不替代 Cookie",
+      "endpoint": "GET /api/v1/protected/documents/mine",
+      "expected": "HTTP 401",
+      "actual": "HTTP 401",
+      "passed": true,
+      "evidence": "Authorization ignored; code=UNAUTHORIZED"
+    },
+    {
+      "name": "写接口缺少 CSRF",
+      "endpoint": "POST /api/v1/protected/documents",
+      "expected": "HTTP 403",
+      "actual": "HTTP 403",
+      "passed": true,
+      "evidence": "code=FORBIDDEN"
+    },
+    {
+      "name": "写接口错误 CSRF",
+      "endpoint": "POST /api/v1/protected/documents",
+      "expected": "HTTP 403",
+      "actual": "HTTP 403",
+      "passed": true,
+      "evidence": "code=FORBIDDEN"
+    },
+    {
+      "name": "CSRF 拒绝不产生写入副作用",
+      "endpoint": "GET /api/v1/protected/documents/mine",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "missingPresent=false, invalidPresent=false"
+    },
+    {
+      "name": "同用户新登录建立新 sid",
+      "endpoint": "POST /api/v1/public/auth/login",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "new session created"
+    },
+    {
+      "name": "新登录使旧 Access 失效",
+      "endpoint": "GET /api/v1/protected/documents/mine",
+      "expected": "HTTP 401",
+      "actual": "HTTP 401",
+      "passed": true,
+      "evidence": "code=UNAUTHORIZED"
+    },
+    {
+      "name": "新登录使旧 Refresh 失效",
+      "endpoint": "POST /api/v1/public/auth/refresh",
+      "expected": "HTTP 401",
+      "actual": "HTTP 401",
+      "passed": true,
+      "evidence": "code=UNAUTHORIZED"
+    },
+    {
+      "name": "用户 Refresh 轮换",
+      "endpoint": "POST /api/v1/public/auth/refresh",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "token pair rotated"
+    },
+    {
+      "name": "用户旧 Refresh 防重放",
+      "endpoint": "POST /api/v1/public/auth/refresh",
+      "expected": "HTTP 401",
+      "actual": "HTTP 401",
+      "passed": true,
+      "evidence": "code=UNAUTHORIZED"
+    },
+    {
+      "name": "Refresh 后 Access 可用",
+      "endpoint": "GET /api/v1/protected/documents/mine",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "current sid remains active"
+    },
+    {
+      "name": "用户 B 登录",
+      "endpoint": "POST /api/v1/public/auth/login",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "cookie session established"
+    },
+    {
+      "name": "Markdown 可见性校验",
+      "endpoint": "POST /api/v1/protected/documents",
+      "expected": "HTTP 400",
+      "actual": "HTTP 400",
+      "passed": true,
+      "evidence": "code=VALIDATION_FAILED"
+    },
+    {
+      "name": "创建公开 Markdown",
+      "endpoint": "POST /api/v1/protected/documents",
+      "expected": "HTTP 201",
+      "actual": "HTTP 201",
+      "passed": true,
+      "evidence": "documentId=791b5123-5102-4bd7-8717-f1cf15cdbf8c"
+    },
+    {
+      "name": "创建私有 Markdown",
+      "endpoint": "POST /api/v1/protected/documents",
+      "expected": "HTTP 201",
+      "actual": "HTTP 201",
+      "passed": true,
+      "evidence": "documentId=45662dac-0928-4d4e-9582-d702202ded3c"
+    },
+    {
+      "name": "我的 Markdown 分页",
+      "endpoint": "GET /api/v1/protected/documents/mine",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "contains public/private and meta"
+    },
+    {
+      "name": "公开 Markdown 列表过滤",
+      "endpoint": "GET /api/v1/protected/documents/public",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "public visible; private absent"
+    },
+    {
+      "name": "Markdown BM25 全文搜索",
+      "endpoint": "GET /api/v1/protected/documents/search",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "unique keyword matched both owned documents"
+    },
+    {
+      "name": "Markdown 空搜索词校验",
+      "endpoint": "GET /api/v1/protected/documents/search",
+      "expected": "HTTP 400",
+      "actual": "HTTP 400",
+      "passed": true,
+      "evidence": "code=VALIDATION_FAILED"
+    },
+    {
+      "name": "Markdown 超长搜索词校验",
+      "endpoint": "GET /api/v1/protected/documents/search",
+      "expected": "HTTP 400",
+      "actual": "HTTP 400",
+      "passed": true,
+      "evidence": "code=VALIDATION_FAILED"
+    },
+    {
+      "name": "Markdown 分页边界校验",
+      "endpoint": "GET /api/v1/protected/documents/mine",
+      "expected": "HTTP 400",
+      "actual": "HTTP 400",
+      "passed": true,
+      "evidence": "code=VALIDATION_FAILED"
+    },
+    {
+      "name": "作者读取公开 Markdown",
+      "endpoint": "GET /api/v1/protected/documents/:id",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "full content matched"
+    },
+    {
+      "name": "作者读取私有 Markdown",
+      "endpoint": "GET /api/v1/protected/documents/:id",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "visibility=private"
+    },
+    {
+      "name": "其他用户读取公开 Markdown",
+      "endpoint": "GET /api/v1/protected/documents/:id",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "public access granted"
+    },
+    {
+      "name": "其他用户禁止读取私有 Markdown",
+      "endpoint": "GET /api/v1/protected/documents/:id",
+      "expected": "HTTP 403",
+      "actual": "HTTP 403",
+      "passed": true,
+      "evidence": "code=FORBIDDEN"
+    },
+    {
+      "name": "不存在 Markdown",
+      "endpoint": "GET /api/v1/protected/documents/:id",
+      "expected": "HTTP 404",
+      "actual": "HTTP 404",
+      "passed": true,
+      "evidence": "code=NOT_FOUND"
+    },
+    {
+      "name": "Markdown 更新参数校验",
+      "endpoint": "PUT /api/v1/protected/documents/:id",
+      "expected": "HTTP 400",
+      "actual": "HTTP 400",
+      "passed": true,
+      "evidence": "code=VALIDATION_FAILED"
+    },
+    {
+      "name": "其他用户禁止编辑 Markdown",
+      "endpoint": "PUT /api/v1/protected/documents/:id",
+      "expected": "HTTP 403",
+      "actual": "HTTP 403",
+      "passed": true,
+      "evidence": "code=FORBIDDEN"
+    },
+    {
+      "name": "作者编辑 Markdown",
+      "endpoint": "PUT /api/v1/protected/documents/:id",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "content and visibility updated"
+    },
+    {
+      "name": "Markdown 更新后缓存失效",
+      "endpoint": "GET /api/v1/protected/documents/:id",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "updated content returned"
+    },
+    {
+      "name": "Markdown 更新后搜索索引生效",
+      "endpoint": "GET /api/v1/protected/documents/search",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "updated keyword matched document"
+    },
+    {
+      "name": "更新为私有后其他用户不可读",
+      "endpoint": "GET /api/v1/protected/documents/:id",
+      "expected": "HTTP 403",
+      "actual": "HTTP 403",
+      "passed": true,
+      "evidence": "code=FORBIDDEN"
+    },
+    {
+      "name": "其他用户禁止删除 Markdown",
+      "endpoint": "DELETE /api/v1/protected/documents/:id",
+      "expected": "HTTP 403",
+      "actual": "HTTP 403",
+      "passed": true,
+      "evidence": "code=FORBIDDEN"
+    },
+    {
+      "name": "作者删除 Markdown",
+      "endpoint": "DELETE /api/v1/protected/documents/:id",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "documentId=791b5123-5102-4bd7-8717-f1cf15cdbf8c"
+    },
+    {
+      "name": "删除后 Markdown 不可读取",
+      "endpoint": "GET /api/v1/protected/documents/:id",
+      "expected": "HTTP 404",
+      "actual": "HTTP 404",
+      "passed": true,
+      "evidence": "code=NOT_FOUND"
+    },
+    {
+      "name": "Markdown 删除后搜索结果移除",
+      "endpoint": "GET /api/v1/protected/documents/search",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "deleted document absent"
+    },
+    {
+      "name": "重复删除 Markdown",
+      "endpoint": "DELETE /api/v1/protected/documents/:id",
+      "expected": "HTTP 404",
+      "actual": "HTTP 404",
+      "passed": true,
+      "evidence": "code=NOT_FOUND"
+    },
+    {
+      "name": "管理员申请参数校验",
+      "endpoint": "POST /api/v1/public/manager/register",
+      "expected": "HTTP 400",
+      "actual": "HTTP 400",
+      "passed": true,
+      "evidence": "code=VALIDATION_FAILED"
+    },
+    {
+      "name": "提交待通过管理员申请",
+      "endpoint": "POST /api/v1/public/manager/register",
+      "expected": "HTTP 201",
+      "actual": "HTTP 201",
+      "passed": true,
+      "evidence": "requestId=1"
+    },
+    {
+      "name": "提交待拒绝管理员申请",
+      "endpoint": "POST /api/v1/public/manager/register",
+      "expected": "HTTP 201",
+      "actual": "HTTP 201",
+      "passed": true,
+      "evidence": "requestId=2"
+    },
+    {
+      "name": "提交 CSRF 副作用探针申请",
+      "endpoint": "POST /api/v1/public/manager/register",
+      "expected": "HTTP 201",
+      "actual": "HTTP 201",
+      "passed": true,
+      "evidence": "requestId=3"
+    },
+    {
+      "name": "重复管理员申请冲突",
+      "endpoint": "POST /api/v1/public/manager/register",
+      "expected": "HTTP 409",
+      "actual": "HTTP 409",
+      "passed": true,
+      "evidence": "code=CONFLICT"
+    },
+    {
+      "name": "待审批管理员禁止登录",
+      "endpoint": "POST /api/v1/public/manager/login",
+      "expected": "HTTP 401",
+      "actual": "HTTP 401",
+      "passed": true,
+      "evidence": "code=UNAUTHORIZED"
+    },
+    {
+      "name": "引导管理员登录与 Cookie 属性",
+      "endpoint": "POST /api/v1/public/manager/login",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "access=true refresh=true csrf=true scopedPaths=true httpOnlyTokens=true sameSiteLax=true"
+    },
+    {
+      "name": "用户 Cookie 不能访问管理端",
+      "endpoint": "GET /api/v1/protected/manager/requests",
+      "expected": "HTTP 401",
+      "actual": "HTTP 401",
+      "passed": true,
+      "evidence": "scope isolated"
+    },
+    {
+      "name": "管理员 Cookie 不能访问用户端",
+      "endpoint": "GET /api/v1/protected/documents/mine",
+      "expected": "HTTP 401",
+      "actual": "HTTP 401",
+      "passed": true,
+      "evidence": "scope isolated"
+    },
+    {
+      "name": "管理员申请列表与敏感字段隐藏",
+      "endpoint": "GET /api/v1/protected/manager/requests",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "both requests present; password hash absent"
+    },
+    {
+      "name": "管理员列表分页边界",
+      "endpoint": "GET /api/v1/protected/manager/requests",
+      "expected": "HTTP 400",
+      "actual": "HTTP 400",
+      "passed": true,
+      "evidence": "code=VALIDATION_FAILED"
+    },
+    {
+      "name": "审批缺少管理员 CSRF",
+      "endpoint": "POST /api/v1/protected/manager/requests/:id/approve",
+      "expected": "HTTP 403",
+      "actual": "HTTP 403",
+      "passed": true,
+      "evidence": "code=FORBIDDEN"
+    },
+    {
+      "name": "CSRF 拒绝不执行管理员审批",
+      "endpoint": "GET /api/v1/protected/manager/requests",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "probeStillPending=true"
+    },
+    {
+      "name": "通过管理员申请",
+      "endpoint": "POST /api/v1/protected/manager/requests/:id/approve",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "status=active"
+    },
+    {
+      "name": "重复审批冲突",
+      "endpoint": "POST /api/v1/protected/manager/requests/:id/approve",
+      "expected": "HTTP 409",
+      "actual": "HTTP 409",
+      "passed": true,
+      "evidence": "code=CONFLICT"
+    },
+    {
+      "name": "拒绝管理员申请",
+      "endpoint": "POST /api/v1/protected/manager/requests/:id/reject",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "status=rejected"
+    },
+    {
+      "name": "重复拒绝冲突",
+      "endpoint": "POST /api/v1/protected/manager/requests/:id/reject",
+      "expected": "HTTP 409",
+      "actual": "HTTP 409",
+      "passed": true,
+      "evidence": "code=CONFLICT"
+    },
+    {
+      "name": "审批不存在申请",
+      "endpoint": "POST /api/v1/protected/manager/requests/:id/approve",
+      "expected": "HTTP 404",
+      "actual": "HTTP 404",
+      "passed": true,
+      "evidence": "code=NOT_FOUND"
+    },
+    {
+      "name": "按状态查询 approved 申请",
+      "endpoint": "GET /api/v1/protected/manager/requests",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "status filter matched"
+    },
+    {
+      "name": "按状态查询 rejected 申请",
+      "endpoint": "GET /api/v1/protected/manager/requests",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "status filter matched"
+    },
+    {
+      "name": "审批后管理员可登录",
+      "endpoint": "POST /api/v1/public/manager/login",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "active account authenticated"
+    },
+    {
+      "name": "管理员 Refresh 轮换",
+      "endpoint": "POST /api/v1/public/manager/refresh",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "token pair rotated"
+    },
+    {
+      "name": "管理员旧 Refresh 防重放",
+      "endpoint": "POST /api/v1/public/manager/refresh",
+      "expected": "HTTP 401",
+      "actual": "HTTP 401",
+      "passed": true,
+      "evidence": "code=UNAUTHORIZED"
+    },
+    {
+      "name": "审批管理员登出",
+      "endpoint": "POST /api/v1/protected/manager/logout",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "session revoked"
+    },
+    {
+      "name": "审批管理员登出后失效",
+      "endpoint": "GET /api/v1/protected/manager/requests",
+      "expected": "HTTP 401",
+      "actual": "HTTP 401",
+      "passed": true,
+      "evidence": "code=UNAUTHORIZED"
+    },
+    {
+      "name": "引导管理员登出",
+      "endpoint": "POST /api/v1/protected/manager/logout",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "session revoked"
+    },
+    {
+      "name": "引导管理员登出后失效",
+      "endpoint": "GET /api/v1/protected/manager/requests",
+      "expected": "HTTP 401",
+      "actual": "HTTP 401",
+      "passed": true,
+      "evidence": "code=UNAUTHORIZED"
+    },
+    {
+      "name": "Nginx 代理用户注册",
+      "endpoint": "POST /api/v1/public/auth/register via :15173",
+      "expected": "HTTP 201",
+      "actual": "HTTP 201",
+      "passed": true,
+      "evidence": "API reverse proxy"
+    },
+    {
+      "name": "Nginx 代理 Cookie 登录",
+      "endpoint": "POST /api/v1/public/auth/login via :15173",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "same-origin cookie session"
+    },
+    {
+      "name": "Nginx 代理保护接口",
+      "endpoint": "GET /api/v1/protected/documents/mine via :15173",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "authenticated proxy request"
+    },
+    {
+      "name": "Nginx 代理用户登出",
+      "endpoint": "POST /api/v1/protected/auth/logout via :15173",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "session revoked"
+    },
+    {
+      "name": "用户 B 登出",
+      "endpoint": "POST /api/v1/protected/auth/logout",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "cookie cleared; session revoked"
+    },
+    {
+      "name": "登出后 Access 失效",
+      "endpoint": "GET /api/v1/protected/documents/mine",
+      "expected": "HTTP 401",
+      "actual": "HTTP 401",
+      "passed": true,
+      "evidence": "code=UNAUTHORIZED"
+    },
+    {
+      "name": "登出后旧 Refresh 失效",
+      "endpoint": "POST /api/v1/public/auth/refresh",
+      "expected": "HTTP 401",
+      "actual": "HTTP 401",
+      "passed": true,
+      "evidence": "code=UNAUTHORIZED"
+    },
+    {
+      "name": "用户 A 登出",
+      "endpoint": "POST /api/v1/protected/auth/logout",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "passed": true,
+      "evidence": "session revoked"
+    },
+    {
+      "name": "用户 A 登出后失效",
+      "endpoint": "GET /api/v1/protected/documents/mine",
+      "expected": "HTTP 401",
+      "actual": "HTTP 401",
+      "passed": true,
+      "evidence": "code=UNAUTHORIZED"
+    }
+  ]
+}

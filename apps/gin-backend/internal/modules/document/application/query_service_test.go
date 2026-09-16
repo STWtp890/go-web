@@ -51,6 +51,16 @@ type queryCacheStub struct {
 	calls int
 }
 
+type shadowSchedulerStub struct {
+	request ShadowSearchRequest
+	calls   int
+}
+
+func (stub *shadowSchedulerStub) Observe(request ShadowSearchRequest) bool {
+	stub.request, stub.calls = request, stub.calls+1
+	return true
+}
+
 func (stub *queryCacheStub) GetDocumentView(ctx context.Context, head domain.DocumentHead, loader domain.DocumentViewLoader) (*domain.DocumentView, error) {
 	stub.head, stub.calls = head, stub.calls+1
 	return loader(ctx)
@@ -94,8 +104,9 @@ func TestQueryServiceUsesAuthorizedHeadAsCacheIdentity(t *testing.T) {
 }
 
 func TestQueryServiceNormalizesSearchAndPagination(t *testing.T) {
-	repository := &queryRepositoryStub{total: 11}
-	service, _ := NewQueryService(repository, nil)
+	repository := &queryRepositoryStub{total: 11, summaries: []domain.DocumentSummary{{DocumentID: queryTestDocumentID}}}
+	shadow := &shadowSchedulerStub{}
+	service, _ := NewQueryService(repository, nil, WithShadowSearchScheduler(shadow))
 
 	_, page, keyword, err := service.SearchMine(context.Background(), 1, "  Go 搜索  ", 0, 0)
 	if err != nil {
@@ -106,6 +117,10 @@ func TestQueryServiceNormalizesSearchAndPagination(t *testing.T) {
 	}
 	if page.Number != 1 || page.Size != 10 || page.Total != 11 || repository.offset != 0 || repository.limit != 10 {
 		t.Fatalf("unexpected pagination: page=%#v offset=%d limit=%d", page, repository.offset, repository.limit)
+	}
+	if shadow.calls != 1 || shadow.request.Query != keyword || shadow.request.OwnerID != 1 ||
+		len(shadow.request.BM25DocumentIDs) != 1 || shadow.request.BM25DocumentIDs[0] != queryTestDocumentID {
+		t.Fatalf("shadow request = %#v calls=%d", shadow.request, shadow.calls)
 	}
 }
 

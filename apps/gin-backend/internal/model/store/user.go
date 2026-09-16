@@ -1,11 +1,12 @@
-// user.go — 用户实体缓存 (auth 业务)
+// user.go — 用户实体版本缓存 (auth 业务)
 //
-// 查询键: 按主键 id / 唯一邮箱 email 双维度, 登录/刷新场景按 email 或 id 回源。
-// 写库后 (注册/改密/封禁) 调用 Evict 失效两个维度, 保证下次读取回源新数据。
+// 每次读取先从 PostgreSQL 获取权威 (id, cache_revision) head，再以版本键读取缓存。
+// 写事务提交后 revision 单调递增，因此旧请求即使延迟回填，也只会写入旧版本键。
 package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	basecache "gin-backend/internal/common/base/cache"
@@ -15,72 +16,84 @@ import (
 	"gorm.io/gorm"
 )
 
-// 用户缓存键命名空间 (前缀 cache:user: 防跨实体冲突)
-const (
-	userKeyByID    = "cache:user:id:%d"
-	userKeyByEmail = "cache:user:email:%s"
-)
+const userVersionKey = "cache:user:v2:%d:revision:%d"
 
-// UserStore 用户实体缓存存储器
+type userCacheHead struct {
+	ID            uint
+	CacheRevision int64
+}
+
+// UserStore 用户实体缓存存储器。ID 与邮箱查询最终收敛到同一个版本键空间。
 type UserStore struct {
-	byID    *basecache.EntityCache[dtocache.UserCache]
-	byEmail *basecache.EntityCache[dtocache.UserCache]
+	entities *basecache.EntityCache[dtocache.UserCache]
 }
 
-// User 用户实体缓存包级单例 (与 jwt fallbackCache / chat hub 同风格)
+// User 用户实体缓存包级单例。
 var User = &UserStore{
-	byID:    NewEntity[dtocache.UserCache](DefaultTTL),
-	byEmail: NewEntity[dtocache.UserCache](DefaultTTL),
+	entities: NewEntity[dtocache.UserCache]("user", DefaultTTL),
 }
 
-// GetByID 按主键读取用户 (缓存未命中回源 users.id, 透传 gorm.ErrRecordNotFound)
+// GetByID 按主键读取用户。head 查询始终直达 PostgreSQL。
 func (s *UserStore) GetByID(ctx context.Context, id uint) (*dtocache.UserCache, error) {
-	key := fmt.Sprintf(userKeyByID, id)
-	u, err := s.byID.Get(ctx, key, func(ctx context.Context) (dtocache.UserCache, error) {
-		db, err := authDB.get(ctx)
-		if err != nil {
-			return dtocache.UserCache{}, err
-		}
-		var m authmodel.User
-		if err := db.Where("id = ?", id).First(&m).Error; err != nil {
-			return dtocache.UserCache{}, err
-		}
-		return *dtocache.FromUser(&m), nil
+	return s.get(ctx, func(db *gorm.DB, head *userCacheHead) error {
+		return db.Model(&authmodel.User{}).
+			Select("id", "cache_revision").
+			Where("id = ?", id).
+			Take(head).Error
 	})
-	if err != nil {
-		return nil, err
-	}
-	return &u, nil
 }
 
-// GetByEmail 按唯一邮箱读取用户 (登录场景; 透传 gorm.ErrRecordNotFound)
+// GetByEmail 按唯一邮箱读取用户。邮箱只用于定位 head，不进入缓存键。
 func (s *UserStore) GetByEmail(ctx context.Context, email string) (*dtocache.UserCache, error) {
-	key := fmt.Sprintf(userKeyByEmail, email)
-	fn := func(ctx context.Context) (dtocache.UserCache, error) {
+	return s.get(ctx, func(db *gorm.DB, head *userCacheHead) error {
+		return db.Model(&authmodel.User{}).
+			Select("id", "cache_revision").
+			Where("email = ?", email).
+			Take(head).Error
+	})
+}
+
+func (s *UserStore) get(
+	ctx context.Context,
+	loadHead func(db *gorm.DB, head *userCacheHead) error,
+) (*dtocache.UserCache, error) {
+	for attempt := 0; attempt < revisionReadAttempts; attempt++ {
 		db, err := authDB.get(ctx)
 		if err != nil {
-			return dtocache.UserCache{}, err
+			return nil, err
 		}
-		var m authmodel.User
-		if err := db.Where("email = ?", email).First(&m).Error; err != nil {
-			return dtocache.UserCache{}, err
+		var head userCacheHead
+		if err := loadHead(db, &head); err != nil {
+			return nil, err
 		}
-		return *dtocache.FromUser(&m), nil
+
+		key := userCacheKey(head.ID, head.CacheRevision)
+		cached, err := s.entities.Get(ctx, key, func(ctx context.Context) (dtocache.UserCache, error) {
+			var row authmodel.User
+			err := db.WithContext(ctx).
+				Where("id = ? AND cache_revision = ?", head.ID, head.CacheRevision).
+				First(&row).Error
+			if err != nil {
+				return dtocache.UserCache{}, err
+			}
+			return *dtocache.FromUser(&row), nil
+		})
+		if err == nil {
+			return &cached, nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+		// head 与实体读取之间发生了更新或删除；重读权威 head。
 	}
-	u, err := s.byEmail.Get(ctx, key, fn)
-	if err != nil {
-		return nil, err
-	}
-	return &u, nil
+	return nil, fmt.Errorf("%w: user", ErrCacheRevisionChanged)
 }
 
-// Evict 失效用户缓存 (id 维度 + email 维度)
-// 业务层写库后调用: Evict(ctx, user.ID, user.Email)
-func (s *UserStore) Evict(ctx context.Context, id uint, email string) error {
-	_ = s.byID.Evict(ctx, fmt.Sprintf(userKeyByID, id))
-	_ = s.byEmail.Evict(ctx, fmt.Sprintf(userKeyByEmail, email))
-	return nil
+// Evict 删除指定 revision 的两级缓存。版本键保证正确性；删除只负责及时回收旧键。
+func (s *UserStore) Evict(ctx context.Context, id uint, revision int64) error {
+	return s.entities.Evict(ctx, userCacheKey(id, revision))
 }
 
-// 编译期断言: UserStore 依赖的 gorm 错误由调用方经 errors.Is 判断
-var _ = gorm.ErrRecordNotFound
+func userCacheKey(id uint, revision int64) string {
+	return fmt.Sprintf(userVersionKey, id, revision)
+}

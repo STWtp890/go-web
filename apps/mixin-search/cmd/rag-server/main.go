@@ -29,6 +29,10 @@ func main() {
 	qdrantCollection := flag.String("qdrant-collection", "rag_chunks", "Qdrant collection")
 	qdrantTLS := flag.Bool("qdrant-tls", false, "connect to Qdrant using TLS")
 	pgDSN := flag.String("pg-dsn", defaultPGDSN(), "PostgreSQL connection string")
+	controlBackend := flag.String("control-store", defaultControlStore(), "control store: memory or postgres")
+	controlDSN := flag.String("control-dsn", defaultControlDSN(), "control PostgreSQL connection string")
+	controlNamespace := flag.String("control-namespace", defaultControlNamespace(), "control state namespace")
+	controlBootstrap := flag.Bool("control-bootstrap", defaultControlBootstrap(), "initialize a missing control namespace once")
 	maxReceiveBytes := flag.Int("max-receive-bytes", 16<<20, "maximum gRPC request size")
 	flag.Parse()
 
@@ -47,16 +51,23 @@ func main() {
 		_ = store.Close()
 		log.Fatal(err)
 	}
+	controlStore, closeControlStore, err := openControlStore(ctx, *controlBackend, *controlDSN, *controlNamespace, *controlBootstrap)
+	if err != nil {
+		_ = service.Close()
+		log.Fatal(err)
+	}
+	contractService, err := rag.NewDocumentIndexServiceWithControlStore(ctx, service, controlStore)
+	if err != nil {
+		closeControlStore()
+		_ = service.Close()
+		log.Fatal(err)
+	}
+	defer closeControlStore()
 	defer func() {
 		if closeErr := service.Close(); closeErr != nil {
 			log.Printf("close vector store: %v", closeErr)
 		}
 	}()
-
-	contractService, err := rag.NewDocumentIndexService(service)
-	if err != nil {
-		log.Fatal(err)
-	}
 	handler, err := grpcadapter.NewServer(contractService)
 	if err != nil {
 		log.Fatal(err)
@@ -69,7 +80,12 @@ func main() {
 
 	server := newGRPCServer(*maxReceiveBytes, handler)
 
-	log.Printf("RAG gRPC server listening on %s (store=%s)", listener.Addr(), strings.ToLower(*backend))
+	log.Printf(
+		"RAG gRPC server listening on %s (store=%s control_store=%s)",
+		listener.Addr(),
+		strings.ToLower(*backend),
+		strings.ToLower(*controlBackend),
+	)
 	if err := server.Serve(listener); err != nil {
 		log.Fatal(err)
 	}
@@ -121,9 +137,60 @@ func openStore(
 	}
 }
 
+func openControlStore(
+	ctx context.Context,
+	backend string,
+	dsn string,
+	namespace string,
+	bootstrap bool,
+) (rag.ControlStore, func(), error) {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "memory":
+		return rag.NewMemoryControlStore(), func() {}, nil
+	case "postgres":
+		store, err := rag.NewPostgresControlStore(ctx, rag.PostgresControlStoreConfig{
+			DSN:       dsn,
+			Namespace: namespace,
+			Bootstrap: bootstrap,
+		})
+		if err != nil {
+			return nil, func() {}, err
+		}
+		return store, store.Close, nil
+	default:
+		return nil, func() {}, fmt.Errorf("unknown control store %q", backend)
+	}
+}
+
 func defaultPGDSN() string {
 	if value := os.Getenv("PGVECTOR_DSN"); value != "" {
 		return value
 	}
 	return "postgres://rag:rag@localhost:5432/rag?sslmode=disable"
+}
+
+func defaultControlStore() string {
+	if value := strings.TrimSpace(os.Getenv("CONTROL_STORE")); value != "" {
+		return value
+	}
+	return "postgres"
+}
+
+func defaultControlDSN() string {
+	if value := strings.TrimSpace(os.Getenv("CONTROL_DATABASE_DSN")); value != "" {
+		return value
+	}
+	return "postgres://mixin_control:mixin_control@localhost:55432/mixin_control?sslmode=disable"
+}
+
+func defaultControlNamespace() string {
+	if value := strings.TrimSpace(os.Getenv("CONTROL_STORE_NAMESPACE")); value != "" {
+		return value
+	}
+	return "default"
+}
+
+func defaultControlBootstrap() bool {
+	value := strings.TrimSpace(os.Getenv("CONTROL_STORE_BOOTSTRAP"))
+	return value == "1" || strings.EqualFold(value, "true")
 }

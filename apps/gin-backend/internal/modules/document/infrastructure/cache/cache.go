@@ -22,8 +22,8 @@ func New(ttl time.Duration) *Cache {
 	if ttl <= 0 {
 		ttl = DefaultTTL
 	}
-	return &Cache{views: basecache.NewEntityCache[domain.DocumentView](
-		basecache.NewRedisCache(), basecache.NewMemCache(), ttl,
+	return &Cache{views: basecache.NewEntityFromRuntime[domain.DocumentView](
+		basecache.DefaultRuntime(), "document-view", basecache.PartitionDocuments, ttl,
 	)}
 }
 

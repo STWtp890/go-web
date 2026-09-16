@@ -78,6 +78,10 @@ try {
         'exec', '-T', 'postgres', 'psql', '-X', '-v', 'ON_ERROR_STOP=1',
         '-U', 'postgres', '-d', 'gin_demo', '-f', '/database/sql/plugin/bm25_only_verify.sql'
     ))
+    Invoke-CheckedDocker ($composePrefix + @(
+        'exec', '-T', 'postgres', 'psql', '-X', '-v', 'ON_ERROR_STOP=1',
+        '-U', 'postgres', '-d', 'gin_demo', '-f', '/database/sql/plugin/cache_revision_verify.sql'
+    ))
 
     $imageID = (& docker image inspect gin-postgres:local --format '{{.Id}}' | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or -not $imageID) {
@@ -87,6 +91,7 @@ try {
     Write-Host 'SCHEMA_BASELINE=PASS'
     Write-Host 'EXTENSIONS=timescaledb,pg_search,vector'
     Write-Host 'BM25_ONLY=PASS'
+    Write-Host 'ENTITY_CACHE_REVISION=PASS'
     Write-Host 'CHAT_SCHEMA_PRESENT_BUT_SERVICE_DISCONNECTED=PASS'
     Write-Host 'P1.4_POSTGRES_IMAGE=PASS'
 }

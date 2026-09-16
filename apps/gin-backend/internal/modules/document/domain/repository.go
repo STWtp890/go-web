@@ -11,6 +11,7 @@ var ErrNotFound = errors.New("document repository: not found")
 // Repository 提供文档聚合的持久化原语。跨表原子性由 InTransaction 调用方显式组织。
 type Repository interface {
 	InTransaction(context.Context, func(Repository) error) error
+	InRepeatableRead(context.Context, func(Repository) error) error
 	EnsurePrivateSpace(context.Context, *KnowledgeSpace) (bool, error)
 	CreateKnowledgeSpace(context.Context, *KnowledgeSpace) error
 	CreateSpaceMember(context.Context, *SpaceMember) error
@@ -24,9 +25,14 @@ type Repository interface {
 	CreateGrant(context.Context, *DocumentGrant) error
 	PutSearchProjection(context.Context, *SearchProjection) error
 	DeleteSearchProjection(context.Context, string) error
+	AppendIndexDeliveryEvent(context.Context, *IndexDeliveryEvent) error
+	AppendIndexDeliveryEventIfAbsent(context.Context, *IndexDeliveryEvent) (bool, error)
 	GetDocument(context.Context, string) (*Document, error)
 	GetAccessPolicy(context.Context, string) (*AccessPolicy, error)
+	GetDocumentVersion(context.Context, string) (*DocumentVersion, error)
 	GetLatestDocumentVersion(context.Context, string) (*DocumentVersion, error)
 	ListDocumentVersions(context.Context, string) ([]DocumentVersion, error)
+	ListDocumentsForIndexing(context.Context, string, int) ([]Document, error)
+	ListActiveGrantedSpaceIDs(context.Context, string) ([]string, error)
 	LockDocument(context.Context, string) (*Document, error)
 }

@@ -19,5 +19,6 @@ apply_sql /database/sql/service/chat/timescaledb_setup.sql
 apply_sql /database/sql/service/document/schema_init.sql
 apply_sql /database/sql/service/document/search_setup.sql
 apply_sql /database/sql/plugin/bm25_only_verify.sql
+apply_sql /database/sql/plugin/cache_revision_verify.sql
 
 echo "[init] done"

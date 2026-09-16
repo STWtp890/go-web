@@ -35,11 +35,13 @@ type preparedQuery struct {
 	CandidateK int
 	Tokens     []string
 	Texts      []string
+	Filter     *VectorSearchFilter
 }
 
 type denseRecallInput struct {
 	CandidateK int
 	Vectors    [][]float64
+	Filter     *VectorSearchFilter
 }
 
 type fusionInput struct {
@@ -166,6 +168,16 @@ func (s *Service) Search(ctx context.Context, request SearchRequest) (SearchResu
 	return s.searchWorkflow.Invoke(ctx, request)
 }
 
+// SyncDocumentControls updates the vector-store projection when the selected
+// backend supports candidate-level lifecycle and authorization filtering.
+func (s *Service) SyncDocumentControls(ctx context.Context, controls []VectorDocumentControl) error {
+	store, ok := s.store.(ControlledVectorStore)
+	if !ok {
+		return nil
+	}
+	return store.SyncDocumentControls(ctx, controls)
+}
+
 // DeleteIndexedDocument removes all chunks stored under one internal document key.
 func (s *Service) DeleteIndexedDocument(ctx context.Context, documentID string) error {
 	return s.store.ReplaceDocument(ctx, documentID, nil)
@@ -244,15 +256,26 @@ func buildSearchWorkflow(
 			CandidateK: request.TopK * 4,
 			Tokens:     tokenize(query),
 			Texts:      []string{query},
+			Filter:     request.Filter,
 		}, nil
 	})
 	denseNode := compose.InvokableLambda(func(ctx context.Context, input denseRecallInput) ([]ScoredChunk, error) {
 		if len(input.Vectors) != 1 {
 			return nil, fmt.Errorf("expected one query embedding, got %d", len(input.Vectors))
 		}
+		if input.Filter != nil {
+			if filtered, ok := store.(ControlledVectorStore); ok {
+				return filtered.DenseSearchFiltered(ctx, input.Vectors[0], input.CandidateK, *input.Filter)
+			}
+		}
 		return store.DenseSearch(ctx, input.Vectors[0], input.CandidateK)
 	})
 	sparseNode := compose.InvokableLambda(func(ctx context.Context, query preparedQuery) ([]ScoredChunk, error) {
+		if query.Filter != nil {
+			if filtered, ok := store.(ControlledVectorStore); ok {
+				return filtered.SparseSearchFiltered(ctx, query.Tokens, query.CandidateK, *query.Filter)
+			}
+		}
 		return store.SparseSearch(ctx, query.Tokens, query.CandidateK)
 	})
 	fusionNode := compose.InvokableLambda(func(_ context.Context, input fusionInput) (SearchResult, error) {
@@ -263,7 +286,10 @@ func buildSearchWorkflow(
 	workflow.AddEmbeddingNode("dense_embedding", embedder).
 		AddInput("prepare_query", compose.FromField("Texts"))
 	workflow.AddLambdaNode("dense_recall", denseNode).
-		AddInput("prepare_query", compose.MapFields("CandidateK", "CandidateK")).
+		AddInput("prepare_query",
+			compose.MapFields("CandidateK", "CandidateK"),
+			compose.MapFields("Filter", "Filter"),
+		).
 		AddInput("dense_embedding", compose.ToField("Vectors"))
 	workflow.AddLambdaNode("sparse_recall", sparseNode).AddInput("prepare_query")
 	workflow.AddLambdaNode("rrf_fusion", fusionNode).

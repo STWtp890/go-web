@@ -105,6 +105,105 @@ CREATE TABLE document_search_projection (
 CREATE INDEX idx_document_search_projection_owner ON document_search_projection(owner_id);
 CREATE INDEX idx_document_search_projection_space ON document_search_projection(owner_space_id);
 
+CREATE TABLE document_index_rebuild_runs (
+    run_id uuid PRIMARY KEY,
+    state varchar(16) NOT NULL DEFAULT 'preparing'
+        CHECK (state IN ('preparing', 'running', 'succeeded', 'failed')),
+    snapshot_started_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    completed_at timestamptz,
+    event_count bigint NOT NULL DEFAULT 0 CHECK (event_count >= 0),
+    failure_count bigint NOT NULL DEFAULT 0 CHECK (failure_count >= 0),
+    last_error text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    CHECK ((state = 'succeeded') = (completed_at IS NOT NULL))
+);
+
+CREATE TABLE document_index_delivery_events (
+    event_id uuid PRIMARY KEY,
+    dedupe_key varchar(255) NOT NULL UNIQUE CHECK (btrim(dedupe_key) <> ''),
+    source varchar(16) NOT NULL CHECK (source IN ('transaction', 'reconcile', 'rebuild')),
+    source_run_id uuid REFERENCES document_index_rebuild_runs(run_id) ON DELETE RESTRICT,
+    document_id uuid NOT NULL REFERENCES documents(document_id) ON DELETE RESTRICT,
+    aggregate_revision bigint NOT NULL CHECK (aggregate_revision >= 0),
+    event_kind varchar(24) NOT NULL
+        CHECK (event_kind IN ('sync_document', 'sync_access', 'delete_version', 'delete_document')),
+    version_id uuid REFERENCES document_versions(version_id) ON DELETE RESTRICT,
+    previous_version_id uuid REFERENCES document_versions(version_id) ON DELETE RESTRICT,
+    owner_space_id uuid REFERENCES knowledge_spaces(space_id) ON DELETE RESTRICT,
+    activation_revision bigint NOT NULL CHECK (activation_revision >= 0),
+    access_revision bigint NOT NULL CHECK (access_revision >= 0),
+    lifecycle_revision bigint NOT NULL CHECK (lifecycle_revision >= 0),
+    authenticated_public boolean NOT NULL DEFAULT false,
+    granted_space_ids jsonb NOT NULL DEFAULT '[]'::jsonb
+        CHECK (jsonb_typeof(granted_space_ids) = 'array'),
+    content_sha256 varchar(64) NOT NULL DEFAULT ''
+        CHECK (content_sha256 = '' OR content_sha256 ~ '^[0-9a-f]{64}$'),
+    index_profile varchar(32) NOT NULL DEFAULT 'markdown-v1' CHECK (btrim(index_profile) <> ''),
+    state varchar(16) NOT NULL DEFAULT 'pending'
+        CHECK (state IN ('pending', 'processing', 'retry', 'succeeded', 'dead_letter')),
+    attempt_count integer NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    available_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    lease_owner varchar(128),
+    lease_token uuid,
+    lease_expires_at timestamptz,
+    last_grpc_code varchar(32) NOT NULL DEFAULT '',
+    last_error text NOT NULL DEFAULT '',
+    last_attempt_at timestamptz,
+    delivered_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    CHECK ((event_kind IN ('sync_document', 'delete_version')) = (version_id IS NOT NULL)),
+    CHECK (event_kind <> 'sync_document' OR owner_space_id IS NOT NULL),
+    CHECK (source = 'rebuild' OR source_run_id IS NULL),
+    CHECK (source <> 'rebuild' OR source_run_id IS NOT NULL),
+    CHECK ((state = 'processing') = (lease_owner IS NOT NULL AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)),
+    CHECK ((state = 'succeeded') = (delivered_at IS NOT NULL))
+);
+CREATE INDEX idx_document_index_delivery_claim
+    ON document_index_delivery_events(state, available_at, aggregate_revision, created_at);
+CREATE INDEX idx_document_index_delivery_document_order
+    ON document_index_delivery_events(document_id, aggregate_revision, created_at, event_id);
+CREATE INDEX idx_document_index_delivery_expired_lease
+    ON document_index_delivery_events(lease_expires_at)
+    WHERE state = 'processing';
+CREATE INDEX idx_document_index_delivery_failures
+    ON document_index_delivery_events(updated_at DESC)
+    WHERE state IN ('retry', 'dead_letter');
+
+CREATE TABLE document_search_shadow_observations (
+    observation_id uuid PRIMARY KEY,
+    source varchar(16) NOT NULL CHECK (source IN ('runtime', 'evaluation')),
+    owner_id bigint NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    query_sha256 char(64) NOT NULL CHECK (query_sha256 ~ '^[0-9a-f]{64}$'),
+    query_rune_count integer NOT NULL CHECK (query_rune_count > 0 AND query_rune_count <= 100),
+    page integer NOT NULL CHECK (page > 0),
+    page_size integer NOT NULL CHECK (page_size > 0 AND page_size <= 100),
+    requested_top_k integer NOT NULL CHECK (requested_top_k > 0 AND requested_top_k <= 100),
+    bm25_total bigint NOT NULL CHECK (bm25_total >= 0),
+    bm25_latency_micros bigint NOT NULL CHECK (bm25_latency_micros >= 0),
+    shadow_latency_micros bigint NOT NULL CHECK (shadow_latency_micros >= 0),
+    status varchar(16) NOT NULL CHECK (status IN ('succeeded', 'timed_out', 'failed')),
+    grpc_code varchar(32) NOT NULL DEFAULT '',
+    error_message text NOT NULL DEFAULT '',
+    truncated boolean NOT NULL DEFAULT false,
+    bm25_document_ids jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(bm25_document_ids) = 'array'),
+    shadow_document_ids jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(shadow_document_ids) = 'array'),
+    comparable_shadow_document_ids jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(comparable_shadow_document_ids) = 'array'),
+    only_bm25_document_ids jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(only_bm25_document_ids) = 'array'),
+    only_shadow_document_ids jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(only_shadow_document_ids) = 'array'),
+    overlap_count integer NOT NULL DEFAULT 0 CHECK (overlap_count >= 0),
+    permission_violation_count integer NOT NULL DEFAULT 0 CHECK (permission_violation_count >= 0),
+    lifecycle_violation_count integer NOT NULL DEFAULT 0 CHECK (lifecycle_violation_count >= 0),
+    active_version_violation_count integer NOT NULL DEFAULT 0 CHECK (active_version_violation_count >= 0),
+    formal_scope_mismatch_count integer NOT NULL DEFAULT 0 CHECK (formal_scope_mismatch_count >= 0),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX idx_document_search_shadow_observations_created
+    ON document_search_shadow_observations(created_at DESC);
+CREATE INDEX idx_document_search_shadow_observations_status
+    ON document_search_shadow_observations(status, created_at DESC);
+
 CREATE OR REPLACE FUNCTION validate_space_membership() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE checked_space_id uuid; current_space knowledge_spaces%ROWTYPE;
 BEGIN

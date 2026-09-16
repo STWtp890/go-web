@@ -17,11 +17,13 @@ import (
 // - TLSConfig: TLS 配置
 // - CustomConfig: 自定义配置
 type Config struct {
-	ServerConfig   must.ServerConfig   `yaml:"server"`
-	LogConfig      must.LogConfig      `yaml:"log"`
-	PostgresConfig must.PostgresConfig `yaml:"postgres"`
-	RedisConfig    must.RedisConfig    `yaml:"redis"`
-	TLSConfig      must.TLSConfig      `yaml:"tls"`
+	ServerConfig        must.ServerConfig        `yaml:"server"`
+	LogConfig           must.LogConfig           `yaml:"log"`
+	PostgresConfig      must.PostgresConfig      `yaml:"postgres"`
+	RedisConfig         must.RedisConfig         `yaml:"redis"`
+	IndexDeliveryConfig must.IndexDeliveryConfig `yaml:"document_index_delivery"`
+	ShadowSearchConfig  must.ShadowSearchConfig  `yaml:"document_search_shadow"`
+	TLSConfig           must.TLSConfig           `yaml:"tls"`
 
 	CustomConfig custom.CustomConfig `yaml:"custom"`
 }
@@ -84,6 +86,12 @@ func ConfigCheck(c *Config) error {
 		return err
 	}
 	if err := c.RedisConfig.ConfigCheck(); err != nil {
+		return err
+	}
+	if err := c.IndexDeliveryConfig.ConfigCheck(); err != nil {
+		return err
+	}
+	if err := c.ShadowSearchConfig.ConfigCheck(); err != nil {
 		return err
 	}
 	if err := c.CustomConfig.ConfigCheck(); err != nil {

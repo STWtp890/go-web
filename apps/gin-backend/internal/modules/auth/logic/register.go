@@ -3,6 +3,7 @@ package logic
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"gin-backend/internal/common/base/connection"
 	postgresqlconn "gin-backend/internal/common/base/connection/postgresql"
@@ -33,8 +34,14 @@ func RegisterLogic(ctx context.Context, req *requests.RegisterRequest) (*authmod
 		return nil, err
 	}
 
-	// 4. 失效缓存 (Cache-Aside 一致性: 写库后缓存失效, 下次读取回源; 尽力而为)
-	_ = store.User.Evict(ctx, user.ID, user.Email)
+	// 4. 新建记录通常没有旧缓存；删除同 revision 键只用于并发预热场景的回收。
+	if err := store.User.Evict(ctx, user.ID, user.CacheRevision); err != nil {
+		slog.ErrorContext(ctx, "回收用户实体缓存失败",
+			slog.Uint64("user_id", uint64(user.ID)),
+			slog.Int64("cache_revision", user.CacheRevision),
+			slog.String("error", err.Error()),
+		)
+	}
 
 	return user, nil
 }

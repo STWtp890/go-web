@@ -446,3 +446,12 @@ func newTestClient(t *testing.T) mixinsearchv1.RAGServiceClient {
 	})
 	return mixinsearchv1.NewRAGServiceClient(connection)
 }
+
+func TestMapServiceErrorControlStoreFailures(t *testing.T) {
+	if got := status.Code(mapServiceError(rag.ErrControlStoreConflict)); got != codes.Aborted {
+		t.Fatalf("control conflict status = %s, want %s", got, codes.Aborted)
+	}
+	if got := status.Code(mapServiceError(rag.ErrControlStoreUnavailable)); got != codes.Unavailable {
+		t.Fatalf("control unavailable status = %s, want %s", got, codes.Unavailable)
+	}
+}

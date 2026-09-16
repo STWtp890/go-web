@@ -26,4 +26,4 @@ VITE_API_BASE_URL=https://api.example.com npm run build
 - `npm run build`：类型检查后生成生产构建。
 - `npm run preview`：本地预览生产构建。
 
-完整架构和接口覆盖说明见 [FRONTEND_SOLUTION.md](./FRONTEND_SOLUTION.md)。
+完整项目边界、实施状态和验证入口见 [项目文档索引](../../docs/README.md)。

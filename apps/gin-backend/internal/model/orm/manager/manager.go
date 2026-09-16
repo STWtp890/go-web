@@ -31,11 +31,12 @@ const (
 // - Password: bcrypt 哈希
 // - Status: active / disabled
 type Manager struct {
-	ID       uint   `json:"id" gorm:"primaryKey;autoIncrement"`
-	Username string `json:"username" gorm:"size:64;uniqueIndex;not null"`
-	Password string `json:"-" gorm:"size:128;not null"`
-	Email    string `json:"email" gorm:"size:128;default:''"`
-	Status   string `json:"status" gorm:"size:16;not null;default:'active'"`
+	ID            uint   `json:"id" gorm:"primaryKey;autoIncrement"`
+	Username      string `json:"username" gorm:"size:64;uniqueIndex;not null"`
+	Password      string `json:"-" gorm:"size:128;not null"`
+	Email         string `json:"email" gorm:"size:128;default:''"`
+	Status        string `json:"status" gorm:"size:16;not null;default:'active'"`
+	CacheRevision int64  `json:"cache_revision" gorm:"not null;default:1"`
 	orm.TimeFiled
 }
 

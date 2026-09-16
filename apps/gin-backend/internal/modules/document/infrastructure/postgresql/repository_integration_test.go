@@ -128,10 +128,20 @@ func TestRepositoryIntegration(t *testing.T) {
 	})
 
 	t.Run("rejects active version from another document", func(t *testing.T) {
+		t.Cleanup(func() {
+			if err := db.Exec("DELETE FROM documents WHERE document_id = ?", secondDocID).Error; err != nil {
+				t.Errorf("clean second document: %v", err)
+			}
+		})
 		if err := store.CreateDocument(ctx, &domain.Document{
 			DocumentID: secondDocID, OwnerID: ownerID, OwnerSpaceID: spaceID, LifecycleStatus: domain.LifecycleActive,
 		}); err != nil {
 			t.Fatalf("create second document: %v", err)
+		}
+		if err := store.PutAccessPolicy(ctx, &domain.AccessPolicy{
+			DocumentID: secondDocID, AuthenticatedPublic: false, AccessRevision: 0,
+		}); err != nil {
+			t.Fatalf("create second document access policy: %v", err)
 		}
 		err := store.InTransaction(ctx, func(tx domain.Repository) error {
 			return tx.SetActiveVersion(ctx, secondDocID, versionID, 1, 1)

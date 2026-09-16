@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 const sourceFiles = [
   '../src/router/index.ts',
   '../src/layouts/AppLayout.vue',
+  '../src/views/LandingView.vue',
   '../src/views/app/OverviewView.vue',
 ]
 
@@ -12,6 +13,8 @@ const forbiddenPatterns = [
   { pattern: /name:\s*['"]chat['"]/, description: 'Chat named route' },
   { pattern: /\/api\/v1\/protected\/chat(?:\/|['"`])/, description: 'Chat HTTP endpoint' },
   { pattern: /ChatView\.vue/, description: 'Chat view registration' },
+  { pattern: /MessageCircle|私信|群消息|群成员管理/, description: 'Chat capability promotion' },
+  { pattern: /所有服务运行正常/, description: 'readiness overstates shadow-service health' },
 ]
 
 const violations = []

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"gin-backend/internal/modules/document/domain"
@@ -33,13 +34,28 @@ type Page struct {
 type QueryService struct {
 	repository domain.QueryRepository
 	cache      domain.QueryCache
+	shadow     ShadowSearchScheduler
 }
 
-func NewQueryService(repository domain.QueryRepository, cache domain.QueryCache) (*QueryService, error) {
+type QueryOption func(*QueryService)
+
+func WithShadowSearchScheduler(shadow ShadowSearchScheduler) QueryOption {
+	return func(service *QueryService) {
+		service.shadow = shadow
+	}
+}
+
+func NewQueryService(repository domain.QueryRepository, cache domain.QueryCache, options ...QueryOption) (*QueryService, error) {
 	if repository == nil {
 		return nil, errors.New("document query: repository is nil")
 	}
-	return &QueryService{repository: repository, cache: cache}, nil
+	service := &QueryService{repository: repository, cache: cache}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+	return service, nil
 }
 
 func (service *QueryService) Get(ctx context.Context, viewerID int64, documentID string) (*domain.DocumentView, error) {
@@ -106,9 +122,20 @@ func (service *QueryService) SearchMine(ctx context.Context, ownerID int64, keyw
 		return nil, Page{}, "", fmt.Errorf("%w: keyword must contain 1 to %d characters", ErrQueryInvalidInput, maximumSearchKeyword)
 	}
 	page, pageSize = normalizePage(page, pageSize)
+	startedAt := time.Now()
 	items, total, err := service.repository.SearchOwnedDocuments(ctx, ownerID, keyword, (page-1)*pageSize, pageSize)
 	if err != nil {
 		return nil, Page{}, "", fmt.Errorf("search owned documents: %w", err)
+	}
+	if service.shadow != nil {
+		documentIDs := make([]string, 0, len(items))
+		for _, item := range items {
+			documentIDs = append(documentIDs, item.DocumentID)
+		}
+		service.shadow.Observe(ShadowSearchRequest{
+			Source: "runtime", OwnerID: ownerID, Query: keyword, Page: page, PageSize: pageSize,
+			BM25Total: total, BM25Latency: time.Since(startedAt), BM25DocumentIDs: documentIDs,
+		})
 	}
 	return items, Page{Number: page, Size: pageSize, Total: total}, keyword, nil
 }

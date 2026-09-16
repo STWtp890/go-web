@@ -30,6 +30,42 @@ type VectorStore interface {
 	Close() error
 }
 
+// VectorDocumentControl is the normalized control-plane projection attached to
+// every vector chunk. StorageID is the opaque key used by the core workflow;
+// the remaining fields are the public document contract used for filtering.
+type VectorDocumentControl struct {
+	StorageID           string
+	StorageDomain       string
+	DocumentID          string
+	VersionID           string
+	OwnerSpaceID        string
+	AuthenticatedPublic bool
+	GrantedSpaceIDs     []string
+	Active              bool
+	Tombstoned          bool
+	ActivationRevision  uint64
+	AccessRevision      uint64
+	LifecycleRevision   uint64
+	ContentSHA256       string
+}
+
+// VectorSearchFilter is the authorization context pushed into a capable
+// vector store. Empty allow-lists deliberately mean public documents only.
+type VectorSearchFilter struct {
+	StorageDomain      string
+	AllowedSpaceIDs    []string
+	AllowedDocumentIDs []string
+}
+
+// ControlledVectorStore is implemented by production candidates that can
+// materialize document controls and apply them before vector candidates are
+// selected. Other stores continue to use the contract-layer fallback filter.
+type ControlledVectorStore interface {
+	SyncDocumentControls(ctx context.Context, controls []VectorDocumentControl) error
+	DenseSearchFiltered(ctx context.Context, query []float64, limit int, filter VectorSearchFilter) ([]ScoredChunk, error)
+	SparseSearchFiltered(ctx context.Context, queryTokens []string, limit int, filter VectorSearchFilter) ([]ScoredChunk, error)
+}
+
 // MemoryStore replaces Qdrant in this runnable example.
 type MemoryStore struct {
 	mu     sync.RWMutex

@@ -61,3 +61,42 @@ func TestGRPCServerReportsHealth(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenControlStoreMemory(t *testing.T) {
+	store, closeStore, err := openControlStore(context.Background(), " memory ", "", "", false)
+	if err != nil {
+		t.Fatalf("open memory control store: %v", err)
+	}
+	if store == nil {
+		t.Fatal("memory control store is nil")
+	}
+	closeStore()
+}
+
+func TestOpenControlStoreRejectsUnknownBackend(t *testing.T) {
+	store, closeStore, err := openControlStore(context.Background(), "unknown", "", "", false)
+	if err == nil {
+		closeStore()
+		t.Fatalf("open unknown control store = %T, want error", store)
+	}
+}
+
+func TestControlDefaultsUseEnvironment(t *testing.T) {
+	t.Setenv("CONTROL_STORE", "memory")
+	t.Setenv("CONTROL_DATABASE_DSN", "postgres://control.example/control")
+	t.Setenv("CONTROL_STORE_NAMESPACE", "test-namespace")
+	t.Setenv("CONTROL_STORE_BOOTSTRAP", "true")
+
+	if got := defaultControlStore(); got != "memory" {
+		t.Fatalf("default control store = %q, want memory", got)
+	}
+	if got := defaultControlDSN(); got != "postgres://control.example/control" {
+		t.Fatalf("default control DSN = %q", got)
+	}
+	if got := defaultControlNamespace(); got != "test-namespace" {
+		t.Fatalf("default control namespace = %q", got)
+	}
+	if !defaultControlBootstrap() {
+		t.Fatal("default control bootstrap = false, want true")
+	}
+}

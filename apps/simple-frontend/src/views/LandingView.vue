@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { ArrowRight, BookOpenText, Feather, MessageCircle, ShieldCheck, Sparkles } from '@lucide/vue'
+import { ArrowRight, BookOpenText, Feather, Search, ShieldCheck, Sparkles } from '@lucide/vue'
 import AppLogo from '@/components/AppLogo.vue'
 import { healthApi } from '@/api/health'
 
@@ -42,7 +42,7 @@ onMounted(async () => {
           </div>
           <div class="service-indicator" :class="`service-indicator--${serviceStatus}`">
             <span />
-            {{ serviceStatus === 'checking' ? '正在检查服务' : serviceStatus === 'ready' ? '所有服务运行正常' : '后端服务暂未就绪' }}
+            {{ serviceStatus === 'checking' ? '正在检查正式文档服务' : serviceStatus === 'ready' ? '正式文档服务运行正常' : '正式文档服务暂未就绪' }}
           </div>
         </div>
 
@@ -69,7 +69,7 @@ onMounted(async () => {
         <div class="feature-grid">
           <article><span><BookOpenText /></span><h3>沉浸创作</h3><p>Markdown 编辑与实时预览并排呈现，让格式退到文字之后。</p></article>
           <article><span><Sparkles /></span><h3>发现好文字</h3><p>在公开广场浏览社区内容，也可以随时让自己的文章保持私密。</p></article>
-          <article><span><MessageCircle /></span><h3>轻量交流</h3><p>支持私信、群消息和群成员管理，为未来实时连接预留完整体验。</p></article>
+          <article><span><Search /></span><h3>快速检索</h3><p>按标题与正文关键词检索公开或自己的文章，让积累的内容随时可找回。</p></article>
           <article><span><ShieldCheck /></span><h3>清晰权限</h3><p>普通用户与管理员身份完全隔离，审批过程可追踪且可复核。</p></article>
         </div>
       </section>

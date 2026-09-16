@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
+	basecache "gin-backend/internal/common/base/cache"
 	"gin-backend/internal/common/base/connection"
 	postgresqlconn "gin-backend/internal/common/base/connection/postgresql"
 	redisconn "gin-backend/internal/common/base/connection/redis"
@@ -12,12 +14,15 @@ import (
 	"gin-backend/internal/config"
 	"gin-backend/internal/modules/document/application"
 	documentcache "gin-backend/internal/modules/document/infrastructure/cache"
+	"gin-backend/internal/modules/document/infrastructure/mixinsearch"
 	documentpostgresql "gin-backend/internal/modules/document/infrastructure/postgresql"
 	documenthttp "gin-backend/internal/modules/document/interfaces/http"
 )
 
 type runtimeDependencies struct {
-	documentHTTP *documenthttp.Handler
+	documentHTTP       *documenthttp.Handler
+	shadowSearch       *application.ShadowSearchObserver
+	shadowSearchClient *mixinsearch.Client
 }
 
 // ready 校验当前已接入的数据库与 Redis 基础设施均可用。
@@ -110,8 +115,35 @@ func initDependencies(conf *config.Config) (*runtimeDependencies, func()) {
 	if err != nil {
 		panic(fmt.Sprintf("初始化文档写服务失败: %v", err))
 	}
-	documentQueries, err := application.NewQueryService(documentRepository, documentcache.New(0))
+	var (
+		shadowSearch       *application.ShadowSearchObserver
+		shadowSearchClient *mixinsearch.Client
+		queryOptions       []application.QueryOption
+	)
+	if conf.ShadowSearchConfig.Enabled {
+		shadowSearchClient, err = mixinsearch.New(conf.ShadowSearchConfig.GRPCAddress, conf.IndexDeliveryConfig.MaxSendBytes)
+		if err != nil {
+			panic(fmt.Sprintf("初始化文档影子查询客户端失败: %v", err))
+		}
+		shadowSearch, err = application.NewShadowSearchObserver(documentRepository, shadowSearchClient, application.ShadowSearchObserverConfig{
+			QueueSize: conf.ShadowSearchConfig.QueueSize, Concurrency: conf.ShadowSearchConfig.Concurrency,
+			Timeout: conf.ShadowSearchConfig.Timeout, RecordTimeout: conf.ShadowSearchConfig.RecordTimeout,
+			TopK: conf.ShadowSearchConfig.TopK,
+		})
+		if err != nil {
+			_ = shadowSearchClient.Close()
+			panic(fmt.Sprintf("初始化文档影子查询观察器失败: %v", err))
+		}
+		queryOptions = append(queryOptions, application.WithShadowSearchScheduler(shadowSearch))
+	}
+	documentQueries, err := application.NewQueryService(documentRepository, documentcache.New(0), queryOptions...)
 	if err != nil {
+		if shadowSearch != nil {
+			shadowSearch.Close()
+		}
+		if shadowSearchClient != nil {
+			_ = shadowSearchClient.Close()
+		}
 		panic(fmt.Sprintf("初始化文档查询服务失败: %v", err))
 	}
 	documentHandler, err := documenthttp.New(documentCommands, documentQueries)
@@ -121,8 +153,20 @@ func initDependencies(conf *config.Config) (*runtimeDependencies, func()) {
 
 	// 数据库结构由 PostgreSQL 空卷初始化脚本建立，不在服务启动时迁移。
 	// Chat 包使用独立 ServiceChat 名称，但当前不注册连接或路由。
-	dependencies := &runtimeDependencies{documentHTTP: documentHandler}
+	dependencies := &runtimeDependencies{
+		documentHTTP: documentHandler, shadowSearch: shadowSearch, shadowSearchClient: shadowSearchClient,
+	}
+	stopCacheStats := basecache.DefaultRuntime().StartStatsLogger(time.Minute)
 	return dependencies, func() {
+		stopCacheStats()
+		if dependencies.shadowSearch != nil {
+			dependencies.shadowSearch.Close()
+		}
+		if dependencies.shadowSearchClient != nil {
+			if err := dependencies.shadowSearchClient.Close(); err != nil {
+				slog.Error("关闭文档影子查询连接失败", slog.String("error", err.Error()))
+			}
+		}
 		sessionevent.SetDefaultBus(nil)
 		if err := postgresqlconn.PostgreSQLManager.Unregister(connection.ServiceDocument); err != nil {
 			slog.Error("关闭文档 PostgreSQL 连接失败", slog.String("error", err.Error()))
