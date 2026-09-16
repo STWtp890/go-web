@@ -35,6 +35,26 @@ function Assert-JWTKeysPresent {
     }
 }
 
+function Invoke-NativeCommand {
+    param(
+        [Parameter(Mandatory)][scriptblock]$Command
+    )
+
+    # Native tools write progress to stderr, which is normal. Windows PowerShell 5.1 turns
+    # those lines into NativeCommandError records once the script's own output is redirected
+    # (for example `*> file` when CI collects logs), and with $ErrorActionPreference='Stop'
+    # that terminates the run. Redirecting stderr inside the script (2>&1) does NOT help.
+    # Relax the preference here and let callers judge success via $LASTEXITCODE.
+    $previousErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Command
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+}
+
 function Invoke-CheckedCommand {
     param(
         [Parameter(Mandatory)][string]$Label,
@@ -42,15 +62,17 @@ function Invoke-CheckedCommand {
     )
 
     Write-Host "`n==> $Label"
-    & $Command
+    Invoke-NativeCommand $Command
     if ($LASTEXITCODE -ne 0) {
         throw "$Label failed with exit code $LASTEXITCODE"
     }
 }
 
 function Get-IndexDeliveryStatus {
-    $raw = & docker @composePrefix exec -T document-index-worker `
-        /app/document-index-admin -config /app/configs/config.yaml status -timeout 2s
+    $raw = Invoke-NativeCommand {
+        docker @composePrefix exec -T document-index-worker `
+            /app/document-index-admin -config /app/configs/config.yaml status -timeout 2s
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "Read document index delivery status failed with exit code $LASTEXITCODE"
     }
@@ -82,12 +104,16 @@ function Wait-IndexDeliverySettled {
 function Get-ShadowSearchStatus {
     param([string]$Source = '')
     if ($Source) {
-        $raw = & docker @composePrefix exec -T document-index-worker `
-            /app/document-index-admin -config /app/configs/config.yaml shadow-status -source $Source
+        $raw = Invoke-NativeCommand {
+            docker @composePrefix exec -T document-index-worker `
+                /app/document-index-admin -config /app/configs/config.yaml shadow-status -source $Source
+        }
     }
     else {
-        $raw = & docker @composePrefix exec -T document-index-worker `
-            /app/document-index-admin -config /app/configs/config.yaml shadow-status
+        $raw = Invoke-NativeCommand {
+            docker @composePrefix exec -T document-index-worker `
+                /app/document-index-admin -config /app/configs/config.yaml shadow-status
+        }
     }
     if ($LASTEXITCODE -ne 0) {
         throw "Read document shadow search status failed with exit code $LASTEXITCODE"
@@ -301,7 +327,7 @@ finally {
     $env:GOCACHE = $previousGoCache
     $env:DOCUMENT_REPOSITORY_TEST_DSN = $previousDocumentDSN
     if (-not $KeepEnvironment -and $started) {
-        & docker @composePrefix down --volumes --remove-orphans
+        Invoke-NativeCommand { docker @composePrefix down --volumes --remove-orphans }
     }
     Pop-Location
 }
