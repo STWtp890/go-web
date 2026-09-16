@@ -133,6 +133,11 @@ P3.1 已完成，调用边界契约见 [SERVICE_CALL_CAPABILITY.md](../contracts
 
 尚未建立的部分记录在契约第 8 节：`py-agent` 的 capability 签发入口属于 P3.4/P3.6，传输加密与按用户配额属于后续在线暴露前的加固项。
 
+收口补丁（P3.1a）在复核后进一步收紧两处边界：
+
+- `Verifier` 必须显式配置**可信签发方**并与 audience 一起做等值校验，空 issuer 或非 `go-web` issuer 的已签名 token 一律拒绝（`ErrWrongIssuer`）；服务入口新增 `-capability-issuer`（默认 `go-web`），根 Compose 显式传入；
+- 限流调用方状态表改为**硬上限**（1024 个桶）：满表时先回收空闲桶，仍然满则拒绝新调用方而不是继续扩容；已有调用方的剩余预算不受影响；审计记录区分“调用方超出自身预算”与“调用方表已满”，两者共用 `RESOURCE_EXHAUSTED` 但 `detail` 不同。
+
 ## 6. P3.2：在线检索并发模型
 
 ### 目标

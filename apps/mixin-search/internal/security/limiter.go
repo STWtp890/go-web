@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// maxLimiterBuckets bounds per-caller state. A caller that stops calling is
-// forgotten after idleTimeout so an attacker cannot grow the map without bound.
+// maxLimiterBuckets is a hard bound on per-caller state. Idle callers are
+// forgotten first; when every bucket is active, a new caller is rejected.
 const (
 	maxLimiterBuckets = 1024
 	idleTimeout       = 10 * time.Minute
@@ -46,6 +46,19 @@ func NewRateLimiter(perSecond float64, burst int) *RateLimiter {
 	}
 }
 
+// Decision is the outcome of one throttling check.
+type Decision int
+
+const (
+	// DecisionAllowed means the caller may proceed.
+	DecisionAllowed Decision = iota
+	// DecisionOverBudget means the caller spent its own request budget.
+	DecisionOverBudget
+	// DecisionCallerTableFull means the caller table is at its hard limit and no
+	// idle caller could be reclaimed, so an unseen caller cannot be tracked yet.
+	DecisionCallerTableFull
+)
+
 // Enabled reports whether throttling is active. It is nil-safe.
 func (limiter *RateLimiter) Enabled() bool {
 	return limiter != nil
@@ -54,24 +67,34 @@ func (limiter *RateLimiter) Enabled() bool {
 // Allow consumes one token for key and reports whether the call may proceed.
 // It is nil-safe and never blocks.
 func (limiter *RateLimiter) Allow(key string) bool {
+	return limiter.Decide(key) == DecisionAllowed
+}
+
+// Decide consumes one token for key and reports why the call may proceed or not.
+// The two rejection reasons are kept apart so the audit record states what
+// actually happened: a caller that spent its budget is not the same event as a
+// service that cannot track one more caller.
+func (limiter *RateLimiter) Decide(key string) Decision {
 	if limiter == nil {
-		return true
+		return DecisionAllowed
 	}
 	now := limiter.now()
 
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
 
-	if len(limiter.buckets) > maxLimiterBuckets {
-		for existing, bucket := range limiter.buckets {
-			if now.Sub(bucket.last) > idleTimeout {
-				delete(limiter.buckets, existing)
-			}
-		}
-	}
-
 	bucket, ok := limiter.buckets[key]
 	if !ok {
+		if len(limiter.buckets) >= maxLimiterBuckets {
+			for existing, existingBucket := range limiter.buckets {
+				if now.Sub(existingBucket.last) > idleTimeout {
+					delete(limiter.buckets, existing)
+				}
+			}
+		}
+		if len(limiter.buckets) >= maxLimiterBuckets {
+			return DecisionCallerTableFull
+		}
 		bucket = &tokenBucket{tokens: limiter.burst, last: now}
 		limiter.buckets[key] = bucket
 	}
@@ -81,8 +104,8 @@ func (limiter *RateLimiter) Allow(key string) bool {
 	}
 	bucket.last = now
 	if bucket.tokens < 1 {
-		return false
+		return DecisionOverBudget
 	}
 	bucket.tokens--
-	return true
+	return DecisionAllowed
 }

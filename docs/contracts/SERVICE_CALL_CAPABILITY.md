@@ -48,7 +48,7 @@ base64url(payload_json) "." base64url(HMAC-SHA256(key, base64url(payload_json)))
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `version` | int | 固定为 `1` |
-| `issuer` | string | 签发方标识，例如 `go-web` |
+| `issuer` | string | 签发方标识，必须等于服务端配置的可信签发方（当前为 `go-web`） |
 | `subject` | string | 调用方标识，例如 `go-web-index-worker` |
 | `audience` | string | 被调服务标识，必须是 `mixin-search` |
 | `role` | string | `index-writer`、`searcher` 或 `ops` |
@@ -75,17 +75,18 @@ base64url(payload_json) "." base64url(HMAC-SHA256(key, base64url(payload_json)))
 1. 存在且仅存在一个 `authorization` 值，并使用 `Bearer` 方案；
 2. 签名与边界密钥匹配（常量时间比较）；
 3. payload 可解析、无未知字段、`version` 受支持、必填声明非空、`expires_at > issued_at`；
-4. `audience` 等于本服务标识；
-5. 当前时间不超过 `expires_at`（允许 30 秒时钟偏差），且 `issued_at` 不晚于当前时间加同一偏差；
-6. 调用方角色在该方法的策略中；
-7. 调用方未超出其请求预算；
-8. `SearchDocuments` 的 `allowed_space_ids` 与 `allowed_document_ids` **全部**包含在已授予范围内。
+4. `issuer` 等于服务端配置的可信签发方；
+5. `audience` 等于本服务标识；
+6. 当前时间不超过 `expires_at`（允许 30 秒时钟偏差），且 `issued_at` 不晚于当前时间加同一偏差；
+7. 调用方角色在该方法的策略中；
+8. 调用方未超出其请求预算；
+9. `SearchDocuments` 的 `allowed_space_ids` 与 `allowed_document_ids` **全部**包含在已授予范围内。
 
 失败时返回：
 
 | 场景 | gRPC 状态 |
 | --- | --- |
-| 缺少、格式错误、签名无效、已过期、audience 不符 | `UNAUTHENTICATED` |
+| 缺少、格式错误、签名无效、已过期、issuer/audience 不符 | `UNAUTHENTICATED` |
 | 角色不允许该方法 | `PERMISSION_DENIED` |
 | 请求范围超出已授予范围 | `PERMISSION_DENIED` |
 | 超出该调用方的请求预算 | `RESOURCE_EXHAUSTED` |
@@ -114,7 +115,11 @@ base64url(payload_json) "." base64url(HMAC-SHA256(key, base64url(payload_json)))
 
 审计记录**不包含**查询文本或文档内容。
 
-限流是按调用方的令牌桶，默认 200 请求/秒、突发 400，可配置或关闭。生产环境中的服务健康检查（`grpc.health.v1.Health`）刻意不要求 capability，使容器探针无需持有密钥；它只暴露 SERVING 状态。
+限流是按调用方的令牌桶，默认 200 请求/秒、突发 400，可配置或关闭。调用方状态表有硬上限（1024 个桶）：达到上限时先回收超过 10 分钟未活动的桶，仍然满则**拒绝新调用方**，而不是继续扩容。已有调用方的剩余预算不受影响，因此该上限不会成为正常调用方的容量约束（当前调用方数量在个位数），只在滥用或异常扇出时把内存占用封顶。
+
+该硬上限与“超出请求预算”共用 `RESOURCE_EXHAUSTED` 状态码，但两者的审计 `detail` 不同，可据此区分。
+
+生产环境中的服务健康检查（`grpc.health.v1.Health`）刻意不要求 capability，使容器探针无需持有密钥；它只暴露 SERVING 状态。
 
 ## 7. 落地位置
 

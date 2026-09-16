@@ -1,6 +1,7 @@
 package security
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -84,7 +85,7 @@ func TestLimiterForgetsIdleCallers(t *testing.T) {
 	limiter.now = func() time.Time { return now }
 
 	for i := 0; i < maxLimiterBuckets+16; i++ {
-		limiter.Allow("caller-" + string(rune('a'+i%26)) + string(rune('a'+(i/26)%26)) + string(rune('a'+(i/676)%26)))
+		limiter.Allow(fmt.Sprintf("caller-%04d", i))
 	}
 	now = now.Add(idleTimeout + time.Minute)
 	limiter.Allow("fresh-caller")
@@ -94,6 +95,63 @@ func TestLimiterForgetsIdleCallers(t *testing.T) {
 	limiter.mu.Unlock()
 	if size > 2 {
 		t.Fatalf("limiter retained %d buckets after an idle sweep, want it bounded", size)
+	}
+}
+
+func TestLimiterRejectsNewCallerAtHardLimit(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_760_000_000, 0).UTC()
+	limiter := NewRateLimiter(10, 2)
+	limiter.now = func() time.Time { return now }
+
+	for i := 0; i < maxLimiterBuckets; i++ {
+		if !limiter.Allow(fmt.Sprintf("caller-%04d", i)) {
+			t.Fatalf("caller %d was rejected before the hard limit", i)
+		}
+	}
+	if limiter.Allow("overflow-caller") {
+		t.Fatal("new caller was allowed after the hard bucket limit")
+	}
+	if !limiter.Allow("caller-0000") {
+		t.Fatal("existing caller lost its remaining budget at the hard limit")
+	}
+
+	limiter.mu.Lock()
+	size := len(limiter.buckets)
+	limiter.mu.Unlock()
+	if size != maxLimiterBuckets {
+		t.Fatalf("limiter holds %d buckets, want hard limit %d", size, maxLimiterBuckets)
+	}
+}
+
+func TestDecideSeparatesTheTwoRejectionReasons(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_760_000_000, 0).UTC()
+	limiter := NewRateLimiter(10, 1)
+	limiter.now = func() time.Time { return now }
+
+	if decision := limiter.Decide("caller-a"); decision != DecisionAllowed {
+		t.Fatalf("first call decision = %v, want allowed", decision)
+	}
+	// The caller spent its own budget: a caller-attributable rejection.
+	if decision := limiter.Decide("caller-a"); decision != DecisionOverBudget {
+		t.Fatalf("second call decision = %v, want over budget", decision)
+	}
+
+	for i := 1; i < maxLimiterBuckets; i++ {
+		limiter.Decide(fmt.Sprintf("caller-%04d", i))
+	}
+	// The table is full and every bucket is active: a service-attributable
+	// rejection that must not be reported as the caller's own overuse.
+	if decision := limiter.Decide("overflow-caller"); decision != DecisionCallerTableFull {
+		t.Fatalf("unseen caller decision = %v, want caller table full", decision)
+	}
+
+	var disabled *RateLimiter
+	if decision := disabled.Decide("any"); decision != DecisionAllowed {
+		t.Fatalf("nil limiter decision = %v, want allowed", decision)
 	}
 }
 

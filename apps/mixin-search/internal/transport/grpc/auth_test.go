@@ -34,7 +34,7 @@ func (sink *capturedAudit) last() security.AuditRecord {
 
 func newTestAuthenticator(t *testing.T, options ...func(*AuthConfig)) (*Authenticator, *security.Issuer, *capturedAudit) {
 	t.Helper()
-	verifier, err := security.NewVerifier([]byte(testBoundaryKey), "mixin-search")
+	verifier, err := security.NewVerifier([]byte(testBoundaryKey), "go-web", "mixin-search")
 	if err != nil {
 		t.Fatalf("build verifier: %v", err)
 	}

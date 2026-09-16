@@ -3,6 +3,7 @@
 > **评估对象**：`apps/gin-backend` 与 `apps/mixin-search` 之间的服务边界
 > **评估依据**：`docs/ECOSYSTEM_EVOLUTION_GUIDE.md`、`docs/adr/001`、`docs/contracts/MIXIN_SEARCH_V1_CONTRACT.md`、`deployments/test-results/` 实测报告，以及全量代码测量与逐条代码核验
 > **文档性质**：**外部架构评估**，不属于 `docs/` 治理树
+> **当前定位**：**历史快照，不再更新**。本评估的结论已由 [ADR-012](./docs/adr/012-multi-consumer-search-boundary-and-critical-path-shift.md) 承接，实际进度与排期只在 [当前实施计划](./docs/planning/CURRENT_IMPLEMENTATION_PLAN.md) 维护。正文 §3 与 §6 描述的是评估时点（提交 `c1f0b3b`）的事实，其中 §6 的 P0-1（调用授权边界）已由 P3.1 落地、P0-3 的反射开关已可关闭，其余 P0/P1 项的当前状态以阶段 3 计划为准。
 >
 > **修订记录**
 > - v1：初版。将 py-agent 视为投机性消费者，误判边界为"过早投资"，并误判指南"写错了理由"。

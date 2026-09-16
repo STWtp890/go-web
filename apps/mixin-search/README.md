@@ -116,6 +116,7 @@ go run ./cmd/rag-server -store memory -control-bootstrap `
 | 命令行参数 | 环境变量 | 默认值 | 说明 |
 |---|---|---|---|
 | `-capability-key-file` | `MIXIN_SEARCH_CAPABILITY_KEY_FILE` | 空 | 边界密钥文件；缺失即拒绝启动 |
+| `-capability-issuer` | `MIXIN_SEARCH_CAPABILITY_ISSUER` | `go-web` | 唯一接受的 capability 签发方 |
 | `-capability-audience` | `MIXIN_SEARCH_CAPABILITY_AUDIENCE` | `mixin-search` | 接受的 capability audience |
 | `-caller-rate-per-second` | `MIXIN_SEARCH_CALLER_RATE_PER_SECOND` | `200` | 单调用方每秒请求预算；0 关闭限流 |
 | `-caller-burst` | `MIXIN_SEARCH_CALLER_BURST` | `400` | 单调用方突发预算；0 关闭限流 |

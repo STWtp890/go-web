@@ -129,11 +129,21 @@ func (a *Authenticator) UnaryInterceptor(
 		return nil, status.Errorf(codes.PermissionDenied, "role %q may not call %s", identity.Role, info.FullMethod)
 	}
 
-	if a.limiter != nil && !a.limiter.Allow(identity.CallerID) {
+	if decision := a.limiter.Decide(identity.CallerID); decision != security.DecisionAllowed {
 		record.Outcome = security.OutcomeThrottled
-		record.Detail = "caller exceeded its request budget"
+		switch decision {
+		case security.DecisionOverBudget:
+			record.Detail = "caller exceeded its request budget"
+		case security.DecisionCallerTableFull:
+			// Not the caller's fault: the service cannot track one more caller
+			// until an idle one is reclaimed. The audit record says so instead of
+			// blaming a caller that has spent nothing.
+			record.Detail = "caller table is at its hard limit and no idle caller could be reclaimed"
+		default:
+			record.Detail = "throttled"
+		}
 		a.record(record, startedAt)
-		return nil, status.Errorf(codes.ResourceExhausted, "caller %q exceeded its request budget", identity.CallerID)
+		return nil, status.Errorf(codes.ResourceExhausted, "caller %q was not admitted: %s", identity.CallerID, record.Detail)
 	}
 
 	if info.FullMethod == mixinsearchv1.RAGService_SearchDocuments_FullMethodName {

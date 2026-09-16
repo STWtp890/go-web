@@ -43,6 +43,11 @@ func main() {
 		"file holding the shared boundary key for caller capabilities (required)",
 	)
 	capabilityKey := flag.String("capability-key", "", "boundary key inline; prefer -capability-key-file outside tests")
+	capabilityIssuer := flag.String(
+		"capability-issuer",
+		envOrDefault("MIXIN_SEARCH_CAPABILITY_ISSUER", "go-web"),
+		"accepted capability issuer",
+	)
 	capabilityAudience := flag.String(
 		"capability-audience",
 		envOrDefault("MIXIN_SEARCH_CAPABILITY_AUDIENCE", "mixin-search"),
@@ -73,7 +78,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("load capability boundary key: %v", err)
 	}
-	verifier, err := security.NewVerifier(boundaryKey, *capabilityAudience)
+	verifier, err := security.NewVerifier(boundaryKey, *capabilityIssuer, *capabilityAudience)
 	if err != nil {
 		log.Fatalf("build capability verifier: %v", err)
 	}
@@ -128,10 +133,11 @@ func main() {
 	server := newGRPCServer(*maxReceiveBytes, handler, authenticator, *enableReflection)
 
 	log.Printf(
-		"RAG gRPC server listening on %s (store=%s control_store=%s audience=%s throttling=%t reflection=%t)",
+		"RAG gRPC server listening on %s (store=%s control_store=%s issuer=%s audience=%s throttling=%t reflection=%t)",
 		listener.Addr(),
 		strings.ToLower(*backend),
 		strings.ToLower(*controlBackend),
+		*capabilityIssuer,
 		*capabilityAudience,
 		limiter.Enabled(),
 		*enableReflection,

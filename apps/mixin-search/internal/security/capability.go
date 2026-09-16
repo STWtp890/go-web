@@ -56,6 +56,8 @@ var (
 	ErrInvalidSignature = errors.New("capability token signature is invalid")
 	// ErrExpiredToken reports a token outside its validity window.
 	ErrExpiredToken = errors.New("capability token is expired")
+	// ErrWrongIssuer reports a token minted by an issuer this service does not trust.
+	ErrWrongIssuer = errors.New("capability token issuer does not match")
 	// ErrWrongAudience reports a token minted for a different service.
 	ErrWrongAudience = errors.New("capability token audience does not match")
 	// ErrUnknownRole reports a role this service does not define.
@@ -136,6 +138,9 @@ func (claims Claims) validate() error {
 	if claims.Version != TokenVersion {
 		return fmt.Errorf("%w: %d", ErrUnsupportedVersion, claims.Version)
 	}
+	if strings.TrimSpace(claims.Issuer) == "" {
+		return fmt.Errorf("%w: issuer is required", ErrMalformedToken)
+	}
 	if strings.TrimSpace(claims.Subject) == "" {
 		return fmt.Errorf("%w: subject is required", ErrMalformedToken)
 	}
@@ -199,15 +204,19 @@ func newClocks(options ...VerifierOption) clocks {
 // Verifier checks tokens minted for one audience.
 type Verifier struct {
 	key      []byte
+	issuer   string
 	audience string
 	leeway   time.Duration
 	now      func() time.Time
 }
 
-// NewVerifier builds a verifier for the given audience.
-func NewVerifier(key []byte, audience string, options ...VerifierOption) (*Verifier, error) {
+// NewVerifier builds a verifier for one trusted issuer and audience.
+func NewVerifier(key []byte, issuer, audience string, options ...VerifierOption) (*Verifier, error) {
 	if err := validateKey(key); err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(issuer) == "" {
+		return nil, fmt.Errorf("%w: issuer is required", ErrMalformedToken)
 	}
 	if strings.TrimSpace(audience) == "" {
 		return nil, fmt.Errorf("%w: audience is required", ErrMalformedToken)
@@ -215,6 +224,7 @@ func NewVerifier(key []byte, audience string, options ...VerifierOption) (*Verif
 	shared := newClocks(options...)
 	return &Verifier{
 		key:      append([]byte{}, key...),
+		issuer:   strings.TrimSpace(issuer),
 		audience: strings.TrimSpace(audience),
 		leeway:   shared.leeway,
 		now:      shared.now,
@@ -266,6 +276,9 @@ func (verifier *Verifier) verifyClaims(token string) (Claims, error) {
 	}
 	if err := claims.validate(); err != nil {
 		return Claims{}, err
+	}
+	if claims.Issuer != verifier.issuer {
+		return Claims{}, fmt.Errorf("%w: token was minted by %q", ErrWrongIssuer, claims.Issuer)
 	}
 	if claims.Audience != verifier.audience {
 		return Claims{}, fmt.Errorf("%w: token was minted for %q", ErrWrongAudience, claims.Audience)

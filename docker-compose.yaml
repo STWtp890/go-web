@@ -89,6 +89,7 @@ services:
       - -control-bootstrap=true
       # 调用方身份：缺少 capability 的调用被拒绝，因此密钥必须挂载。
       - -capability-key-file=/app/secrets/mixin_search_capability.key
+      - -capability-issuer=go-web
       # reflection 让任何能连上端口者枚举全部 API，只在本地调试时开启。
       - -enable-reflection=false
     ports:

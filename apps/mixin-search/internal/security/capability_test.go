@@ -19,7 +19,7 @@ func fixedClock() time.Time {
 
 func testVerifier(t *testing.T) *Verifier {
 	t.Helper()
-	verifier, err := NewVerifier([]byte(testKey), testAudience, WithClock(fixedClock))
+	verifier, err := NewVerifier([]byte(testKey), "go-web", testAudience, WithClock(fixedClock))
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
@@ -160,6 +160,22 @@ func TestVerifyRejectsForeignSignature(t *testing.T) {
 	}
 }
 
+func TestVerifyRejectsWrongIssuer(t *testing.T) {
+	t.Parallel()
+
+	otherIssuer, err := NewIssuer([]byte(testKey), "other-service", testAudience, time.Minute, WithClock(fixedClock))
+	if err != nil {
+		t.Fatalf("NewIssuer: %v", err)
+	}
+	token, err := otherIssuer.Issue("other-caller", RoleSearcher, "", nil, nil)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if _, err := testVerifier(t).Verify(token); !errors.Is(err, ErrWrongIssuer) {
+		t.Fatalf("Verify(token from another issuer) error = %v, want ErrWrongIssuer", err)
+	}
+}
+
 func TestVerifyRejectsExpiredToken(t *testing.T) {
 	t.Parallel()
 
@@ -168,7 +184,7 @@ func TestVerifyRejectsExpiredToken(t *testing.T) {
 		t.Fatalf("Issue: %v", err)
 	}
 	// The issuer clock is fixed; verifying well past expiry plus leeway must fail.
-	late, err := NewVerifier([]byte(testKey), testAudience, WithClock(func() time.Time {
+	late, err := NewVerifier([]byte(testKey), "go-web", testAudience, WithClock(func() time.Time {
 		return fixedClock().Add(2 * time.Minute)
 	}))
 	if err != nil {
@@ -186,7 +202,7 @@ func TestVerifyRejectsFutureToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	early, err := NewVerifier([]byte(testKey), testAudience, WithClock(func() time.Time {
+	early, err := NewVerifier([]byte(testKey), "go-web", testAudience, WithClock(func() time.Time {
 		return fixedClock().Add(-10 * time.Minute)
 	}), WithLeeway(0))
 	if err != nil {
@@ -204,7 +220,7 @@ func TestVerifyRejectsWrongAudience(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	other, err := NewVerifier([]byte(testKey), "py-agent", WithClock(fixedClock))
+	other, err := NewVerifier([]byte(testKey), "go-web", "py-agent", WithClock(fixedClock))
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
@@ -226,6 +242,7 @@ func TestClaimsValidation(t *testing.T) {
 		want   error
 	}{
 		{name: "unknown version", mutate: func(c *Claims) { c.Version = 2 }, want: ErrUnsupportedVersion},
+		{name: "missing issuer", mutate: func(c *Claims) { c.Issuer = " " }, want: ErrMalformedToken},
 		{name: "missing subject", mutate: func(c *Claims) { c.Subject = " " }, want: ErrMalformedToken},
 		{name: "missing audience", mutate: func(c *Claims) { c.Audience = "" }, want: ErrMalformedToken},
 		{name: "unknown role", mutate: func(c *Claims) { c.Role = "root" }, want: ErrUnknownRole},
@@ -254,7 +271,7 @@ func TestSignRejectsShortKey(t *testing.T) {
 	if _, err := Sign(claims, []byte("short")); !errors.Is(err, ErrInvalidKey) {
 		t.Fatalf("Sign with a short key error = %v, want ErrInvalidKey", err)
 	}
-	if _, err := NewVerifier([]byte("short"), testAudience); !errors.Is(err, ErrInvalidKey) {
+	if _, err := NewVerifier([]byte("short"), "go-web", testAudience); !errors.Is(err, ErrInvalidKey) {
 		t.Fatalf("NewVerifier with a short key error = %v, want ErrInvalidKey", err)
 	}
 }

@@ -29,7 +29,7 @@ type testRAGService struct {
 func TestGRPCServerReportsHealth(t *testing.T) {
 	t.Parallel()
 
-	verifier, err := security.NewVerifier([]byte(testBoundaryKey), "mixin-search")
+	verifier, err := security.NewVerifier([]byte(testBoundaryKey), "go-web", "mixin-search")
 	if err != nil {
 		t.Fatalf("build verifier: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestGRPCServerReportsHealth(t *testing.T) {
 func TestProtectedRPCWithoutCapabilityIsRejected(t *testing.T) {
 	t.Parallel()
 
-	verifier, err := security.NewVerifier([]byte(testBoundaryKey), "mixin-search")
+	verifier, err := security.NewVerifier([]byte(testBoundaryKey), "go-web", "mixin-search")
 	if err != nil {
 		t.Fatalf("build verifier: %v", err)
 	}

@@ -2,6 +2,7 @@
 
 > **依据**：[STRUCTURE_ASSESSMENT.md](./STRUCTURE_ASSESSMENT.md)（结构与复用评估）、[MIXIN_SEARCH_SPLIT_ASSESSMENT.md](./MIXIN_SEARCH_SPLIT_ASSESSMENT.md)（服务边界评估）、[docs/architecture/DEVELOPMENT_CONVENTIONS.md](./docs/architecture/DEVELOPMENT_CONVENTIONS.md)（现行约定）
 > **文档性质**：外部改造提案，不属于 `docs/` 治理树。项目可自行归档，或将其条目并入 `docs/planning/CURRENT_IMPLEMENTATION_PLAN.md`。
+> **当前定位**：**历史快照，不再是排期入口**。与检索边界相关的条目已由 [ADR-012](./docs/adr/012-multi-consumer-search-boundary-and-critical-path-shift.md) 与 [阶段 3 计划](./docs/planning/CURRENT_IMPLEMENTATION_PLAN.md) 取代：**W0-7（调用授权方案）已由 P3.1 落地**，W3-1（控制状态按文档行存储、去全局锁）对应 P3.2。其余与检索边界无关的清理条目仍按本文档自身范围评估，但实际执行顺序以阶段 3 计划为准。
 > **当前基线**：C1–C12 已完成（身份契约、出入口统一、两个应用的架构测试、`cmd/tools` 归置）。其中 **C9 经历一次撤销后重建**：gin-backend 的架构约束由「规则表 + 70 文件精确清单冻结」改为**仅 8 条方向性 import 断言**，见 [`DEVELOPMENT_CONVENTIONS.md`](./docs/architecture/DEVELOPMENT_CONVENTIONS.md) §5。C13（chat/aiagent）已搁置。
 
 ---
