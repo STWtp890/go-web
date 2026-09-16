@@ -28,6 +28,14 @@
 docker compose -f docker-compose.yaml up -d --build --wait
 ```
 
+> 构建镜像时 Go 模块代理默认取 `proxy.golang.org`。若该地址不可达（例如国内网络），
+> 会出现 `go mod download` 校验模块失败。`docker-compose.yaml` 已把宿主机 `GOPROXY`
+> 作为 build arg 传入，因此先设置环境变量再启动即可：
+>
+> ```powershell
+> $env:GOPROXY = 'https://goproxy.cn,direct'
+> ```
+
 浏览器访问 `http://localhost:15173`。数据库结构仅在全新数据卷上由 `postgresql/entryscript/00-init.sh` 确定性创建；本仓库处于可丢弃数据的开发期，不维护已有数据库升级、迁移账本、备份恢复或旧 schema 兼容。结构改变后应删除开发卷并重新启动：
 
 ```bash
