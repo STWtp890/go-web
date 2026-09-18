@@ -213,6 +213,44 @@ try {
         }
     }
 
+    Push-Location 'apps/mixin-search'
+    try {
+        $mixinSearchPort = if ($env:MIXIN_SEARCH_GRPC_PORT) { $env:MIXIN_SEARCH_GRPC_PORT } else { '19090' }
+        $env:CHAT_CONTAINER_INTEGRATION = '1'
+        $env:CHAT_CONTAINER_ADDRESS = "127.0.0.1:$mixinSearchPort"
+        $env:CHAT_CONTAINER_CAPABILITY_KEY_FILE = Join-Path $repositoryRoot 'deployments/secrets/mixin_search_capability.key'
+        # P3.3: the chat corpus is a second, independent control plane. The
+        # in-process test proves the wiring; this one proves the two dependencies
+        # it cannot stand in for - the chat control table in PostgreSQL and the
+        # chat collection in Qdrant - by driving the deployed gRPC endpoint.
+        Invoke-CheckedCommand 'Run chat corpus container acceptance' {
+            go test ./cmd/rag-server -run TestChatCorpusAgainstADeployedStack -count=1 -v
+        }
+    }
+    finally {
+        Remove-Item Env:CHAT_CONTAINER_INTEGRATION -ErrorAction SilentlyContinue
+        Remove-Item Env:CHAT_CONTAINER_ADDRESS -ErrorAction SilentlyContinue
+        Remove-Item Env:CHAT_CONTAINER_CAPABILITY_KEY_FILE -ErrorAction SilentlyContinue
+        Pop-Location
+    }
+
+    # ADR-014: the two corpora keep separate persistence state. The chat corpus
+    # must own its own table and namespace, and no chat namespace may appear in
+    # the document table.
+    Invoke-CheckedCommand 'Verify the corpora keep separate control namespaces' {
+        $chatNamespaces = (docker @composePrefix exec -T control-postgres psql -X -A -t -U mixin_control -d mixin_control `
+            -c 'select namespace from mixin_search_control.chat_control_states order by namespace') -join ','
+        if ($chatNamespaces -notmatch 'chat-v1') {
+            throw "the chat control namespace is missing from its own table: [$chatNamespaces]"
+        }
+        $documentNamespaces = (docker @composePrefix exec -T control-postgres psql -X -A -t -U mixin_control -d mixin_control `
+            -c 'select namespace from mixin_search_control.control_states order by namespace') -join ','
+        if ($documentNamespaces -match 'chat-v1') {
+            throw "a chat namespace appears in the document control table: [$documentNamespaces]"
+        }
+        Write-Host "PASS control namespace isolation: chat=[$chatNamespaces] documents=[$documentNamespaces]"
+    }
+
     Push-Location 'apps/gin-backend'
     try {
         $runID = 'p15_' + (Get-Date -Format 'yyyyMMdd_HHmmss')
