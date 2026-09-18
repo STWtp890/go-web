@@ -61,12 +61,29 @@
 
 ## 验证（实现时必须补齐）
 
-- 窗口内：重放同一载荷返回首次响应；改绑不同载荷被拒（现有测试已覆盖）；
-- 窗口外、载荷相同：不产生第二份向量，消息计数与修订不变；
-- 窗口外、载荷不同：行为被**显式断言**（预期：作为新操作接受；由于向量键含 `operation_id`，不会污染已有消息），并写入契约；
-- 清理只删过期条目，窗口内条目一条不动；条数上限触发时按最旧优先；
-- 清理后容量守卫观察到快照变小；
-- 文档语料使用同一机制的账本，同样的窗口语义适用（其清理可以单独排期，但不改变本 ADR 的语义）。
+已由实现补齐，逐条对应：
+
+- 窗口内：重放同一载荷返回首次响应；改绑不同载荷被拒（`TestOperationIdReplayAndRebinding`）；
+- 窗口外、载荷相同：不产生第二份向量，消息计数与修订不变（`TestOperationLedgerRetentionKeepsTheWindowAndForgetsBeyondIt`）；
+- 窗口外、载荷不同：作为新操作接受，且不污染已有消息；重新接受后保护恢复（`TestOperationLedgerRebindingOutsideTheWindowIsAccepted`）；
+- 清理只删过期条目，窗口内条目一条不动；条数上限触发时按最旧优先（`TestOperationLedgerCeilingDropsOldestFirst`、`TestOperationLedgerRetentionDisabledChangesNothing`）；
+- 清理后容量守卫观察到快照变小（`TestOperationLedgerPruningFreesSnapshotSpace`）；
+- PostgreSQL 上走真实 CAS 的清理（`TestCapacityGuardAgainstPostgres` 的 ledger retention 子测试）。
+
+## 逐 RPC 的窗口外语义（实现已固定）
+
+清理只影响"响应复现与改绑检测"，不影响业务幂等；每个 RPC 在窗口外的行为都被测试固定
+（`TestExpiredLedgerReplayIsIdempotentPerRPC`，逐 RPC 子测试断言"语义状态与向量计数不变"）：
+
+| RPC | 窗口外重放会发生什么 | 业务幂等由什么保证 |
+| --- | --- | --- |
+| `IndexConversationMessages` | 重新执行：同一条消息落到**同一个** deterministic 向量键并整键替换，不产生第二份向量；已索引消息的内容校验仍然拒绝改内容 | 向量键含 `operation_id` + 消息内容不可变 |
+| `ArchiveConversation` | 重新执行：同一 `archive_revision` 再次写入同样的归档状态 | 归档修订号（低于当前修订即 `ErrStaleArchive`） |
+| `UpdateConversationAccess` | 重新执行：同一 `access_revision` 再次写入同样的授权快照 | 访问修订号 + 快照是完整替换语义 |
+| `RetractMessage` | 重新执行：同一 `retract_revision` 再次标记撤回 | 撤回修订号 |
+| `DeleteConversation` | 命中该 `lifecycle_revision` 的删除结果缓存，直接返回墓碑结果，不触碰在线状态 | 墓碑修订号 + 删除结果缓存（`delete_results`） |
+
+因此需要保留的"精简信息"是**修订号与墓碑本身**（它们是不可清理的权威状态），而账本条目只是响应缓存：清理它不会让任何 RPC 产生重复写入或状态漂移，代价仅是响应不再逐字复现、以及改绑检测在该 id 被再次接受前失效。
 
 ## 复审条件
 

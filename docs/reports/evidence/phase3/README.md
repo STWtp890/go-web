@@ -8,7 +8,9 @@
 | --- | --- | --- | --- |
 | P3.1a | `54cc1c8` | `full-api-p15_20260917_044228`、`document-search-evaluation-p25_20260917_044232`、`full-api-p24_outage_20260917_044235` | 可信签发方绑定 + 限流调用方表硬上限 |
 | P3.2 | `8e7abea` | `full-api-p15_20260917_045334`、`document-search-evaluation-p25_20260917_045338`、`full-api-p24_outage_20260917_045341` | 控制面不可变快照 + 后台投影收敛 |
-| P3.3 | `5483b65` | `full-api-p15_20260919_034719`、`document-search-evaluation-p25_20260919_034724`、`full-api-p24_outage_20260919_034727`，另加 `p33-chat-corpus-container_20260919` | 多语料契约与索引隔离：独立契约、独立控制面、按语料 audience、Qdrant alias 与 `_g1` 基线、容量与账本保留机制、容器级验收（口径：上限数值待确认） |
+| P3.3 | `5483b65`（功能树最后变更） | `full-api-p15_20260919_034719`、`document-search-evaluation-p25_20260919_034724`、`full-api-p24_outage_20260919_034727`，另加 `p33-chat-corpus-container_20260919`、`p33-chat-capacity-profile_20260919` | 多语料契约与索引隔离：独立契约、独立控制面、按语料 audience、Qdrant alias 与 `_g1` 基线、容量与账本保留机制、容器级验收（口径：容量数值待 P3.6 启用） |
+
+**"验收时提交"指的是功能树的最后变更提交，不是归档提交本身。** 阶段的归档与计划口径提交（例如 P3.3 的 `1f9ca5a`、`bc23a32`）只改文档，不改功能代码；判断"证据验证了哪份代码"应看该列，而不是看 HEAD。
 
 每个运行包含三个报告族（正常拓扑 API 回归、停机拓扑 API 回归、检索质量评估），各有 `.json` 与 `.md` 两种形式。P3.3 的聊天语料专项证据（容器日志、控制 namespace 隔离、对部署端点的三态与隔离验收）记在 `p33-chat-corpus-container_20260919.md`，因为三个通用报告族覆盖的是文档路径。
 

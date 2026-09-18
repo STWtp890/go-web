@@ -361,7 +361,13 @@ Docker Desktop 恢复运行后，P3.3 缺失的那一项终于有了容器内证
 
 **幂等账本保留窗口（ADR-015，2026-09-19：决策已定，机制已落地、默认不清理）**：账本只进不出，是快照里唯一没有回收路径的部分，因此"重放保证的有效窗口"必须先写成契约再实现。已接受 [ADR-015](../adr/015-control-plane-idempotency-ledger-retention.md)：窗口内重放返回首次响应、改绑被拒；窗口外不承诺响应复现与改绑检测，但**不重复写入**由状态本身保证（向量键含 `operation_id`、消息内容不可变、修订号幂等）；清理按年龄为主（建议 7 天）并以条数上限兜底（建议 100,000 条），走既有机会式维护路径，不新增后台任务。机制已实现并配置化（`-chat-operation-retention`、`-chat-operation-max-entries`，默认 0 = 不清理，行为与今天一致；账本条目新增 `recorded_at_unix_milli`，无时间戳的旧条目按"年龄未知"处理：不被年龄清理、在条数上限下最先被丢弃）。实现时发现并修正了 ADR 的一处措辞：窗口外**第一次**以不同载荷到达时改绑无从检测（接受），但该 id 被重新接受后会重新记录、保护恢复——测试 `TestOperationLedgerRebindingOutsideTheWindowIsAccepted` 与 `TestOperationLedgerRetentionKeepsTheWindowAndForgetsBeyondIt` 分别固定这两种情形，另有条数上限最旧优先、默认不清理、清理后快照变小三条测试。启用（填数值）与容量上限一并落地，避免两次契约变更。
 
-**拒绝机制已就位（数值待拍板，属 P3.6 前置）**：`-chat-max-messages` 与 `-chat-max-snapshot-bytes` 两个配置项（默认 0 = 不限）已落地，超限写入返回 `ErrCapacityExceeded` → gRPC `FAILED_PRECONDITION`；消息数为精确检查；快照字节数按**已持久化的快照**判定（Postgres 适配器在 `Load` 时记录真实 payload 长度，因此别的实例写入的更大快照也会被看见），最多滞后一次写入——刻意取舍，避免把候选快照再编码一遍（50k 时约多花 550 ms/次）。达到快照上限后**所有**写入路径（索引/归档/访问/撤回/删除）都被拒绝，读取不受影响；只在索引路径设限不会真正约束快照，因为其余四种写入同样会新增账本记录。测试：`TestCapacityGuardRefusesWritesPastTheMessageLimit`、`TestCapacityGuardRefusesOnceTheSnapshotLimitIsReached`、`TestSnapshotCeilingRefusesEveryMutationNotJustIndexing`、`TestSnapshotCeilingSeesASnapshotAnotherInstanceGrew`、`TestZeroCapacityLimitsDoNotRestrictWrites`、`TestNegativeCapacityLimitsAreRejected`，以及适配器的错误码映射用例；真实 PostgreSQL 上另有三条集成子测试（消息上限、快照上限、账本清理）。拍板后只需把数值填进配置与 Compose（并写进契约 §7 的默认值）。
+**可配置容量硬限制机制（默认未启用；数值属 P3.6 前置）**
+
+> **口径**：P3.3 交付的是**机制**，不是"容量问题已解决"。当前 Compose 默认值为 0（不限），因此部署的真实状态仍是"限制与清理代码就位、但未启用，无限增长风险依然存在"。
+
+机制细节：`-chat-max-messages` 与 `-chat-max-snapshot-bytes` 两个配置项（默认 0 = 不限）已落地，超限写入返回 `ErrCapacityExceeded` → gRPC `FAILED_PRECONDITION`；消息数为精确检查；快照字节数按**已持久化的快照**判定（Postgres 适配器在 `Load` 时记录真实 payload 长度，因此别的实例写入的更大快照也会被看见），最多滞后一次写入——刻意取舍，避免把候选快照再编码一遍（50k 时约多花 550 ms/次）。达到快照上限后**所有**写入路径（索引/归档/访问/撤回/删除）都被拒绝，读取不受影响；只在索引路径设限不会真正约束快照，因为其余四种写入同样会新增账本记录。**超限不产生部分提交**已由测试断言：被拒后 generation 不变、会话/消息/pending 状态逐字段相等、向量计数不变（`TestSnapshotCeilingRefusesEveryMutationNotJustIndexing`）。测试清单：`TestCapacityGuardRefusesWritesPastTheMessageLimit`、`TestCapacityGuardRefusesOnceTheSnapshotLimitIsReached`、`TestSnapshotCeilingRefusesEveryMutationNotJustIndexing`、`TestSnapshotCeilingSeesASnapshotAnotherInstanceGrew`、`TestZeroCapacityLimitsDoNotRestrictWrites`、`TestNegativeCapacityLimitsAreRejected`，以及适配器的错误码映射用例；真实 PostgreSQL 上另有三条集成子测试（消息上限、快照上限、账本清理）。
+
+**P3.6 开工前必须完成的五步（评审要求）**：①完整测量表已归档（见 `docs/reports/evidence/phase3/p33-chat-capacity-profile_20260919.md`）；②拍板 A/B 档位；③在 Compose 中写入非零值；④超限不部分提交的断言已就位（同上）；⑤重跑 PostgreSQL 集成与整栈门禁。**在第 ①–⑤ 完成前，不应把容量描述为"已受控"。**
 
 复跑方式（真实 CAS 需要控制 PostgreSQL 可达）：
 

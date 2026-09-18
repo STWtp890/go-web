@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -127,6 +128,14 @@ func TestSnapshotCeilingRefusesEveryMutationNotJustIndexing(t *testing.T) {
 	h := newLimitedHarness(t, IndexServiceConfig{MaxSnapshotBytes: 400})
 	h.index(t, "op-ceiling-index", "room-ceiling-all", "scope-ceiling-all", 1, "first")
 
+	// Everything a refusal must leave alone: the durable semantic state, the
+	// generation, the pending work and the vector store.
+	before, err := h.store.Load(ctx)
+	if err != nil {
+		t.Fatalf("load state before the refusals: %v", err)
+	}
+	vectorsBefore := h.indexer.indexedCount()
+
 	if _, err := h.service.ArchiveConversation(ctx, ArchiveConversationRequest{
 		OperationID: "op-ceiling-archive", ConversationID: "room-ceiling-all",
 		ArchiveRevision: 1, LifecycleRevision: 1,
@@ -149,6 +158,37 @@ func TestSnapshotCeilingRefusesEveryMutationNotJustIndexing(t *testing.T) {
 		OperationID: "op-ceiling-delete", ConversationID: "room-ceiling-all", LifecycleRevision: 2,
 	}); !errors.Is(err, ErrCapacityExceeded) {
 		t.Fatalf("delete at the ceiling error = %v, want ErrCapacityExceeded", err)
+	}
+	if _, err := h.service.IndexMessages(ctx, IndexMessagesRequest{
+		OperationID: "op-ceiling-index-2", ConversationID: "room-ceiling-all", OwnerScopeID: "scope-ceiling-all",
+		LifecycleRevision: 1,
+		Messages: []MessageInput{{
+			MessageID: "second", SenderID: "sender", SentAtUnixMs: 1_700_000_000_001, Content: "second",
+		}},
+	}); !errors.Is(err, ErrCapacityExceeded) {
+		t.Fatalf("indexing at the ceiling error = %v, want ErrCapacityExceeded", err)
+	}
+
+	// A refused batch must not half-happen: no semantic state, no generation bump,
+	// no pending write intent and no vector is allowed to survive it.
+	after, err := h.store.Load(ctx)
+	if err != nil {
+		t.Fatalf("load state after the refusals: %v", err)
+	}
+	if after.Generation != before.Generation {
+		t.Fatalf("a refused write committed: generation %d -> %d", before.Generation, after.Generation)
+	}
+	if !reflect.DeepEqual(before.Conversations, after.Conversations) ||
+		!reflect.DeepEqual(before.Messages, after.Messages) ||
+		!reflect.DeepEqual(before.PendingWrites, after.PendingWrites) ||
+		!reflect.DeepEqual(before.PendingDeletes, after.PendingDeletes) {
+		t.Fatalf(
+			"a refused write changed the control state:\nbefore=%+v\nafter=%+v",
+			before, after,
+		)
+	}
+	if vectors := h.indexer.indexedCount(); vectors != vectorsBefore {
+		t.Fatalf("a refused write wrote vectors: %d -> %d", vectorsBefore, vectors)
 	}
 
 	// Refusing mutations must not refuse answers: the recorded operation is still

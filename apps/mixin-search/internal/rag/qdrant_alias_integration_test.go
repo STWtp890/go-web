@@ -6,6 +6,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/qdrant/go-client/qdrant"
 )
 
 // TestQdrantAliasSwitchIsPerCorpus is ADR-014 decision 4 in executable form at
@@ -127,6 +129,64 @@ func TestAliasSwitchStaysInsideItsOwnCorpus(t *testing.T) {
 	if err := store.validateAliasTarget("go_web_chat_v1_g2"); err != nil {
 		t.Fatalf("a generation of this corpus was rejected: %v", err)
 	}
+}
+
+// TestQdrantAliasBatchFailureIsCompensated records what the pinned server does when
+// the create half of the documented switch batch fails, and proves the
+// compensation the store relies on works.
+//
+// The two review passes disagreed about whether Qdrant rolls the batch back, so
+// this test observes the behaviour instead of asserting a belief about it: it
+// logs where the alias ended up, then runs the same repair SwitchAlias performs
+// and asserts the alias is serving the original collection again. That is the
+// property the store needs - either the server rolled back (repair is a no-op
+// overwrite) or it did not (repair is what keeps the corpus reachable).
+func TestQdrantAliasBatchFailureIsCompensated(t *testing.T) {
+	if os.Getenv("QDRANT_INTEGRATION") != "1" {
+		t.Skip("set QDRANT_INTEGRATION=1 to run")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	alias := fmt.Sprintf("rag_alias_repair_%d", time.Now().UnixNano())
+	store := newAliasIntegrationStore(t, ctx, alias)
+	original := assertAliasMapping(t, ctx, store, alias+"_"+DefaultQdrantGeneration)
+	t.Cleanup(func() {
+		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		if err := store.RestoreAlias(cleanupContext, original); err != nil {
+			t.Errorf("restore alias %q: %v", alias, err)
+		}
+		deleteAliasAndPhysical(t, cleanupContext, store)
+		_ = store.Close()
+	})
+
+	// The documented batch, with a create action that must fail: the target
+	// collection does not exist.
+	actions := []*qdrant.AliasOperations{
+		{Action: &qdrant.AliasOperations_DeleteAlias{DeleteAlias: &qdrant.DeleteAlias{AliasName: alias}}},
+		{Action: &qdrant.AliasOperations_CreateAlias{CreateAlias: &qdrant.CreateAlias{
+			AliasName:      alias,
+			CollectionName: alias + "_missing",
+		}}},
+	}
+	if err := store.client.UpdateAliases(ctx, actions); err == nil {
+		t.Fatal("the server accepted a create action naming a collection that does not exist")
+	}
+	observed, stillAliased, err := store.aliasedCollection(ctx)
+	if err != nil {
+		t.Fatalf("read alias %q after the failed batch: %v", alias, err)
+	}
+	if !stillAliased {
+		t.Logf("observed server behaviour: a failed create action leaves alias %q deleted (no rollback)", alias)
+	} else {
+		t.Logf("observed server behaviour: the failed batch left alias %q at %q", alias, observed)
+	}
+
+	// The compensation the store performs.
+	if err := store.RestoreAlias(ctx, original); err != nil {
+		t.Fatalf("compensate the failed switch: %v", err)
+	}
+	assertAliasMapping(t, ctx, store, original)
 }
 
 func newAliasIntegrationStore(t *testing.T, ctx context.Context, alias string) *QdrantStore {

@@ -200,13 +200,14 @@ func (s *QdrantStore) PrepareGeneration(ctx context.Context, generation string, 
 // SwitchAlias points this corpus's alias at another physical collection, so a
 // reader sees either the old collection or the new one and never neither.
 //
-// The re-point is a *single* create-alias action, deliberately not a
-// delete-then-create batch: Qdrant applies the actions of one UpdateAliases call
-// in order and without rollback (qdrant v1.19.1, `update_aliases` in
-// `collection_meta_ops.rs` deletes first and then fails the create with `?`), so
-// a batch would delete the alias and leave it deleted whenever the create fails.
-// Creating an alias that already exists replaces the mapping in one persisted
-// step, which is what makes a failed switch non-destructive.
+// The move uses Qdrant's documented form: one UpdateAliases request carrying a
+// delete action and a create action, which the server applies under a single
+// write lock. That batch is *not* rolled back if the create action fails (the
+// server applies actions in order and returns on the first error), so a failure is
+// compensated here: the alias is re-created on the collection it was serving, and
+// the reported error carries both the original failure and the repair outcome.
+// Relying on a create-alias-over-existing-mapping to re-point instead would work
+// on some server versions but is not the switching protocol Qdrant documents.
 //
 // The target must be one of this corpus's own generations, and it is validated
 // before anything moves: it must exist and carry the payload indexes candidate
@@ -231,20 +232,35 @@ func (s *QdrantStore) SwitchAlias(ctx context.Context, target string) error {
 	if err != nil {
 		return err
 	}
-	if !aliased {
-		return fmt.Errorf("qdrant alias %q does not exist, so it cannot be switched", s.alias)
-	}
-	if current == target {
-		s.physical = current
-		return nil
-	}
 	// Only a switch that is actually going to happen prepares the target: index
 	// creation is a write, and a failing call should not have written anything.
 	if err := s.ensureControlPayloadIndexes(ctx, target); err != nil {
 		return err
 	}
-	if err := s.client.CreateAlias(ctx, s.alias, target); err != nil {
-		return fmt.Errorf("switch qdrant alias %q to %q: %w", s.alias, target, err)
+	if !aliased {
+		// No alias yet: one create action is the whole switch.
+		if err := s.client.CreateAlias(ctx, s.alias, target); err != nil {
+			return fmt.Errorf("create qdrant alias %q -> %q: %w", s.alias, target, err)
+		}
+	} else if current != target {
+		actions := []*qdrant.AliasOperations{
+			{Action: &qdrant.AliasOperations_DeleteAlias{DeleteAlias: &qdrant.DeleteAlias{AliasName: s.alias}}},
+			{Action: &qdrant.AliasOperations_CreateAlias{CreateAlias: &qdrant.CreateAlias{
+				AliasName:      s.alias,
+				CollectionName: target,
+			}}},
+		}
+		if err := s.client.UpdateAliases(ctx, actions); err != nil {
+			// The delete half may already be persisted, so compensate instead of
+			// leaving the corpus without an alias.
+			if repairErr := s.client.CreateAlias(ctx, s.alias, current); repairErr != nil {
+				return fmt.Errorf(
+					"switch qdrant alias %q to %q failed (%w) and restoring it to %q also failed: %w",
+					s.alias, target, err, current, repairErr,
+				)
+			}
+			return fmt.Errorf("switch qdrant alias %q to %q: %w (alias restored to %q)", s.alias, target, err, current)
+		}
 	}
 	// Read the mapping back: the switch is only done when the alias says so, and a
 	// mapping that cannot be read back is reported rather than assumed.
@@ -256,6 +272,20 @@ func (s *QdrantStore) SwitchAlias(ctx context.Context, target string) error {
 		return fmt.Errorf("qdrant alias %q points at %q after switching, want %q", s.alias, switched, target)
 	}
 	s.physical = switched
+	return nil
+}
+
+// RestoreAlias re-creates this corpus's alias on a known collection. It exists for
+// the compensation path above and for operators who need to undo a bad switch by
+// hand; the target must still be one of this corpus's own generations.
+func (s *QdrantStore) RestoreAlias(ctx context.Context, target string) error {
+	if err := s.validateAliasTarget(target); err != nil {
+		return err
+	}
+	if err := s.client.CreateAlias(ctx, s.alias, target); err != nil {
+		return fmt.Errorf("restore qdrant alias %q -> %q: %w", s.alias, target, err)
+	}
+	s.physical = target
 	return nil
 }
 

@@ -61,6 +61,11 @@ func TestChatAliasSwitchAgainstADeployedStack(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 	originalChatTarget := assertDeployedAlias(t, ctx, client, chatAlias)
 	originalDocumentTarget := assertDeployedAlias(t, ctx, client, documentAlias)
+	// The mapping is asserted against a direct collection listing as well, so the
+	// evidence names both physical collections and both aliases instead of
+	// inferring them from behaviour.
+	assertDeployedCollections(t, ctx, client, originalDocumentTarget, originalChatTarget)
+	logDeployedAliases(t, ctx, client)
 
 	// A store handle on the deployed chat alias: resolving it is what a rebuild
 	// would use to prepare and switch a generation.
@@ -105,12 +110,18 @@ func TestChatAliasSwitchAgainstADeployedStack(t *testing.T) {
 			}
 		}
 
-		// Delete only what this test created, and only once nothing resolves to it:
+		// Only delete what this test created, and only once nothing resolves to it:
 		// deleting the collection an alias still points at would leave the corpus
 		// pointing at something that no longer exists.
 		if createdGeneration != "" && restoredAll {
 			if err := client.DeleteCollection(cleanupContext, createdGeneration); err != nil {
 				t.Errorf("delete generation %q: %v", createdGeneration, err)
+			} else if collections, listErr := client.ListCollections(cleanupContext); listErr != nil {
+				t.Errorf("list collections after cleanup: %v", listErr)
+			} else if containsString(collections, createdGeneration) {
+				t.Errorf("generation %q still exists after cleanup: %v", createdGeneration, collections)
+			} else {
+				t.Logf("cleanup removed %q; remaining collections: %v", createdGeneration, collections)
 			}
 		} else if createdGeneration != "" {
 			t.Logf(
@@ -235,6 +246,44 @@ func assertDeployedAlias(t *testing.T, ctx context.Context, client *qdrant.Clien
 		t.Fatalf("alias %q points at %q, want %q", alias, target, want)
 	}
 	return target
+}
+
+// assertDeployedCollections checks the physical collections behind the aliases by
+// listing them, rather than inferring their existence from a successful search.
+func assertDeployedCollections(t *testing.T, ctx context.Context, client *qdrant.Client, want ...string) {
+	t.Helper()
+	collections, err := client.ListCollections(ctx)
+	if err != nil {
+		t.Fatalf("list qdrant collections: %v", err)
+	}
+	for _, name := range want {
+		if !containsString(collections, name) {
+			t.Fatalf("collection %q is missing; qdrant holds %v", name, collections)
+		}
+	}
+	t.Logf("qdrant collections: %v", collections)
+}
+
+// logDeployedAliases records the full alias table, so the archived evidence names
+// every mapping instead of only the two this test asserts.
+func logDeployedAliases(t *testing.T, ctx context.Context, client *qdrant.Client) {
+	t.Helper()
+	aliases, err := client.ListAliases(ctx)
+	if err != nil {
+		t.Fatalf("list qdrant aliases: %v", err)
+	}
+	for _, description := range aliases {
+		t.Logf("alias %q -> collection %q", description.GetAliasName(), description.GetCollectionName())
+	}
+}
+
+func containsString(values []string, candidate string) bool {
+	for _, value := range values {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 // deployedAliasTarget resolves an alias, returning "" when the name is not an
