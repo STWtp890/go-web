@@ -44,6 +44,9 @@ services:
 
   control-postgres:
     image: postgres:17-bookworm
+    ports:
+      # 只绑定回环，供容量测量与门禁直接读取控制状态（服务本身走容器网络）。
+      - "127.0.0.1:${CONTROL_POSTGRES_PORT:-15433}:5432"
     environment:
       POSTGRES_DB: mixin_control
       POSTGRES_USER: mixin_control

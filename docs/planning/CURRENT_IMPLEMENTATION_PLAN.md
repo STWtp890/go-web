@@ -337,6 +337,35 @@ Docker Desktop 恢复运行后，P3.3 缺失的那一项终于有了容器内证
 - **证据**：`internal/rag/qdrant_alias_integration_test.go`（真实 Qdrant：引导建 alias+`_g1`、切到空 `_g2` 后本语料检索为空、**另一语料 alias 映射不变**、切回恢复、未知目标被拒，且失败也恢复原映射并清理测试集合）；`cmd/rag-server/alias_container_test.go`（对部署栈：两个配置名必须是 alias 且指向 `_g1`、运行中切换 chat alias 后聊天检索为空、文档 alias 映射不变、切回后聊天检索恢复、未知目标被拒，清理阶段恢复映射并删除新建世代）；`deployments/verify.ps1` 新增对应门禁步骤；
 - 旧数据兼容按决策取消：本轮先核对卷名再删除 `p33*` 项目卷（未使用全局 `docker volume prune`，更早的 `go-web_*` 旧卷未触碰），随后按 alias + `_g1` 重建，容器日志确认 `go_web_shadow_v1 -> go_web_shadow_v1_g1`、`go_web_chat_v1 -> go_web_chat_v1_g1`。
 
+**容量测量与上限建议（第九片，2026-09-19，上限待确认）**
+
+按已拍板决策先测量、后定限额。测量工具：`internal/chat/capacity_test.go`（`CHAT_CAPACITY_PROFILE=1`；设置 `CAPACITY_CAS_DSN` 时额外测真实 CAS）。假设：每条消息索引一次、每 50 条一批（对应一条幂等账本记录）、无撤回与删除（撤回本来也保留消息记录）、pending 状态为空。
+
+| 消息数 | 快照大小 | 快照 clone+编码 | 真实 CAS（均值 / 最差，PostgreSQL 单行 `UPDATE ... RETURNING`） |
+| ---: | ---: | ---: | ---: |
+| 1,000 | 430 KiB | 6.1 ms | 13.1 / 15.1 ms |
+| 10,000 | 4.0 MiB | 56.3 ms | 135.0 / 158.5 ms |
+| 50,000 | 20.2 MiB | 337.0 ms | 741.9 / 833.6 ms |
+
+按约 **423 字节/消息**线性增长（10 倍消息 ≈ 10 倍体积与耗时）。要读出的结论有三条：①写路径的代价是"整份快照重写"——50k 消息时每次写入约 0.74 s、重写约 20 MiB，写入频率与 WAL 放大直接由快照大小决定；②clone+编码占了其中约 45%，即使换更快的数据库也压不下去；③幂等账本不是主要驱动（每 50 条消息一条记录，量级可忽略），因此 operation TTL 按决策单独立 ADR，不在这里实现。
+
+**建议值（待你确认后才写进配置与契约）**：
+
+- 硬限制：单 corpus 最多 **50,000** 条消息、单 corpus 快照最多 **24 MiB**（约 57k 消息）；超限的写入请求**明确拒绝**（`FAILED_PRECONDITION`），不做静默降级；
+- SLO（不作为拒绝依据）：在硬限制内，单次写入 p95 ≤ **1 s**（50k 时实测最差 834 ms，留一档余量）；
+- 迁移触发（改成分区/行级 CAS 的判据，任一命中即启动独立 ADR）：消息数 ≥ 50k、快照 ≥ 24 MiB、或持续观测到 p95 写入 > 1 s；
+- 100k / 200k 的外推（**未实测**，仅用于说明为何要在 50k 处触发迁移）：约 42 MiB / 1.5 s、约 85 MiB / 3.0 s 每次写入。
+
+复跑方式（真实 CAS 需要控制 PostgreSQL 可达）：
+
+```powershell
+docker compose -p p33cap -f docker-compose.yaml up -d --wait control-postgres
+$env:CHAT_CAPACITY_PROFILE='1'
+$env:CAPACITY_CAS_DSN='postgres://mixin_control:mixin_control@127.0.0.1:15433/mixin_control?sslmode=disable'
+go test ./internal/chat -run TestChatCapacity -v
+docker compose -p p33cap -f docker-compose.yaml down -v
+```
+
 **尚未落地**
 
 - **alias 机制已落地，蓝绿重建编排仍属 P3.5**：两个语料各有独立 alias（配置名即为 alias），物理集合为 `_gN` 世代，切换为原子操作并有直接映射断言（见"第八片"）。尚未实现的是重建编排本身——把数据填进新世代、完整性校验、保留上一代用于回退，这些属于计划中 P3.5 的任务；
