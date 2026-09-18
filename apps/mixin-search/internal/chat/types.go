@@ -193,6 +193,12 @@ type ScoredMessageChunk struct {
 	Position  int
 	Snippet   string
 	Score     float64
+	// DenseRank and SparseRank are the two recall paths' ranks behind the fused
+	// score. They are carried through because the contract exposes them: a
+	// caller that ranks or filters on them must not read a zero that looks like
+	// "best rank" for every hit.
+	DenseRank  int
+	SparseRank int
 }
 
 // MessageHit is one authorized search result.
@@ -206,6 +212,8 @@ type MessageHit struct {
 	Snippet        string
 	ContentSHA256  string
 	Score          float64
+	DenseRank      int
+	SparseRank     int
 }
 
 // SearchMessagesResult is the retrieval result.
@@ -318,6 +326,19 @@ func messageKey(conversationID, messageID string) string {
 	return conversationID + "\x00" + messageID
 }
 
+// storageID derives the vector key of one message's chunks.
+//
+// Every component is length-prefixed, so two different
+// (conversation, message, operation) triples can never render the same key. A
+// plain separator join would: ("a/b", "c") and ("a", "b/c") would collide for
+// one operation id, and the collision would be invisible until two unrelated
+// messages overwrote each other's vectors.
 func storageID(domain, conversationID, messageID, operationID string) string {
-	return fmt.Sprintf("%s/%s/%s/%s", domain, conversationID, messageID, operationID)
+	return fmt.Sprintf(
+		"%d:%s/%d:%s/%d:%s/%d:%s",
+		len(domain), domain,
+		len(conversationID), conversationID,
+		len(messageID), messageID,
+		len(operationID), operationID,
+	)
 }

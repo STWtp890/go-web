@@ -35,6 +35,35 @@ func testIssuer(t *testing.T, ttl time.Duration) *Issuer {
 	return issuer
 }
 
+// TestVerifyStoresTheCanonicalRole covers a credential that verifies and then
+// fails every role lookup: the payload validator trims a role before accepting
+// it, so the identity it produces has to carry the trimmed value too, or the
+// caller sees a permission error for a token this boundary just approved.
+func TestVerifyStoresTheCanonicalRole(t *testing.T) {
+	t.Parallel()
+
+	claims := Claims{
+		Version:   TokenVersion,
+		Issuer:    "go-web",
+		Subject:   "go-web-shadow-search",
+		Audience:  testAudience,
+		Role:      " " + RoleSearcher + " ",
+		IssuedAt:  fixedClock().Unix(),
+		ExpiresAt: fixedClock().Add(time.Minute).Unix(),
+	}
+	token, err := Sign(claims, []byte(testKey))
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	identity, err := testVerifier(t).Verify(token)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if identity.Role != RoleSearcher {
+		t.Fatalf("identity role = %q, want %q", identity.Role, RoleSearcher)
+	}
+}
+
 func TestSignAndVerifyRoundTrip(t *testing.T) {
 	t.Parallel()
 

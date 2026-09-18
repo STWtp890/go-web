@@ -104,6 +104,11 @@ func main() {
 	if err := validateCorpusIsolation(*qdrantCollection, *chatCollection, *chatEnabled); err != nil {
 		log.Fatalf("corpus isolation: %v", err)
 	}
+	if *chatEnabled {
+		if err := validateChatVectorBackend(*backend); err != nil {
+			log.Fatalf("chat vector backend: %v", err)
+		}
+	}
 	verifier, err := security.NewVerifier(boundaryKey, *capabilityIssuer, *capabilityAudience)
 	if err != nil {
 		log.Fatalf("build capability verifier: %v", err)
@@ -390,6 +395,30 @@ func validateCorpusIsolation(documentCollection, chatCollection string, chatEnab
 		return fmt.Errorf("chat and document corpora must not share the collection %q", chatCollection)
 	}
 	return nil
+}
+
+// validateChatVectorBackend refuses to serve the chat corpus on a backend that
+// cannot give it a collection of its own.
+//
+// The chat corpus's isolation is structural: it owns a collection, and the
+// collection name is what the two corpora never share. `pgvector` keeps every
+// corpus in one table (`rag_chunks`), so the collection flag is not even a
+// parameter there - both corpora would read and write the same rows, share one
+// index, and share one rebuild and delete path. Refusing is the honest outcome:
+// the alternative is a second corpus that only looks isolated.
+func validateChatVectorBackend(backend string) error {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "qdrant", "memory":
+		// qdrant: one collection per corpus. memory: one store instance per
+		// corpus, which the composition root builds separately.
+		return nil
+	case "pgvector":
+		return errors.New(
+			"the chat corpus needs its own vector collection, and the pgvector backend stores every corpus in one table; run it with -store qdrant",
+		)
+	default:
+		return fmt.Errorf("unknown vector store %q", backend)
+	}
 }
 
 func defaultPGDSN() string {

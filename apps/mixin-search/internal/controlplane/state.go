@@ -153,19 +153,28 @@ type ReconcilerConfig struct {
 
 // StartReconciler keeps the projection converged in the background until ctx is
 // cancelled. It converges on every published change and on a fallback interval.
+//
+// A non-positive Interval means there is no fallback: convergence then happens
+// only when a publisher signals it. That is deliberately not an error, because a
+// caller that passes an unset interval must not turn into a panic inside
+// time.NewTicker.
 func (p *Projection) StartReconciler(ctx context.Context, config ReconcilerConfig) {
 	if config.Sync == nil || config.Target == nil {
 		return
 	}
 	go func() {
-		ticker := time.NewTicker(config.Interval)
-		defer ticker.Stop()
+		var ticks <-chan time.Time
+		if config.Interval > 0 {
+			ticker := time.NewTicker(config.Interval)
+			defer ticker.Stop()
+			ticks = ticker.C
+		}
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-p.wake:
-			case <-ticker.C:
+			case <-ticks:
 			}
 			generation := config.Target()
 			if p.Synced() >= generation {

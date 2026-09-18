@@ -129,10 +129,12 @@ func (c *Corpus) SearchMessages(ctx context.Context, query string, limit int) ([
 	candidates := make([]chat.ScoredMessageChunk, 0, len(result.Hits))
 	for _, hit := range result.Hits {
 		candidates = append(candidates, chat.ScoredMessageChunk{
-			StorageID: hit.Chunk.DocumentID,
-			Position:  hit.Chunk.Position,
-			Snippet:   hit.Chunk.Content,
-			Score:     hit.RRFScore,
+			StorageID:  hit.Chunk.DocumentID,
+			Position:   hit.Chunk.Position,
+			Snippet:    hit.Chunk.Content,
+			Score:      hit.RRFScore,
+			DenseRank:  hit.DenseRank,
+			SparseRank: hit.SparseRank,
 		})
 	}
 	return candidates, nil

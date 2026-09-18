@@ -173,7 +173,7 @@ func (a *Authenticator) UnaryInterceptor(
 			a.record(record, startedAt)
 			return nil, status.Error(codes.Internal, "unexpected request type for SearchDocuments")
 		}
-		record.RequestedScope = len(search.GetAllowedSpaceIds()) + len(search.GetAllowedDocumentIds())
+		record.RequestedScope = distinctScopeCount(search.GetAllowedSpaceIds(), search.GetAllowedDocumentIds())
 		if err := identity.Allows(search.GetAllowedSpaceIds(), search.GetAllowedDocumentIds()); err != nil {
 			record.Outcome = security.OutcomeDenied
 			record.Detail = err.Error()
@@ -193,7 +193,7 @@ func (a *Authenticator) UnaryInterceptor(
 		// The containment rule is the same one documents use: the granted
 		// envelope carries container identifiers (chat scopes) and object
 		// identifiers (conversations) for this corpus.
-		record.RequestedScope = len(search.GetAllowedScopeIds()) + len(search.GetAllowedConversationIds())
+		record.RequestedScope = distinctScopeCount(search.GetAllowedScopeIds(), search.GetAllowedConversationIds())
 		if err := identity.Allows(search.GetAllowedScopeIds(), search.GetAllowedConversationIds()); err != nil {
 			record.Outcome = security.OutcomeDenied
 			record.Detail = err.Error()
@@ -243,6 +243,28 @@ func roleAllowed(allowed []string, role string) bool {
 		}
 	}
 	return false
+}
+
+// distinctScopeCount reports how many identifiers a request names, counted the
+// way the granted side counts its own: trimmed, without blanks, without repeats
+// inside one list. Counting raw entries made the audit record incomparable - a
+// client that sent ["space-a", "space-a", ""] under a grant of ["space-a"] was
+// logged as requesting three scopes against one, which reads as an attempted
+// over-reach that never happened.
+func distinctScopeCount(groups ...[]string) int {
+	total := 0
+	for _, group := range groups {
+		seen := make(map[string]struct{}, len(group))
+		for _, value := range group {
+			trimmed := strings.TrimSpace(value)
+			if trimmed == "" {
+				continue
+			}
+			seen[trimmed] = struct{}{}
+		}
+		total += len(seen)
+	}
+	return total
 }
 
 // isProtectedServiceMethod reports whether the method belongs to a service whose

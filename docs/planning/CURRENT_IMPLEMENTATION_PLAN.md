@@ -285,6 +285,24 @@ P3.3 尚未完成。已落地的部分：
 
 **本轮修掉的一个真实死锁**：`controlplane.Projection.Converge` 已经负责加锁与 synced 代数记账，而聊天 reconciler 的回调又调用了一次 `Converge`，于是自我重入死锁——后台收敛与并发检索会互相卡住。上面的进程内端到端测试把它暴露出来；修复是把回调改为只做原始投影写入，并补了 `TestProjectionReconcilerConvergesWithoutARequest` 覆盖这条路径。
 
+**对抗性复审与修复（第五片）**
+
+容器门禁仍然跑不了，于是本轮把"验证"换成另一种可执行形式：两个独立复审分别盯聊天控制面、传输与装配，只接受能给出文件与行号的结论。确认的缺陷全部修复，每条都配一条回归测试，并且每条测试都做过反向确认（把修复去掉后测试立刻失败，避免写出恒真的断言）：
+
+- **索引重试被自己拒绝（中）**：写向量失败后意图被围栏成 pending delete；若物理删除此刻仍失败，重试会为同一 storage id 再建写意图，状态同时出现在 `pendingWrites` 与 `pendingDeletes`，`validateControlState` 拒绝，重试只能得到 `unavailable` 且毫无进展。修复：同一 storage id 的新写意图**取代**删除意图（重试写的正是那条待删的块，ingest 会整键替换；再失败时 `abandonWrite` 会把删除意图放回去）。测试 `TestIndexRetryAfterAFailedWriteIsAccepted`；
+- **operation_id 在意图未落地期间可被改绑（中）**：幂等账本只记录已完成的操作，phase 1 与 phase 3 之间该操作只存在于写意图里，而 storage id 随消息变化，"同 id 不同载荷必须拒绝"在这段窗口失效。修复：写意图额外持久化整体请求指纹（`operation_fingerprint`），phase 1 先查未完成意图是否已绑定该 operation_id（字段缺省时按未知处理，不误判旧数据）。测试 `TestOperationIDRebindingIsRejectedWhileTheIntentIsPending`；
+- **pgvector 下两个语料共用一张表（中）**：`-chat-collection` 在 pgvector 后端根本不是参数，聊天与文档会读写同一张 `rag_chunks`，共享索引与重建路径。修复：`-chat-enabled` 只允许能提供独立集合的后端（`qdrant`、`memory`），`pgvector` 直接拒绝启动。测试 `TestChatVectorBackendRejectsASharedTable`；
+- **删除结果缓存跨过复活（低）**：会话被更高 lifecycle 修订复活后，用已关闭的旧修订再删除会命中缓存并回报"已墓碑"，而会话仍可检索。修复：先判陈旧修订再读缓存（同修订的幂等重放仍命中缓存）。测试 `TestStaleDeleteRevisionDoesNotOutliveAResurrection`；
+- **同批重复 message_id 被接受（低）**：会重复写向量并重复返回同一消息；现按 `invalid_argument` 拒绝，契约同步更新。测试 `TestOneRequestRejectsADuplicatedMessageId`；
+- **storage id 拼接有歧义（低）**：`domain/conversation/message/operation` 直接拼接时 `("a/b","c")` 与 `("a","b/c")` 得到同一 id；改为长度前缀编码。测试 `TestStorageIDsAreUnambiguous`；
+- **`ProjectionInterval` 只是文档（低）**：配置项写了却从不读取，reconciler 永远 200ms。已接线，并给 `controlplane.StartReconciler` 补上"非正间隔 = 只用唤醒信号"的语义，避免零值进入 `time.NewTicker` 直接 panic。测试 `TestProjectionIntervalReachesTheReconciler`、`TestStartReconcilerWithoutAnIntervalConvergesOnSignal`；
+- **聊天命中的 `dense_rank` / `sparse_rank` 恒为 0（低）**：契约声明了两个 rank，适配层却把它们丢掉，调用方会把 0 读成"每条都是最优"。修复：从共享向量核心一路传到协议层，契约 §5 同步说明语义。测试见 `internal/security`、`internal/chatindex` 与 `cmd/rag-server` 的相邻断言；
+- **角色未规范化（低）**：`" searcher "` 这类角色能通过校验，却在下游每个角色查表都失败。修复：`Verify` 存规范化后的角色。测试 `TestVerifyStoresTheCanonicalRole`；
+- **审计里的范围大小不可比（低）**：请求侧计原始条目、授予侧计规范化条目，重复项会让审计看起来像越权。修复：两侧同口径计数。测试 `TestAuditCountsRequestedScopesTheWayItCountsGrantedOnes`（文档与聊天各一条）；
+- **架构规则的注释与能力不符（低）**：`transport` 那条规则其实允许整棵 transport 树引用任一语料（两个适配器同包），注释却读起来像隔离保证；改为如实描述，并新增 `internal/chatindex` 规则（唯一同时看到两个语料的包，不得向上引用 transport/cmd）。
+
+复审确认**没有**问题的部分：方法策略表与两个 proto 的 14 个 RPC 一一对应（用生成的方法名常量，不存在拼写漂移）、限流调用方表硬上限、范围包含判定、三态与四类修订独立性、投影不可用时的失败关闭、storage domain 单一来源、投影 reconciler 非重入、候选补充循环硬上限、生成代码与 proto 一致。
+
 **尚未落地**
 
 - **容器级验收未运行**：本轮 Docker daemon 停止（无进程、无命名管道），`deployments/verify.ps1` 在启动栈之前失败。因此聊天语料的 PostgreSQL 控制表与 Qdrant collection 创建、以及 Compose 装配路径**尚未在容器内验证**；进程内 gRPC 端到端测试覆盖了装配与协议路径，但不覆盖这两项真实依赖；
@@ -293,6 +311,10 @@ P3.3 尚未完成。已落地的部分：
   - `internal/chat/control_schema_test.go`：断言聊天 schema 只创建自己的 `chat_control_states`，不触碰文档的 `control_states`（复制文档 schema 却漏改表名这类错误对 PostgreSQL 是合法的，只会在容器门禁里暴露）；
   - `internal/chat/control_store_encoding_test.go`：把真实控制状态走一遍持久化编码边界（`json.Marshal` → `Unmarshal` → `normalize` → `validate`），再断言恢复后的语料检索结果、对账视图、幂等账本与墓碑围栏与原来一致；该断言经一次刻意的反向改动确认有效（去掉 generation 列还原即失败）。
   两项都不覆盖 SQL 本身（DDL 执行、CAS `UPDATE ... RETURNING`、连接池行为），后者仍只能在容器门禁里验证。
+- **复审记录在案、本轮未改的三项遗留**（都不构成当前越权或错误状态）：
+  - capability 的 **audience 尚未按语料划分**（ADR-014 决策 5 的目标）：两侧共用一个 audience，跨语料调用目前只靠角色集合不相交挡住。落地需要为两个服务各定义 audience、在拦截器里按服务选择校验器，并同步改 `cmd/rag-token` 与 Compose，属于独立提交；
+  - 适配器把包装后的内部错误文本回给调用方（`codes.Internal`、`Unavailable` 分支），文档与聊天适配器同样如此，是既有行为而非本轮引入；
+  - 聊天索引写入没有按意图租约设置 deadline（文档语料有），只影响写锁持有时长，不会产生错误状态（复审逐一推演过交错执行）。
 
 ## 8. P3.4：QQ 身份与知识空间映射
 

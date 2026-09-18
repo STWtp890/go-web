@@ -152,6 +152,26 @@ func TestCorpusIsolationRejectsASharedCollection(t *testing.T) {
 	}
 }
 
+// TestChatVectorBackendRejectsASharedTable covers the isolation hole the
+// collection-name guard cannot see: on the pgvector backend the collection
+// argument is not a parameter at all, so both corpora would read and write the
+// same table no matter what the two collection names are.
+func TestChatVectorBackendRejectsASharedTable(t *testing.T) {
+	t.Parallel()
+
+	for _, backend := range []string{"qdrant", "QDRANT", "memory", " memory "} {
+		if err := validateChatVectorBackend(backend); err != nil {
+			t.Fatalf("backend %q was rejected: %v", backend, err)
+		}
+	}
+	if err := validateChatVectorBackend("pgvector"); err == nil {
+		t.Fatal("the chat corpus was accepted on a backend that shares one table")
+	}
+	if err := validateChatVectorBackend("unsupported"); err == nil {
+		t.Fatal("an unknown vector backend was accepted")
+	}
+}
+
 func TestLoadBoundaryKey(t *testing.T) {
 	t.Parallel()
 

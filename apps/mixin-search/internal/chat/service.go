@@ -45,6 +45,10 @@ type IndexService struct {
 	reloadMu sync.Mutex
 
 	projection *controlplane.Projection
+	// projectionInterval is the reconciler's fallback interval. It is configured,
+	// not constant, so a deployment or test can shorten the window in which a
+	// published change can stay unconverged.
+	projectionInterval time.Duration
 }
 
 // IndexServiceConfig configures the chat control plane.
@@ -96,14 +100,19 @@ func NewIndexService(ctx context.Context, config IndexServiceConfig) (*IndexServ
 	if storageDomain == "" {
 		return nil, errors.New("chat storage domain is required")
 	}
+	projectionInterval := config.ProjectionInterval
+	if projectionInterval <= 0 {
+		projectionInterval = defaultProjectionInterval
+	}
 	return &IndexService{
-		store:           config.ControlStore,
-		indexer:         config.Indexer,
-		projectionStore: config.Projection,
-		searcher:        config.Searcher,
-		storageDomain:   storageDomain,
-		state:           controlplane.NewState(restored, restored.generation),
-		projection:      controlplane.NewProjection(),
+		store:              config.ControlStore,
+		indexer:            config.Indexer,
+		projectionStore:    config.Projection,
+		searcher:           config.Searcher,
+		storageDomain:      storageDomain,
+		projectionInterval: projectionInterval,
+		state:              controlplane.NewState(restored, restored.generation),
+		projection:         controlplane.NewProjection(),
 	}, nil
 }
 
@@ -120,7 +129,7 @@ func (s *IndexService) StorageDomain() string { return s.storageDomain }
 // would re-enter its own lock.
 func (s *IndexService) StartProjectionReconciler(ctx context.Context) {
 	s.projection.StartReconciler(ctx, controlplane.ReconcilerConfig{
-		Interval: defaultProjectionInterval,
+		Interval: s.projectionInterval,
 		Timeout:  projectionTimeout,
 		Target:   func() uint64 { return s.state.Generation() },
 		Sync: func(syncCtx context.Context, generation uint64) error {
@@ -142,6 +151,7 @@ func (s *IndexService) IndexMessages(ctx context.Context, request IndexMessagesR
 		return nil, fmt.Errorf("%w: operation_id, conversation_id, owner_scope_id and at least one message are required", ErrInvalidInput)
 	}
 	normalized := make([]MessageInput, 0, len(request.Messages))
+	seenMessageIDs := make(map[string]struct{}, len(request.Messages))
 	for _, message := range request.Messages {
 		message.MessageID = strings.TrimSpace(message.MessageID)
 		message.SenderID = strings.TrimSpace(message.SenderID)
@@ -149,6 +159,13 @@ func (s *IndexService) IndexMessages(ctx context.Context, request IndexMessagesR
 		if message.MessageID == "" || message.SenderID == "" || strings.TrimSpace(message.Content) == "" {
 			return nil, fmt.Errorf("%w: every message requires message_id, sender_id and content", ErrInvalidInput)
 		}
+		// A message is keyed by (conversation_id, message_id), so repeating an id
+		// inside one batch is ambiguous rather than idempotent: it would write the
+		// same vectors twice and return the message twice.
+		if _, duplicate := seenMessageIDs[message.MessageID]; duplicate {
+			return nil, fmt.Errorf("%w: message_id %q appears more than once in one request", ErrInvalidInput, message.MessageID)
+		}
+		seenMessageIDs[message.MessageID] = struct{}{}
 		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(message.Content)))
 		if message.ContentSHA256 != "" && message.ContentSHA256 != digest {
 			return nil, fmt.Errorf("%w: content_sha256 does not match content for message %q", ErrInvalidInput, message.MessageID)
@@ -176,6 +193,12 @@ func (s *IndexService) IndexMessages(ctx context.Context, request IndexMessagesR
 		return nil, err
 	} else if ok {
 		return replay.([]MessageState), nil
+	}
+	// The ledger above only knows finished operations. An operation whose write
+	// died between the intent commit and the published state exists only as a
+	// pending intent, so rebinding has to be checked there too.
+	if err := next.pendingOperationConflict(request.OperationID, fingerprint); err != nil {
+		return nil, err
 	}
 	// Phase one: bind an unfinished write intent for every message that is not
 	// already indexed, so a crash cannot leave vectors that no intent accounts for.
@@ -209,9 +232,21 @@ func (s *IndexService) IndexMessages(ctx context.Context, request IndexMessagesR
 				return nil, fmt.Errorf("%w: message %q is bound to another unfinished index operation", ErrConflict, message.MessageID)
 			}
 		} else {
+			// The same storage id can still be waiting for physical deletion: an
+			// earlier attempt wrote the intent, failed, and its cleanup could not
+			// reach the collection. Claiming the id again supersedes that cleanup,
+			// because the retry replaces the very vectors the delete was aiming at
+			// (ingesting a storage id replaces all of its chunks). If this attempt
+			// fails too, abandonWrite puts the id back on the delete list, so the
+			// orphan is never forgotten. Keeping both claims would make the state
+			// invalid - the validator refuses an id that is pending write and
+			// delete - and the retry the contract prescribes would be rejected
+			// with a message about a control state bug instead of making progress.
+			delete(next.pendingDeletes, storage)
 			next.pendingWrites[storage] = ControlPendingWrite{
 				OperationID:             request.OperationID,
 				Fingerprint:             message.ContentSHA256,
+				OperationFingerprint:    fingerprint,
 				LeaseExpiresAtUnixMilli: now().Add(pendingWriteLease).UnixMilli(),
 			}
 		}
@@ -477,15 +512,21 @@ func (s *IndexService) DeleteConversation(ctx context.Context, request DeleteCon
 		return replay.(DeleteResult), nil
 	}
 	conversation := next.conversation(request.ConversationID)
+	// The staleness fence runs before the cached result on purpose. A cached
+	// result describes the state at that lifecycle revision; once a later
+	// revision resurrected the conversation, replaying the old revision would
+	// answer "tombstoned" for a conversation that is live and searchable again.
+	// A replay of the same revision is still idempotent: it is at the current
+	// lifecycle revision, so it passes the fence and hits the cache below.
+	if request.LifecycleRevision < conversation.lifecycleRevision {
+		return DeleteResult{}, fmt.Errorf("%w: current=%d requested=%d", ErrStaleLifecycle, conversation.lifecycleRevision, request.LifecycleRevision)
+	}
 	if result, ok := conversation.deleteResults[request.LifecycleRevision]; ok {
 		next.recordOperation(request.OperationID, operationDelete, fingerprint, result)
 		if err := s.commit(ctx, snapshot, next); err != nil {
 			return DeleteResult{}, err
 		}
 		return result, nil
-	}
-	if request.LifecycleRevision < conversation.lifecycleRevision {
-		return DeleteResult{}, fmt.Errorf("%w: current=%d requested=%d", ErrStaleLifecycle, conversation.lifecycleRevision, request.LifecycleRevision)
 	}
 	if request.LifecycleRevision == conversation.lifecycleRevision && conversation.ownerScopeID != "" {
 		return DeleteResult{}, fmt.Errorf("%w: lifecycle revision %d already represents a live conversation", ErrConflict, request.LifecycleRevision)
@@ -619,6 +660,8 @@ func (s *IndexService) SearchMessages(ctx context.Context, request SearchMessage
 				Snippet:        candidate.Snippet,
 				ContentSHA256:  message.contentSHA256,
 				Score:          candidate.Score,
+				DenseRank:      candidate.DenseRank,
+				SparseRank:     candidate.SparseRank,
 			})
 			if len(hits) == request.TopK {
 				break

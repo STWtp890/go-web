@@ -21,7 +21,7 @@
 
 | RPC | 语义 |
 | --- | --- |
-| `IndexConversationMessages` | 在指定 `lifecycle_revision` 下幂等写入一批不可变消息；同一 `(conversation_id, message_id)` 不允许不同内容覆盖 |
+| `IndexConversationMessages` | 在指定 `lifecycle_revision` 下幂等写入一批不可变消息；同一 `(conversation_id, message_id)` 不允许不同内容覆盖；同一批次内重复出现同一个 `message_id` 是**非法请求**（`invalid_argument`），不是幂等重放 |
 | `ArchiveConversation` | 按 `archive_revision` 将会话标记为**可检索**；仅索引不等于可检索 |
 | `UpdateConversationAccess` | 用 `access_revision` 与 `lifecycle_revision` 替换 `granted_scope_ids` 完整访问快照 |
 | `RetractMessage` | 按 `retract_revision` 撤回单条消息：它仍被保存、仍属已归档会话，但不再可检索 |
@@ -62,7 +62,7 @@
 
 ## 5. 引用形式
 
-检索命中返回 `conversation_id + message_id`、`owner_scope_id`、`sender_id`、`sent_at_unix_ms`、位置、摘要与 `content_sha256`，不回传文档语义字段（文档、版本、活动版本、生命周期状态）。
+检索命中返回 `conversation_id + message_id`、`owner_scope_id`、`sender_id`、`sent_at_unix_ms`、位置、摘要、`content_sha256`，以及融合分数 `rrf_score` 与两条召回路径各自的 `dense_rank` / `sparse_rank`；不回传文档语义字段（文档、版本、活动版本、生命周期状态）。两个 rank 字段由契约声明，就必须是真实值：底层混合召回本来就算它们，适配层只是把它们传出来，不能让调用方把"恒为 0"读成"每条都是最优"。`dense_rank` / `sparse_rank` 表达的是"本次查询里该消息在该路召回中的名次"，不表达任何跨语料的排序或全局得分。
 
 因此联合回答可以同时使用两类结果，并在结果层各自标注来源；控制面**不合并**语料，底层也不会出现一个无法区分来源的结果集合。
 

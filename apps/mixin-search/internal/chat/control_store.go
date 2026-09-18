@@ -58,9 +58,18 @@ type ControlMessage struct {
 }
 
 // ControlPendingWrite is an unfinished vector write intent with a lease.
+//
+// Fingerprint is the message's content digest, which binds one storage id to
+// one payload. OperationFingerprint is the digest of the whole request, which
+// binds the operation id while the intent is still pending: the ledger only
+// records finished operations, so without it a retry after a crash could reuse
+// an operation id with a different batch, because the storage ids it derives
+// change with the message ids. It is empty for intents written before that field
+// existed, and an empty value is treated as unknown rather than as a mismatch.
 type ControlPendingWrite struct {
 	OperationID             string `json:"operation_id"`
 	Fingerprint             string `json:"fingerprint"`
+	OperationFingerprint    string `json:"operation_fingerprint,omitempty"`
 	LeaseExpiresAtUnixMilli int64  `json:"lease_expires_at_unix_milli"`
 }
 

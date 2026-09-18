@@ -40,16 +40,19 @@ func TestDependencyRules(t *testing.T) {
 			reason: "internal/rag must stay independent of transport, commands, and Protobuf DTOs",
 		},
 		{
-			name: "transport points inward to the corpus control planes",
+			name: "transport maps protocol and verifies capabilities only",
 			root: filepath.Join(internalRoot, "transport"),
 			forbidden: func(path string) bool {
 				if strings.HasPrefix(path, "mixin-search/cmd/") || path == "mixin-search/document_pipeline" {
 					return true
 				}
-				// The transport boundary is where a caller is authenticated and
-				// where each corpus's protocol surface is mapped, so it may reach
-				// the corpora and the capability primitives. It still may not reach
-				// commands or any other internal package.
+				// This rule is about layers, not about which corpus an adapter
+				// belongs to: both corpus adapters live in this one package, so the
+				// rule cannot tell them apart. What keeps a chat adapter from
+				// reaching the document corpus is that they are separate types with
+				// separate ports (see ADR-014 and internal/chat's own rule), not
+				// this import check. Do not read the whitelist below as an
+				// isolation guarantee.
 				allowed := func(candidate string) bool {
 					return candidate == "mixin-search/internal/rag" ||
 						strings.HasPrefix(candidate, "mixin-search/internal/rag/") ||
@@ -61,6 +64,32 @@ func TestDependencyRules(t *testing.T) {
 				return strings.HasPrefix(path, "mixin-search/internal/") && !allowed(path)
 			},
 			reason: "transport may map protocol types to a corpus control plane and verify capabilities only, and must not depend on commands or concrete lower layers",
+		},
+		{
+			name: "chatindex is only a corpus adapter",
+			root: filepath.Join(internalRoot, "chatindex"),
+			forbidden: func(path string) bool {
+				if strings.HasPrefix(path, "mixin-search/cmd/") ||
+					strings.HasPrefix(path, "mixin-search/internal/transport/") {
+					return true
+				}
+				// It is the seam between the two corpora on purpose: it may build a
+				// chat corpus over the shared vector core and register a pipeline
+				// through the shared pipeline contract, and it must not reach
+				// anything above that seam.
+				allowed := func(candidate string) bool {
+					return candidate == "mixin-search/document_pipeline" ||
+						strings.HasPrefix(candidate, "mixin-search/document_pipeline/") ||
+						candidate == "mixin-search/internal/chat" ||
+						strings.HasPrefix(candidate, "mixin-search/internal/chat/") ||
+						candidate == "mixin-search/internal/rag" ||
+						strings.HasPrefix(candidate, "mixin-search/internal/rag/") ||
+						candidate == "mixin-search/internal/controlplane" ||
+						strings.HasPrefix(candidate, "mixin-search/internal/controlplane/")
+				}
+				return strings.HasPrefix(path, "mixin-search/internal/") && !allowed(path)
+			},
+			reason: "internal/chatindex is the only package that may see both corpora, and it must stay below transport and commands",
 		},
 		{
 			name: "controlplane stays a mechanism",

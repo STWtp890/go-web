@@ -59,6 +59,40 @@ func TestChatSearchEnforcesScopeContainment(t *testing.T) {
 	}
 }
 
+// TestChatAuditCountsRequestedScopesTheWayItCountsGrantedOnes keeps the two
+// sizes in the audit record comparable: a client that repeats a scope or pads
+// it with whitespace asked for one scope, and the record must not read as an
+// attempted over-reach.
+func TestChatAuditCountsRequestedScopesTheWayItCountsGrantedOnes(t *testing.T) {
+	t.Parallel()
+
+	authenticator, issuer, sink := newTestAuthenticator(t)
+	token, err := issuer.Issue("py-agent", security.RoleChatSearcher, "7",
+		[]string{"scope-group-42"}, []string{"group-42"})
+	if err != nil {
+		t.Fatalf("issue chat searcher token: %v", err)
+	}
+	spy := &handlerSpy{}
+	if _, err := authenticator.UnaryInterceptor(
+		incomingContext(token),
+		&mixinsearchchatv1.SearchChatMessagesRequest{
+			Query:           "x",
+			AllowedScopeIds: []string{" scope-group-42 ", "scope-group-42", ""},
+		},
+		&grpc.UnaryServerInfo{FullMethod: mixinsearchchatv1.ChatIndexService_SearchChatMessages_FullMethodName},
+		spy.handler,
+	); err != nil {
+		t.Fatalf("chat search with a repeated scope failed: %v", err)
+	}
+	if !spy.called {
+		t.Fatal("chat search with a repeated scope never reached the handler")
+	}
+	record := sink.last()
+	if record.RequestedScope != 1 || record.GrantedScope != 2 {
+		t.Fatalf("audit scope = requested %d granted %d, want 1 and 2", record.RequestedScope, record.GrantedScope)
+	}
+}
+
 // TestChatAndDocumentCapabilitiesAreNotInterchangeable is the authorization half
 // of corpus isolation: holding a document capability must not let a caller touch
 // the chat corpus, and the reverse.

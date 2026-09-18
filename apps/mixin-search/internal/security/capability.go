@@ -261,9 +261,16 @@ func (verifier *Verifier) Verify(token string) (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
+	// The role is stored as parsed, not as it appeared in the payload: a padded
+	// role would pass validation and then fail every role lookup downstream,
+	// which reads as a permission problem for a credential this boundary accepted.
+	role, err := ParseRole(claims.Role)
+	if err != nil {
+		return Identity{}, err
+	}
 	return Identity{
 		CallerID:           claims.Subject,
-		Role:               claims.Role,
+		Role:               role,
 		UserID:             claims.UserID,
 		GrantedSpaceIDs:    normalizeIDs(claims.AllowedSpaceIDs),
 		GrantedDocumentIDs: normalizeIDs(claims.AllowedDocumentIDs),

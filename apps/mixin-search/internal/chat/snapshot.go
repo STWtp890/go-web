@@ -162,6 +162,29 @@ func (s *snapshot) recordOperation(operationID, kind, fingerprint string, result
 	}
 }
 
+// pendingOperationConflict rejects an operation id that an unfinished write has
+// already bound to a different payload.
+//
+// replayOperation only sees finished operations. Between the intent commit and
+// the published state an operation exists nowhere else, and the storage ids a
+// retry derives depend on the messages it carries, so without this check the
+// same operation id could be accepted twice with different contents - the one
+// case the contract says must conflict.
+func (s *snapshot) pendingOperationConflict(operationID, fingerprint string) error {
+	for storage, intent := range s.pendingWrites {
+		if intent.OperationID != operationID || intent.OperationFingerprint == "" {
+			continue
+		}
+		if intent.OperationFingerprint != fingerprint {
+			return fmt.Errorf(
+				"%w: operation_id %q is already bound to an unfinished index operation on %q",
+				ErrConflict, operationID, storage,
+			)
+		}
+	}
+	return nil
+}
+
 // vectorControls renders the projection the chat collection needs for candidate
 // selection. A tombstoned conversation projects its indexed messages as
 // tombstones, and retracted messages project as retracted rather than being

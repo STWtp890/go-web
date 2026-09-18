@@ -237,6 +237,8 @@ func (s *ChatServer) SearchChatMessages(
 			Snippet:       hit.Snippet,
 			ContentSha256: hit.ContentSHA256,
 			RrfScore:      hit.Score,
+			DenseRank:     int32(hit.DenseRank),
+			SparseRank:    int32(hit.SparseRank),
 		})
 	}
 	return response, nil
