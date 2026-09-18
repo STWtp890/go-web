@@ -251,7 +251,7 @@ P3.3a 已于 2026-09-17 完成，决策记录为 [ADR-014](../adr/014-per-corpus
 
 ### 进展
 
-P3.3 **已完成**（验收提交 `5483b65`，证据归档于 `docs/reports/evidence/phase3/`）：独立聊天契约、独立控制面与持久化、独立 Qdrant alias 与 `_g1` 基线、capability 硬隔离（角色 + audience 双锁）、容量硬限制与幂等账本保留机制全部落地，本地单元/架构门禁、进程内端到端与容器整栈验收全绿。收口前经过两轮独立对抗性复审，确认的 9 处缺陷（含一处 HIGH：alias 两段式切换在 Qdrant 上是非原子的、失败会把 alias 删掉）已全部修复并各自带回归测试。
+P3.3 **已完成**（验收提交 `a544a34`，证据归档于 `docs/reports/evidence/phase3/`）：独立聊天契约、独立控制面与持久化、独立 Qdrant alias 与 `_g1` 基线、capability 硬隔离（角色 + audience 双锁）、容量硬限制与幂等账本保留机制全部落地，本地单元/架构门禁、进程内端到端与容器整栈验收全绿。收口前经过多轮独立对抗性复审，确认的缺陷（含一处 HIGH：alias 批次失败会把 alias 删掉而当时被描述为"fail closed"）已全部修复并各自带回归测试。
 
 已落地的部分：
 
@@ -331,7 +331,7 @@ Docker Desktop 恢复运行后，P3.3 缺失的那一项终于有了容器内证
 **Qdrant alias 与 _g1 基线（第八片，2026-09-19）**
 
 - 稳定名称即 alias：`QdrantConfig.Collection` 现在是被所有读写使用的 alias，物理集合为 `<alias>_<generation>`，首个世代 `g1`（`rag.DefaultQdrantGeneration`）。启动引导三种情况：alias 存在 → 直接解析使用；alias 不存在但 `<alias>_g1` 存在 → 建 alias 指向它；都不存在 → 建 `_g1`（向量参数 + payload 索引）再建 alias。**旧布局（物理集合恰好占用 alias 名）一律拒绝启动**并提示清空项目开发卷——按已拍板决策不写迁移逻辑；
-- 新增 `PrepareGeneration`（为一个新世代建好物理集合，不切换）、`SwitchAlias`（单次 `UpdateAliases` 完成"删旧指向 + 建新指向"，切换前校验目标存在并补齐 payload 索引，切换后读回确认，未知目标/自指一律拒绝）、`Alias`/`PhysicalCollection`（映射可被直接断言），并以 `rag.AliasedVectorStore` 接口暴露；memory/pgvector 明确不支持 alias；
+- 新增 `PrepareGeneration`（为一个新世代建好物理集合，不切换）、`SwitchAlias`（单次官方 `UpdateAliases`，含"删旧指向 + 建新指向"两个 action；切换前校验目标是本语料世代、存在且具备 payload 索引，切换后读回确认，未知目标/自指/跨语料一律拒绝；批次失败时执行**显式补偿**把 alias 建回原集合）、`RestoreAlias`（同一补偿路径的操作员入口）、`Alias`/`PhysicalCollection`（映射可被直接断言），并以 `rag.AliasedVectorStore` 接口暴露；memory/pgvector 明确不支持 alias。**切换的准确语义**（由锁定版本 qdrant v1.19.1 上的决定性实验确定，既不是"完全原子"也不是"不原子"）：**对并发观察者原子可见**（整批持 alias 写锁，看不到中间状态），但**不是失败全回滚事务**（批内顺序执行、边做边改映射、遇错返回且无 undo，失败可能留下前缀效果），因此由应用补偿恢复原映射；
 - 组合根：`validateCorpusIsolation` 增加"两个语料不得互用对方的物理集合名"；启动日志打印 `alias -> physical collection`，让世代成为可观测事实；
 - 根 Compose 把 Qdrant gRPC 端口发布到回环（`QDRANT_GRPC_PORT`，默认 16334），使门禁可以直接读取 alias 映射（qdrant 镜像里没有 curl，此前该端口未发布）；
 - **证据**：`internal/rag/qdrant_alias_integration_test.go`（真实 Qdrant：引导建 alias+`_g1`、切到空 `_g2` 后本语料检索为空、**另一语料 alias 映射不变**、切回恢复、未知目标被拒，且失败也恢复原映射并清理测试集合）；`cmd/rag-server/alias_container_test.go`（对部署栈：两个配置名必须是 alias 且指向 `_g1`、运行中切换 chat alias 后聊天检索为空、文档 alias 映射不变、切回后聊天检索恢复、未知目标被拒，清理阶段恢复映射并删除新建世代）；`deployments/verify.ps1` 新增对应门禁步骤；
@@ -353,11 +353,13 @@ Docker Desktop 恢复运行后，P3.3 缺失的那一项终于有了容器内证
 
 **建议值（修正后，待你确认）**：
 
-- 硬限制：单 corpus 最多 **30,000** 条消息、单 corpus 快照最多 **24 MiB**（按实测约 766 字节/消息，30k 时约 22.5 MiB，两项自洽）；超限的写入请求**明确拒绝**（`FAILED_PRECONDITION`）；
-- SLO（不作为拒绝依据）：在硬限制内，单次写入 p95 ≤ **1 s**（30k 处实测 CAS 约 0.8 s）；
+- 硬限制：单 corpus 最多 **30,000** 条消息、单 corpus 快照最多 **24 MiB**（30k 实测 21.9 MiB，其中账本 10.1 MiB）；超限的写入请求**明确拒绝**（`FAILED_PRECONDITION`）；
+- SLO（不作为拒绝依据）：在硬限制内，单次写入 p95 ≤ **1 s**（50k 实测 p95 1.58 s；30k 内插约 950 ms，**内插值非实测**）；
 - 迁移触发（改成分区/行级 CAS 的判据，任一命中即启动独立 ADR）：消息数 ≥ 30k、快照 ≥ 24 MiB、或持续观测到 p95 写入 > 1 s；
-- 账本：保留 **7 天**（建议）/ 上限 **100,000** 条；**开启保留窗口会直接缩小快照**，因此建议与容量上限同批启用；
-- 若你更希望保留 50k 的消息上限，则快照上限需同步提到 **48 MiB**，SLO 相应放宽到 p95 ≤ 1.5 s（50k 实测最差 1.42 s）——这是同一份数据下的另一种自洽组合，选择权在你。
+- 账本：保留 **7 天**（建议），**条数上限必须按字节预算推导而不是固定 100,000**——实测"30k 消息 + 100k 条 receipt"为 **63.8 MiB（超预算 2.7 倍，账本独占 81%）**；按 `maxEntries ≈ (预算 − 消息占用) / (每 receipt 平均状态数 × ~350 B + 开销)` 推导：每批 50 条约 700 条、每批 5 条约 7,000 条、每条 1 个响应约 38,000 条。**开启保留窗口会直接缩小快照**（30k 时把账本压到约一份语料副本），因此必须与容量上限同批启用；
+- 若你更希望保留 50k 的消息上限，则快照上限需同步提到 **48 MiB**，SLO 放宽到 p95 ≤ 1.5 s——同一份数据下的另一种自洽组合，选择权在你。
+
+完整测量表（含环境、假设、账本占比、CAS p50/p95、两个上限的相互作用）见 [p33-chat-capacity-profile_20260919.md](../reports/evidence/phase3/p33-chat-capacity-profile_20260919.md)。
 
 **幂等账本保留窗口（ADR-015，2026-09-19：决策已定，机制已落地、默认不清理）**：账本只进不出，是快照里唯一没有回收路径的部分，因此"重放保证的有效窗口"必须先写成契约再实现。已接受 [ADR-015](../adr/015-control-plane-idempotency-ledger-retention.md)：窗口内重放返回首次响应、改绑被拒；窗口外不承诺响应复现与改绑检测，但**不重复写入**由状态本身保证（向量键含 `operation_id`、消息内容不可变、修订号幂等）；清理按年龄为主（建议 7 天）并以条数上限兜底（建议 100,000 条），走既有机会式维护路径，不新增后台任务。机制已实现并配置化（`-chat-operation-retention`、`-chat-operation-max-entries`，默认 0 = 不清理，行为与今天一致；账本条目新增 `recorded_at_unix_milli`，无时间戳的旧条目按"年龄未知"处理：不被年龄清理、在条数上限下最先被丢弃）。实现时发现并修正了 ADR 的一处措辞：窗口外**第一次**以不同载荷到达时改绑无从检测（接受），但该 id 被重新接受后会重新记录、保护恢复——测试 `TestOperationLedgerRebindingOutsideTheWindowIsAccepted` 与 `TestOperationLedgerRetentionKeepsTheWindowAndForgetsBeyondIt` 分别固定这两种情形，另有条数上限最旧优先、默认不清理、清理后快照变小三条测试。启用（填数值）与容量上限一并落地，避免两次契约变更。
 
@@ -367,7 +369,7 @@ Docker Desktop 恢复运行后，P3.3 缺失的那一项终于有了容器内证
 
 机制细节：`-chat-max-messages` 与 `-chat-max-snapshot-bytes` 两个配置项（默认 0 = 不限）已落地，超限写入返回 `ErrCapacityExceeded` → gRPC `FAILED_PRECONDITION`；消息数为精确检查；快照字节数按**已持久化的快照**判定（Postgres 适配器在 `Load` 时记录真实 payload 长度，因此别的实例写入的更大快照也会被看见），最多滞后一次写入——刻意取舍，避免把候选快照再编码一遍（50k 时约多花 550 ms/次）。达到快照上限后**所有**写入路径（索引/归档/访问/撤回/删除）都被拒绝，读取不受影响；只在索引路径设限不会真正约束快照，因为其余四种写入同样会新增账本记录。**超限不产生部分提交**已由测试断言：被拒后 generation 不变、会话/消息/pending 状态逐字段相等、向量计数不变（`TestSnapshotCeilingRefusesEveryMutationNotJustIndexing`）。测试清单：`TestCapacityGuardRefusesWritesPastTheMessageLimit`、`TestCapacityGuardRefusesOnceTheSnapshotLimitIsReached`、`TestSnapshotCeilingRefusesEveryMutationNotJustIndexing`、`TestSnapshotCeilingSeesASnapshotAnotherInstanceGrew`、`TestZeroCapacityLimitsDoNotRestrictWrites`、`TestNegativeCapacityLimitsAreRejected`，以及适配器的错误码映射用例；真实 PostgreSQL 上另有三条集成子测试（消息上限、快照上限、账本清理）。
 
-**P3.6 开工前必须完成的五步（评审要求）**：①完整测量表已归档（见 `docs/reports/evidence/phase3/p33-chat-capacity-profile_20260919.md`）；②拍板 A/B 档位；③在 Compose 中写入非零值；④超限不部分提交的断言已就位（同上）；⑤重跑 PostgreSQL 集成与整栈门禁。**在第 ①–⑤ 完成前，不应把容量描述为"已受控"。**
+**P3.6 开工前必须完成的五步（评审要求）**：①完整测量表已归档（含 30k 行、账本占比、CAS p50/p95、环境与假设、两个上限的相互作用：`docs/reports/evidence/phase3/p33-chat-capacity-profile_20260919.md`）；②拍板 A/B 档位与账本参数（条数上限按字节预算推导，**不要直接填 100,000**）；③在 Compose 中写入非零值；④超限不部分提交的断言已就位（同上）；⑤重跑 PostgreSQL 集成与整栈门禁。**在第 ①–⑤ 完成前，不应把容量描述为"已受控"。**
 
 复跑方式（真实 CAS 需要控制 PostgreSQL 可达）：
 
@@ -386,7 +388,15 @@ docker compose -p p33cap -f docker-compose.yaml down -v
 - **聊天侧 PostgreSQL 适配器已补上集成测试**（`internal/chat/capacity_postgres_test.go`，`CHAT_CONTROL_STORE_INTEGRATION=1` + `CONTROL_DATABASE_DSN`，覆盖消息上限、快照上限与账本清理三条真实路径）；
 - **纯加固两项**（判定为既有行为或不必需，不构成错误状态）：适配器把包装后的内部错误文本回给调用方（文档与聊天同样如此，改动会变更客户端可见文本）；聊天索引写入没有按意图租约设 deadline（只影响写锁持有时长）。
 
-**P3.5 承接项**：alias 机制与切换已交付，**蓝绿重建编排**（把数据填进新世代、完整性校验、保留上一代用于回退）仍属 P3.5；`verify-qdrant-control.ps1` 已补上 store 级 alias 套件的选择。
+**P3.5 承接项**：alias 机制与切换已交付，**蓝绿重建编排**（把数据填进新世代、完整性校验、保留上一代用于回退）仍属 P3.5。编排还必须处理本包明确留下的 **alias 单写者与补偿竞态**：
+
+- **单写者/租约**：alias 只能由一个管理者切换（单实例角色或分布式租约）；并发管理者会互相覆盖；
+- **切换前预检**：目标集合存在、schema（向量维度/sparse 配置）正确且健康，而不只检查存在性与 payload 索引；
+- **记录 `oldTarget`/`newTarget`**：补偿前**再次读取当前映射**，仅当现状仍符合本次失败操作的预期时才恢复，避免覆盖另一个管理者刚完成的合法切换；
+- **告警**：alias 缺失、补偿失败都要产生高优先级告警（当前只在服务日志与错误里体现）；
+- **注意 Qdrant 的 alias API 没有基于旧目标的 CAS**，因此上述顺序与租约是唯一可用的保护手段。
+
+`verify-qdrant-control.ps1` 已补上 store 级 alias 套件的选择。
 
 **环境记录**：远程 CI 仍无本次提交的运行证据（仓库领先 `origin/main`），本文档只声明本地门禁与容器验收的结果。
 

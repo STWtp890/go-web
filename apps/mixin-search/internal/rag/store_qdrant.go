@@ -197,23 +197,26 @@ func (s *QdrantStore) PrepareGeneration(ctx context.Context, generation string, 
 	return physical, nil
 }
 
-// SwitchAlias points this corpus's alias at another physical collection, so a
-// reader sees either the old collection or the new one and never neither.
+// SwitchAlias points this corpus's alias at another physical collection.
 //
 // The move uses Qdrant's documented form: one UpdateAliases request carrying a
-// delete action and a create action, which the server applies under a single
-// write lock. That batch is *not* rolled back if the create action fails (the
-// server applies actions in order and returns on the first error), so a failure is
-// compensated here: the alias is re-created on the collection it was serving, and
-// the reported error carries both the original failure and the repair outcome.
-// Relying on a create-alias-over-existing-mapping to re-point instead would work
-// on some server versions but is not the switching protocol Qdrant documents.
+// delete action and a create action. That batch is **atomic for concurrent
+// observers** - the server holds its alias write lock for the whole batch, so no
+// request sees a half-applied switch - but it is **not a transaction**: the
+// server applies the actions in order, mutates the alias mapping as it goes, and
+// returns on the first error without undoing what already succeeded (verified on
+// the pinned qdrant v1.19.1: a failing create action leaves the alias deleted).
+// A failure can therefore leave a prefix effect, so this method compensates by
+// re-creating the alias on the collection it was serving; the reported error
+// carries both the original failure and the repair outcome. Relying on a
+// create-alias-over-existing-mapping to re-point instead would work on some
+// server versions but is not the switching protocol Qdrant documents.
 //
 // The target must be one of this corpus's own generations, and it is validated
 // before anything moves: it must exist and carry the payload indexes candidate
 // filtering needs. A typo therefore fails the switch instead of taking the corpus
 // offline, and it fails closed - the alias keeps pointing at the generation that
-// was serving.
+// was serving (or is put back there by the compensation).
 func (s *QdrantStore) SwitchAlias(ctx context.Context, target string) error {
 	target = strings.TrimSpace(target)
 	if err := s.validateAliasTarget(target); err != nil {

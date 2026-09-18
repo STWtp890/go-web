@@ -69,15 +69,22 @@ alias "go_web_shadow_v1" -> collection "go_web_shadow_v1_g1"
 ```
 
 切换本身使用 Qdrant 官方文档形式：同一次 `UpdateAliases` 里提交 `Delete(alias)` + `Create(alias→目标)`。
-争议点"整批是否原子"由锁定版本上的决定性实验定论（qdrant v1.19.1）：
+它的语义需要准确表述，既不能说"完全原子"，也不能说"不原子"：
+
+> **Alias 切换对并发观察者原子可见，但不是失败全回滚事务**——服务端在整批期间持有 alias 写锁，
+> 其他请求看不到批次执行到一半的中间状态；但批内 action 顺序执行、边做边改 alias 映射，遇到错误
+> 直接返回且**没有 undo**，因此失败可能留下前缀效果（删掉了旧映射、新映射没建起来）。
+> 应用侧据此执行**显式补偿**恢复原映射。
+
+该结论由锁定版本（qdrant v1.19.1）上的决定性实验确定：
 
 ```
 observed server behaviour: a failed create action leaves alias "..." deleted (no rollback)
 ```
 
-即**服务端不回滚**，因此 `SwitchAlias` 在批次失败时执行显式补偿（把 alias 重新建在原集合上，
-错误里带上原始失败与修复结果），并有 `TestQdrantAliasBatchFailureIsCompensated` 证明补偿有效；
-`RestoreAlias` 是同一路径的操作员入口。
+`SwitchAlias` 因此在批次失败时把 alias 重新建在原集合上（错误里带上原始失败与修复结果），
+并有 `TestQdrantAliasBatchFailureIsCompensated` 证明补偿有效；`RestoreAlias` 是同一路径的操作员入口。
+补偿的已知边界（单写者/租约、补偿竞态、预检、告警）登记在 P3.5 待办中，不属于本包。
 
 `TestChatAliasSwitchAgainstADeployedStack` 对着**运行中的部署**执行并 PASS：两个配置名必须是
 alias 且**精确指向** `_g1`（只要求 `_g1` 后缀会让"两个语料共用同一集合"也判为健康）；断言两个
