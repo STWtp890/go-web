@@ -1,6 +1,7 @@
 # mixin-search 聊天语料索引契约
 
 > 状态：契约已定型；服务端实现属于 P3.3 实施包，进度见 [当前实施计划](../planning/CURRENT_IMPLEMENTATION_PLAN.md)
+> 责任边界：§8 是 `py-agent` 接入前后的核对清单（谁负责什么、mixin-search 不做哪些事）
 > 日期：2026-09-17
 > Proto：`packages/proto/mixin-search/chat/v1/chat.proto`
 > 相关决策：[ADR-014](../adr/014-per-corpus-control-plane-isolation.md)、[ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md) 决策 6
@@ -16,6 +17,8 @@
 - 本服务**不创建、不编辑、不删除**已归档的聊天记录，也不解释 QQ 身份。
 
 与文档语料的隔离是硬隔离：独立契约、独立控制面实例与 generation、独立持久化状态、独立投影 reconciler、独立索引集合与 alias。共享的是机制（不可变快照、compare-and-swap、后台收敛、capability 边界），不是运行状态。
+
+本节只声明**数据所有权**；三方在判定、执行与举证上的分工见 §8。
 
 ## 2. RPC
 
@@ -114,3 +117,52 @@
 幂等账本的清理与"重放保证的有效窗口"由 [ADR-015](../adr/015-control-plane-idempotency-ledger-retention.md) 定义：**窗口内**重放同一 `operation_id` 返回首次响应、改绑被拒；**窗口外**不承诺返回首次响应，也不承诺检测改绑，但**不重复写入**仍由状态本身保证（向量键含 `operation_id`、消息内容不可变、修订号幂等）。窗口外的降级是精确的：如果某 `operation_id` 在窗口后的**第一次**到达携带了不同载荷，它会被当作新操作接受；一旦该 id 被重新接受，它会被重新记录，此后改绑检测恢复。
 
 **保留期是"时间窗口或条数上限任一先触发"**，不是无条件的时间保证：峰值写入速率下，条数上限可能先到，未满时间窗口的记录会被清掉。两条限量都受同一个 24 MiB 快照预算约束——账本与消息共用这份预算，而一条 receipt 携带该批每条消息的状态，因此"按峰值反推条数"之外还必须按**字节预算**核对（30k 消息约占 11.2 MiB，留给账本约 12.8 MiB，据此取 30,000 条；ADR-015 决策 3 初稿建议的 100,000 条实测达 63.8 MiB，与字节上限互不相容）。清理机制已实现（`-chat-operation-retention`、`-chat-operation-max-entries`），A 档取 7 天 / 30,000 条；`30,000` 同样是**上限而不是保证**，重放保证的实际窗口取决于操作速率、批大小与操作类型。
+
+## 8. 责任边界：mixin-search 与 py-agent 各自负责什么
+
+本节是 `py-agent` 正式接入（P3.6）前后的核对清单。它不改变任何 RPC 语义，只把"谁负责"写清楚，避免实现服务端时把消费者侧的职责一并实现。
+
+### 8.1 判定责任：谁说了算
+
+| 事项 | 责任方 | mixin-search 的角色 |
+| --- | --- | --- |
+| 会话、消息、QQ 身份、渠道权限、原始聊天记录的长期保存 | `py-agent` | **不参与**：连"消息已保存"这一态都不感知（§3 三态中的"已保存"由它独占） |
+| 用户、知识空间、空间成员、绑定关系、文档治理 | `go-web` | **不参与**：不解释用户、角色、成员或 QQ 身份 |
+| 渠道权限（该 QQ 身份在当前会话能做什么） | `py-agent` | 不判定 |
+| 资源权限（该用户可访问哪些空间与文档） | `go-web`（[ADR-016](../adr/016-qq-identity-and-knowledge-space-mapping.md)） | 只执行 `requested ⊆ granted` 的包含校验，**不产生**授权结论 |
+| 撤回、归档、删除的**意图** | `py-agent` | 执行：三态状态机与修订围栏（迟到修订被拒） |
+| 检索执行与候选级过滤 | `mixin-search` | 唯一执行方（范围、活动版本、墓碑、storage domain） |
+| 跨语料结果融合与最终回答 | 编排方（`py-agent`） | 只按语料分别返回结果，不融合（[ADR-014](../adr/014-per-corpus-control-plane-isolation.md) 决策 3） |
+| capability 签发 | `go-web` | 只**校验**（发行方与 audience 绑定，密钥不得下发给 `py-agent`） |
+
+**关键含义**：`mixin-search` 收到的 allow-list 是**调用方声明的事实**，它无法验证声明是否真实。因此权限判定的防线在 `go-web`（资源）与 `py-agent`（渠道），`mixin-search` 的包含校验是"执行侧不越界"，不是授权判定。任何"让 mixin-search 自己判断该不该给"的设计都是越界。
+
+### 8.2 mixin-search 明确不做（实现红线）
+
+- 不保存、不返回、不修补原始聊天记录；不实现会话时间线；
+- 不解释 QQ 身份，不做身份绑定、不做空间/成员管理（这些是 go-web 的事实源）；
+- 不做渠道权限判定，不感知"用户是否还在群里"；
+- 不做知识晋升（聊天内容转正式文档必须走 `go-web` 的生命周期）；
+- 不融合两语料结果，不生成回答，不调用任何模型；
+- 不签发 capability，也不持有签发密钥的下发权；
+- **没有出站依赖**：不回调 `py-agent`、不订阅其队列、不主动拉取数据；所有数据由调用方推入；
+- 不"理解"业务：不做消息去重语义推断、不猜测缺失消息、不代调用方重试；
+- 不把超限请求裁剪成"能装下的子集"（`INVALID_ARGUMENT` / `RESOURCE_EXHAUSTED` 都是整体拒绝，零部分提交）。
+
+### 8.3 py-agent 必须自行负责的输入义务
+
+| 义务 | 说明 |
+| --- | --- |
+| 稳定的 `operation_id` | 重试必须复用同一个 id；窗口内重放返回首次响应，窗口外不再承诺响应复现（[ADR-015](../adr/015-control-plane-idempotency-ledger-retention.md)） |
+| 消息不可变 | 同一 `(conversation_id, message_id)` 不得换内容；内容变更须走"撤回 + 新消息" |
+| 修订号单调 | 四类修订（lifecycle / archive / access / retract）由它推进，服务端只拒绝迟到修订 |
+| 批次与 metadata 合规 | 遵守 §7.1 预算与批大小约定：**生产端合规 + 服务端拒绝**，服务端不做裁剪 |
+| 错误处置 | `UNAUTHENTICATED` / `PERMISSION_DENIED` / `INVALID_ARGUMENT` / `FAILED_PRECONDITION` **不可重试**（后者先对账）；`UNAVAILABLE` 可重试；`RESOURCE_EXHAUSTED` 需区分容量耗尽与限流并退避、告警，**不得无限重试** |
+| 不持有边界密钥 | 只能使用 `go-web` 签发的短时 capability（[SERVICE_CALL_CAPABILITY.md](./SERVICE_CALL_CAPABILITY.md) §4） |
+| 不自行扩大范围 | 请求范围必须来自 `go-web` 的资源范围解析结果；不得缓存旧信封用于后续签发（ADR-016 决策 8） |
+| 对账 | 用 `GetConversationIndexState` 比较自己的记录与服务端已索引状态；"已保存"计数不在服务端，无法在此对账 |
+
+### 8.4 当前开工状态（2026-09-19）
+
+- 正在推进的 **P3.4 只在 `go-web` 侧**（QQ 身份与知识空间映射），**不改动 `mixin-search`**；本包也不实现 capability 换取入口（属 P3.6）；
+- 聊天语料目前**没有生产写入者**（只有测试铸造 chat token）：容量、隔离与 alias 结论都是在无真实流量下取得的，真实负载下的行为要到 P3.6 才被验证；实现服务端时不要把"测试通过"当作"真实接入已就绪"。
