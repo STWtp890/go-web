@@ -8,6 +8,8 @@
 
 契约路径使用 `mixin-search/v1`，Protobuf 完整服务名为 `mixin_search.v1.RAGService`。该服务只负责正式文档版本的派生索引，不承载聊天语料、用户体系、空间成员关系或文档发布流程。
 
+聊天语料**不会**加入本契约：它使用独立领域契约、独立控制面与独立索引集合，见 [ADR-014](../adr/014-per-corpus-control-plane-isolation.md)。给本契约增加 `corpus_type` 字段、或让 `SearchDocuments` 接受聊天请求，都在该决策中被明确拒绝；`storage_domain` 是存储隔离，不是语料类型契约。
+
 `go-web` 是文档、版本、归属空间、访问策略、授权和生命周期的唯一事实源，负责分配 `activation_revision`、`access_revision`、`lifecycle_revision`，并在完成身份、成员和资源权限校验后计算搜索请求中的 allow-list。该 allow-list 同时决定签发调用方 capability 时写入的已授予范围，服务端据此拒绝任何扩大范围的请求，见 5.1 与 [SERVICE_CALL_CAPABILITY.md](./SERVICE_CALL_CAPABILITY.md)。
 
 `mixin-search` 只保存可重建的文档索引、执行访问快照和索引控制状态，不解释用户、角色、成员或 QQ 身份，也不反向修改业务文档。P2.1 已为控制状态接入独立 PostgreSQL 持久化和 memory 测试适配器；P2.2 已为 Qdrant 接入候选级 ACL、活动版本、墓碑和 storage domain 过滤；P2.3/P2.4 已完成 gin-backend Outbox 消费、自动重试、对账、全量重建和根 Compose 持续影子索引；P2.5 已通过同一 SearchDocuments 契约运行异步影子查询和来源分层评估，未改变协议字段。

@@ -125,6 +125,8 @@ QQ 群与团队空间通过独立绑定关系关联，不应把 QQ 群标识直�
 
 文档通常具有更高的正式性；聊天记录更适合表达历史讨论、近期变化和人物观点。当两者存在冲突时，系统应向用户呈现差异，而不是隐式将聊天内容覆盖为正式结论。
 
+本节要求的隔离在控制面上的落地方式（独立控制面实例、独立 generation 与持久化、独立索引集合与 alias，以及只在编排层融合结果）见 [ADR-014](./adr/014-per-corpus-control-plane-isolation.md)。
+
 ### 6.1 BM25 能力拆分约束
 
 当前 `go-web` 中的 BM25 全文搜索长期应拆分到 `mixin-search`；在尚无生产数据和外部客户端的开发阶段，可以直接重建内部实现和接口，但不得丢失搜索产品语义：
@@ -268,4 +270,6 @@ AI Agent 的职责是理解用户意图、选择合适的知识域、组织工�
 
 后续实现方案可以调整技术选型和内部结构，但如果变更会改变本文定义的产品定位、数据所有权、知识域隔离或权限边界，应先更新宏观决策，再进入代码实施。
 
-当前映射：宏观阶段一已由 go-web 阶段 0 完成并冻结；宏观阶段二中的 go-web 阶段 1 和阶段 2 已完成，P2.5 已给出 KEEP_BM25 结论。宏观阶段三的实施基线已于 2026-09-17 建立，当前实施包为 P3.1（`mixin-search` 调用身份与授权边界）；文档 BM25 的受控读取切换属于独立的 B 线，不再作为其他工作的前置条件。具体范围、顺序和门禁只在 [`CURRENT_IMPLEMENTATION_PLAN.md`](./planning/CURRENT_IMPLEMENTATION_PLAN.md) 维护，跨阶段决策见 [`ADR-012`](./adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)，阶段 1 完成证据保存在 [`PHASE1_IMPLEMENTATION_LOG.md`](./reports/PHASE1_IMPLEMENTATION_LOG.md)，阶段 2 实施证据保存在 [`PHASE2_IMPLEMENTATION_LOG.md`](./reports/PHASE2_IMPLEMENTATION_LOG.md)。
+当前映射：宏观阶段一与阶段二已由 go-web 阶段 0、阶段 1 和阶段 2 完成并冻结，阶段二的书面结论为 KEEP_BM25。宏观阶段三正在推进。
+
+**本文不记录实施包编号和完成进度**：当前状态、实施顺序与验收门禁只在 [`CURRENT_IMPLEMENTATION_PLAN.md`](./planning/CURRENT_IMPLEMENTATION_PLAN.md) 维护。跨阶段决策见 [`ADR-012`](./adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)（多消费者检索边界与关键路径转折点）与 [`ADR-013`](./adr/013-immutable-control-snapshot-and-background-projection.md)（控制面不可变快照与后台投影收敛）。阶段 1 与阶段 2 的实施证据分别保存在 [`PHASE1_IMPLEMENTATION_LOG.md`](./reports/PHASE1_IMPLEMENTATION_LOG.md) 与 [`PHASE2_IMPLEMENTATION_LOG.md`](./reports/PHASE2_IMPLEMENTATION_LOG.md)。

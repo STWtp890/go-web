@@ -11,9 +11,14 @@ param(
 #      Frozen phase reports cite the immutable snapshots in docs/reports/evidence/
 #      instead, so their evidence never rots when a newer run replaces an old one.
 #
-# Absolute URLs, mailto: targets and pure anchors are skipped. Tracked Markdown
-# files are enumerated through git so that vendored trees (.agents/) and build
-# output (node_modules/) are never scanned.
+# Scope: the project's own Markdown, meaning everything git tracks except the
+# bundled third-party skill pack under .agents/. That pack is vendored content
+# whose links are not ours to maintain, and it is the large majority of tracked
+# Markdown, so counting it would drown out the signal. Everything else is checked,
+# including root-level governance documents such as README.md and every
+# application README.
+#
+# Absolute URLs, mailto: targets and pure anchors are skipped.
 #
 # Keep this file ASCII-only. Windows PowerShell 5.1 parses a BOM-less .ps1 as ANSI,
 # and a multi-byte comment can swallow the following newline, silently breaking code.
@@ -25,6 +30,9 @@ if (-not $RepositoryRoot) {
     $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 }
 $RepositoryRoot = (Resolve-Path -LiteralPath $RepositoryRoot).Path
+
+# Directories whose Markdown is vendored, generated or otherwise not maintained here.
+$excludedPrefixes = @('.agents/')
 
 # Frozen evidence and operational results are the only directories whose contents
 # are allowed to disappear; links into them would be unstable by design.
@@ -39,11 +47,28 @@ $linkPattern = '\]\(([^)]+)\)'
 $broken = New-Object System.Collections.Generic.List[string]
 $unstable = New-Object System.Collections.Generic.List[string]
 $checked = 0
+$documentCount = 0
+$skipped = 0
 
 foreach ($relativePath in $tracked) {
     if ([string]::IsNullOrWhiteSpace($relativePath)) { continue }
-    $fullPath = Join-Path $RepositoryRoot ($relativePath -replace '/', [System.IO.Path]::DirectorySeparatorChar)
+    $normalized = ($relativePath -replace '\\', '/')
+
+    $excluded = $false
+    foreach ($prefix in $excludedPrefixes) {
+        if ($normalized.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $excluded = $true
+            break
+        }
+    }
+    if ($excluded) {
+        $skipped++
+        continue
+    }
+
+    $fullPath = Join-Path $RepositoryRoot ($normalized -replace '/', [System.IO.Path]::DirectorySeparatorChar)
     if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { continue }
+    $documentCount++
 
     $directory = Split-Path -Parent $fullPath
     $lines = Get-Content -LiteralPath $fullPath -Encoding UTF8
@@ -56,9 +81,7 @@ foreach ($relativePath in $tracked) {
             if ([string]::IsNullOrWhiteSpace($path)) { continue }
 
             $checked++
-            $normalized = ($relativePath -replace '\\', '/')
-            $resolvedRelative = $target -replace '\\', '/'
-            $resolvedRelative = ($resolvedRelative -split '#')[0]
+            $resolvedRelative = ($path -replace '\\', '/')
 
             # A docs/ document may still describe the operational directory in prose
             # or in backticks; only a real link makes the document depend on it.
@@ -82,8 +105,8 @@ foreach ($entry in $broken) {
 }
 
 Write-Host ""
-Write-Host ("DOC_LINKS checked={0} documents={1} broken={2} unstable={3}" -f `
-    $checked, $tracked.Count, $broken.Count, $unstable.Count)
+Write-Host ("DOC_LINKS checked={0} documents={1} broken={2} unstable={3} thirdPartySkipped={4}" -f `
+    $checked, $documentCount, $broken.Count, $unstable.Count, $skipped)
 
 if ($broken.Count -gt 0) {
     exit 1
