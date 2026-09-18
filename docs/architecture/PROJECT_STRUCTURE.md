@@ -91,7 +91,9 @@ apps/mixin-search/
 │   │   ├── capability.go                   # 签名、校验、角色与“只允许缩小”的范围判定
 │   │   ├── identity.go                     # 已验证身份的上下文传递与结构化审计记录
 │   │   └── limiter.go                      # 按调用方的令牌桶限流
-│   ├── rag/
+│   ├── controlplane/                       # 两个语料共用的机制（不含任何语料状态）
+│   │   └── state.go                        # 不可变快照发布（generation 单调）与投影收敛/reconciler
+│   ├── rag/                                # 文档语料：控制面 + 通用向量核心
 │   │   ├── contract.go                     # 文档索引用例、幂等、fencing 与提交编排
 │   │   ├── snapshot.go                     # 不可变控制快照、发布模型转换与控制投影构造
 │   │   ├── projection.go                   # 投影 generation 跟踪、后台 reconciler 与准入确认
@@ -104,6 +106,15 @@ apps/mixin-search/
 │   │   ├── store.go                        # VectorStore 端口与 memory 实现
 │   │   ├── store_qdrant.go                 # Qdrant 控制投影与候选级过滤实现
 │   │   └── store_pgvector.go               # 实验性 pgvector 实现
+│   ├── chat/                               # 聊天语料：独立控制面（不依赖文档语料）
+│   │   ├── service.go                      # 会话/消息状态机、四类修订、投影与检索准入
+│   │   ├── snapshot.go                     # 聊天不可变快照、持久化模型转换与控制投影构造
+│   │   ├── types.go                        # 领域类型、三个端口、错误与规范化
+│   │   ├── control_store.go                # 聊天 ControlStore 端口、持久化模型与校验
+│   │   ├── control_store_memory.go         # 单元测试/显式本地演示适配器
+│   │   ├── control_store_postgres.go       # 独立 chat_control_states 表适配器
+│   │   ├── control_schema.sql              # 聊天控制面自己的表基线
+│   │   └── isolation_test.go               # ADR-014 的跨语料隔离验收
 │   └── transport/grpc/                     # Protobuf DTO 与业务 Service 的适配层
 │       ├── server.go                       # 协议转换与错误码映射
 │       └── auth.go                         # 调用方认证、角色策略与范围包含校验拦截器
@@ -113,6 +124,8 @@ apps/mixin-search/
 ```
 
 `internal/rag` 中的 `ControlState` 是独立持久化模型，不依赖 Protobuf DTO。进程内控制状态自 P3.2 起是**不可变快照**（`snapshot.go`）：读请求只做一次原子加载与一次 generation 探测，写请求在独立写入锁内对私有副本执行 compare-and-swap，成功后发布。控制投影由 `projection.go` 的后台 reconciler 按投影 generation 收敛，搜索只确认投影已追上所用快照。`DocumentIndexService` 同时依赖 `ControlStore` 和向量业务 `Service`；`cmd/rag-server` 作为组合根选择 PostgreSQL 或 memory 控制适配器并启动 reconciler。gRPC 层只完成协议转换和错误码映射，不读取数据库，也不复制幂等、修订或提交顺序规则。并发模型见 [ADR-013](../adr/013-immutable-control-snapshot-and-background-projection.md)。
+
+**两个语料、两套状态、一套机制**（[ADR-014](../adr/014-per-corpus-control-plane-isolation.md)）：`internal/controlplane` 只放与语料无关的机制——不可变快照的单调发布，以及派生投影的收敛与后台 reconciler；它不持有任何语料状态，因此没有一个包的依赖指向某个语料。`internal/rag`（文档）与 `internal/chat`（聊天）各自拥有快照类型、generation、持久化与 reconciler：文档用 `mixin_search_control.control_states`，聊天用同 schema 下自己的 `chat_control_states` 表。两条边界由 `internal/architecture/dependencies_test.go` 强制：`internal/controlplane` 不得 import 任何 `mixin-search/` 包；`internal/chat` 不得 import `internal/rag`、`transport` 或 `cmd`。聊天通过自己的端口（消息索引、投影、检索）访问向量存储，由组合根注入，因此两个语料既不能共享控制状态，也不能互相依赖。
 
 gRPC 层自 P3.1 起先认证调用方、再映射协议：`internal/transport/grpc/auth.go` 的一元拦截器校验 capability 的签名、audience、有效期与角色，并对 `SearchDocuments` 执行“请求范围 ⊆ 已授予范围”的包含校验，未通过时不进入业务路径。索引写入（`index-writer`）、检索（`searcher`）与只读运维（`ops`）是三个独立角色，`internal/rag` 保持不感知身份。凭据格式与校验规则见 [SERVICE_CALL_CAPABILITY.md](../contracts/SERVICE_CALL_CAPABILITY.md)，背景决策见 [ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md) 决策 4。
 

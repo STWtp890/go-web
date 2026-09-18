@@ -249,14 +249,30 @@ P3.3a 已于 2026-09-17 完成，决策记录为 [ADR-014](../adr/014-per-corpus
 
 ### 进展
 
-P3.3 尚未完成。已落地的第一片（契约层面）：
+P3.3 尚未完成。已落地的部分：
+
+**契约层（第一片）**
 
 - `packages/proto/mixin-search/chat/v1/chat.proto` 定型 `mixin_search.chat.v1.ChatIndexService` 的 7 个 RPC，覆盖消息索引、归档、访问快照、撤回、会话删除、状态查询与检索；
 - 契约文档见 [CHAT_SEARCH_V1_CONTRACT.md](../contracts/CHAT_SEARCH_V1_CONTRACT.md)：显式建模"已保存/已索引/已归档"三态独立与四类修订（archive、access、lifecycle、retract）互不推进，并规定聊天没有 `authenticated_public` 对应物、空 allow-list 返回空结果；
-- `packages/proto/verify-generated.ps1` 与 CI 的 `generated-proto` 作业改为覆盖两个契约，生成物一致性检查不再只覆盖文档契约；
-- 新增 `apps/mixin-search/internal/architecture/contracts_test.go`，把 ADR-014 的隔离要求变成可执行断言：两个服务的 RPC 集合不重叠、任一契约不得出现属于另一语料的字段名、任一契约不得增加 `corpus_type` 一类的语料选择器（该测试在本轮就纠正了我自己一处过宽的断言：`tombstone_revision` 是两侧各自需要的机制名，不属于文档专有语义）。
+- `packages/proto/verify-generated.ps1` 与 CI 的 `generated-proto` 作业改为覆盖两个契约；
+- `apps/mixin-search/internal/architecture/contracts_test.go` 把 ADR-014 的隔离要求变成可执行断言：两个服务的 RPC 集合不重叠、任一契约不得出现属于另一语料的字段名、任一契约不得增加 `corpus_type` 一类的语料选择器（该测试在本轮就纠正了我自己一处过宽的断言：`tombstone_revision` 是两侧各自需要的机制名，不属于文档专有语义）。
 
-尚未落地：聊天控制服务与独立 generation/持久化、独立投影 reconciler、独立 Qdrant collection/alias、聊天 capability 角色接线，以及 ADR-014 五条验收条件的实测断言。这些是 P3.3 的剩余主体。
+**控制面（第二片）**
+
+- 新增 `internal/controlplane`：两个语料共用的机制——不可变快照的单调发布（`State`）与派生投影的收敛和后台 reconciler（`Projection`）；该包不持有任何语料状态，并由架构测试强制不得 import 任何 `mixin-search/` 包。**目前只有聊天语料接入它**：文档语料的 `internal/rag/projection.go` 仍是自己的实现，把文档侧迁移到该机制属于后续独立提交（不在本轮动已验证的 P3.2 代码）；
+
+**尚未落地**
+- 新增 `internal/chat`：聊天语料自己的控制面——会话/消息状态机、四类修订、幂等账本、写入意图围栏、独立 `ControlStore` 端口与内存/PostgreSQL 适配器（独立 `chat_control_states` 表）、以及按自己 generation 收敛的投影；
+- 聊天通过三个端口访问向量侧（消息索引、控制投影同步、候选检索），由组合根注入，因此 `internal/chat` 不依赖 `internal/rag`（已由架构测试强制）；
+- ADR-014 的五条最低验收条件已有可执行证据（`internal/chat/isolation_test.go`）：聊天活动使文档控制面的 `Load`/`Generation`/`Save` 计数**零增长**且文档控制负载字节数不变、文档活动不推进聊天 generation、聊天规模增长不改变文档控制快照大小、聊天投影故障不影响文档检索、聊天投影被挂起时文档授权撤销与检索照常完成；
+- 契约语义测试（`internal/chat/service_test.go`）：索引不等于可检索（未归档检索为空）、撤回后仍被索引且计数、四类修订互不推进、墓碑拒绝迟到事件且删除可重放、operation_id 重放不重复写向量且改绑冲突、消息内容不可变、聊天无公开语料（空 allow-list 不召回）、投影不可用时检索失败关闭、索引失败留下可清理的持久化声明。
+
+**尚未落地**
+
+- 聊天服务尚未注册到 gRPC 服务端：`internal/chat` 的适配器与 capability 角色（`chat-index-writer`、`chat-searcher`）接线属于下一片；
+- 独立 Qdrant collection/alias 与聊天向量存储实现（payload schema、候选级过滤、dense/sparse 检索）尚未落地，因此"聊天索引重建不切换文档 alias"这一条还没有实测断言；
+- 组合根（`cmd/rag-server`）尚未构造聊天语料的服务与 reconciler。
 
 ## 8. P3.4：QQ 身份与知识空间映射
 

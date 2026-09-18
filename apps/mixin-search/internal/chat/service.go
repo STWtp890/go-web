@@ -1,0 +1,922 @@
+package chat
+
+import (
+	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"mixin-search/internal/controlplane"
+)
+
+const (
+	// pendingWriteLease bounds how long an unfinished vector write may hold its
+	// intent before another request fences it into a pending delete.
+	pendingWriteLease = 15 * time.Minute
+
+	// defaultProjectionInterval bounds how long a published change can wait for
+	// the derived index to catch up when nobody signals.
+	defaultProjectionInterval = 200 * time.Millisecond
+
+	// projectionTimeout bounds one background convergence.
+	projectionTimeout = 10 * time.Second
+)
+
+// IndexService is the chat corpus control plane: it owns the conversation and
+// message state machine, its own generation and its own projection. Candidate
+// retrieval and vector writes go through ports, so the collection this corpus
+// uses is a composition-root decision rather than something the control plane
+// can share with documents.
+type IndexService struct {
+	store           ControlStore
+	indexer         MessageIndexer
+	projectionStore ProjectionStore
+	searcher        Searcher
+	storageDomain   string
+
+	state *controlplane.State[snapshot]
+	// writeMu serializes control-plane mutations; readers never take it.
+	writeMu sync.Mutex
+	// reloadMu serializes reloads, so a reader whose snapshot is stale never
+	// waits behind a writer's vector I/O.
+	reloadMu sync.Mutex
+
+	projection *controlplane.Projection
+}
+
+// IndexServiceConfig configures the chat control plane.
+type IndexServiceConfig struct {
+	// ControlStore is this corpus's own persistent state; required.
+	ControlStore ControlStore
+	// Indexer writes message chunks into the chat collection; required.
+	Indexer MessageIndexer
+	// Projection materializes chat lifecycle state into the collection. When it
+	// is nil the corpus keeps no projection, which is only valid for tests.
+	Projection ProjectionStore
+	// Searcher recalls candidates. When it is nil, retrieval fails closed rather
+	// than returning an empty result that looks like "nothing matched".
+	Searcher Searcher
+	// ProjectionInterval overrides the reconciler's fallback interval.
+	ProjectionInterval time.Duration
+}
+
+// NewIndexService restores the chat control plane before returning a usable
+// service: a load or validation failure prevents startup, so indexed messages
+// can never be served under lifecycle state that was never loaded.
+func NewIndexService(ctx context.Context, config IndexServiceConfig) (*IndexService, error) {
+	if config.ControlStore == nil {
+		return nil, errors.New("chat control store is required")
+	}
+	if config.Indexer == nil {
+		return nil, errors.New("chat message indexer is required")
+	}
+	if ctx == nil {
+		return nil, errors.New("chat control store load context is required")
+	}
+	state, err := config.ControlStore.Load(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: load chat control state: %w", ErrControlStoreUnavailable, err)
+	}
+	restored, err := snapshotFromControlState(state)
+	if err != nil {
+		return nil, fmt.Errorf("%w: restore chat control state: %w", ErrControlStoreUnavailable, err)
+	}
+	return &IndexService{
+		store:           config.ControlStore,
+		indexer:         config.Indexer,
+		projectionStore: config.Projection,
+		searcher:        config.Searcher,
+		storageDomain:   config.ControlStore.StorageDomain(),
+		state:           controlplane.NewState(restored, restored.generation),
+		projection:      controlplane.NewProjection(),
+	}, nil
+}
+
+// StorageDomain reports the projection domain of this corpus. It is the chat
+// collection's own domain and never the document one.
+func (s *IndexService) StorageDomain() string { return s.storageDomain }
+
+// StartProjectionReconciler keeps the chat projection converged in the
+// background until ctx is cancelled. It is separate from the document
+// reconciler: neither corpus's changes can trigger the other's convergence.
+func (s *IndexService) StartProjectionReconciler(ctx context.Context) {
+	s.projection.StartReconciler(ctx, controlplane.ReconcilerConfig{
+		Interval: defaultProjectionInterval,
+		Timeout:  projectionTimeout,
+		Target:   func() uint64 { return s.state.Generation() },
+		Sync: func(syncCtx context.Context, generation uint64) error {
+			return s.convergeProjection(syncCtx, generation)
+		},
+	})
+}
+
+// IndexMessages indexes a batch of immutable messages.
+func (s *IndexService) IndexMessages(ctx context.Context, request IndexMessagesRequest) ([]MessageState, error) {
+	request.OperationID = strings.TrimSpace(request.OperationID)
+	request.ConversationID = strings.TrimSpace(request.ConversationID)
+	request.OwnerScopeID = strings.TrimSpace(request.OwnerScopeID)
+	if request.OperationID == "" || request.ConversationID == "" || request.OwnerScopeID == "" || len(request.Messages) == 0 {
+		return nil, fmt.Errorf("%w: operation_id, conversation_id, owner_scope_id and at least one message are required", ErrInvalidInput)
+	}
+	normalized := make([]MessageInput, 0, len(request.Messages))
+	for _, message := range request.Messages {
+		message.MessageID = strings.TrimSpace(message.MessageID)
+		message.SenderID = strings.TrimSpace(message.SenderID)
+		message.ContentSHA256 = strings.ToLower(strings.TrimSpace(message.ContentSHA256))
+		if message.MessageID == "" || message.SenderID == "" || strings.TrimSpace(message.Content) == "" {
+			return nil, fmt.Errorf("%w: every message requires message_id, sender_id and content", ErrInvalidInput)
+		}
+		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(message.Content)))
+		if message.ContentSHA256 != "" && message.ContentSHA256 != digest {
+			return nil, fmt.Errorf("%w: content_sha256 does not match content for message %q", ErrInvalidInput, message.MessageID)
+		}
+		message.ContentSHA256 = digest
+		message.Metadata = cloneStringMap(message.Metadata)
+		normalized = append(normalized, message)
+	}
+	fingerprint := operationFingerprint(struct {
+		ConversationID    string
+		OwnerScopeID      string
+		LifecycleRevision uint64
+		Messages          []MessageInput
+	}{request.ConversationID, request.OwnerScopeID, request.LifecycleRevision, normalized})
+
+	locked, err := s.lockWrite(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer s.unlockWrite()
+	snapshot := locked
+	next := snapshot.clone()
+
+	if replay, ok, err := next.replayOperation(request.OperationID, operationIndexMessages, fingerprint); err != nil {
+		return nil, err
+	} else if ok {
+		return replay.([]MessageState), nil
+	}
+	// Phase one: bind an unfinished write intent for every message that is not
+	// already indexed, so a crash cannot leave vectors that no intent accounts for.
+	// No conversation is created here: the pending write belongs to a message, and
+	// a conversation only becomes real once it owns an indexed message.
+	conversation := next.lookup(request.ConversationID)
+	if conversation != nil && conversation.ownerScopeID != "" && conversation.ownerScopeID != request.OwnerScopeID {
+		return nil, fmt.Errorf("%w: conversation %q belongs to scope %q", ErrConflict, request.ConversationID, conversation.ownerScopeID)
+	}
+	if conversation != nil {
+		if err := validateLifecycle(conversation, request.LifecycleRevision); err != nil {
+			return nil, err
+		}
+	}
+	pending := make([]struct {
+		message   MessageInput
+		storageID string
+		key       string
+	}, 0, len(normalized))
+	for _, message := range normalized {
+		key := messageKey(request.ConversationID, message.MessageID)
+		if existing, ok := next.messages[key]; ok {
+			if existing.contentSHA256 != message.ContentSHA256 {
+				return nil, fmt.Errorf("%w: message %q already indexed with different content", ErrConflict, message.MessageID)
+			}
+			continue
+		}
+		storage := storageID(s.storageDomain, request.ConversationID, message.MessageID, request.OperationID)
+		if intent, ok := next.pendingWrites[storage]; ok {
+			if intent.OperationID != request.OperationID || intent.Fingerprint != message.ContentSHA256 {
+				return nil, fmt.Errorf("%w: message %q is bound to another unfinished index operation", ErrConflict, message.MessageID)
+			}
+		} else {
+			next.pendingWrites[storage] = ControlPendingWrite{
+				OperationID:             request.OperationID,
+				Fingerprint:             message.ContentSHA256,
+				LeaseExpiresAtUnixMilli: now().Add(pendingWriteLease).UnixMilli(),
+			}
+		}
+		pending = append(pending, struct {
+			message   MessageInput
+			storageID string
+			key       string
+		}{message: message, storageID: storage, key: key})
+	}
+	if len(pending) > 0 {
+		if err := s.commit(ctx, snapshot, next); err != nil {
+			return nil, err
+		}
+		snapshot = next
+		next = snapshot.clone()
+	}
+
+	// Phase two: write the vectors. Each message is independent, so one failure
+	// only abandons that message's intent.
+	chunkCounts := make(map[string]int, len(pending))
+	var indexErr error
+	for _, item := range pending {
+		count, err := s.indexer.IndexMessage(ctx, item.storageID, item.message)
+		if err != nil {
+			abandoned, abandonErr := s.abandonWrite(ctx, snapshot, item.storageID)
+			if abandonErr != nil {
+				return nil, errors.Join(err, abandonErr)
+			}
+			snapshot = abandoned
+			indexErr = errors.Join(indexErr, err)
+			continue
+		}
+		chunkCounts[item.storageID] = count
+	}
+	if indexErr != nil {
+		return nil, indexErr
+	}
+
+	// Phase three: publish the indexed state.
+	next = snapshot.clone()
+	conversation = next.conversation(request.ConversationID)
+	if conversation.ownerScopeID == "" {
+		conversation.ownerScopeID = request.OwnerScopeID
+	}
+	advanceLifecycle(conversation, request.LifecycleRevision)
+	states := make([]MessageState, 0, len(normalized))
+	for _, message := range normalized {
+		key := messageKey(request.ConversationID, message.MessageID)
+		existing, ok := next.messages[key]
+		if !ok {
+			storage := storageID(s.storageDomain, request.ConversationID, message.MessageID, request.OperationID)
+			existing = &messageState{
+				conversationID:    request.ConversationID,
+				messageID:         message.MessageID,
+				senderID:          message.SenderID,
+				sentAtUnixMs:      message.SentAtUnixMs,
+				contentSHA256:     message.ContentSHA256,
+				storageID:         storage,
+				chunkCount:        chunkCounts[storage],
+				lifecycleRevision: request.LifecycleRevision,
+				metadata:          cloneStringMap(message.Metadata),
+			}
+			next.messages[key] = existing
+			next.messagesByStorage[storage] = key
+			delete(next.pendingWrites, storage)
+		}
+		conversation := next.conversations[request.ConversationID]
+		states = append(states, messageStateOf(existing, conversation))
+	}
+	next.recordOperation(request.OperationID, operationIndexMessages, fingerprint, states)
+	if err := s.commit(ctx, snapshot, next); err != nil {
+		return nil, err
+	}
+	return states, nil
+}
+
+// ArchiveConversation marks a conversation as retrievable. Indexing alone never
+// makes a message searchable.
+func (s *IndexService) ArchiveConversation(ctx context.Context, request ArchiveConversationRequest) (ArchiveResult, error) {
+	request.OperationID = strings.TrimSpace(request.OperationID)
+	request.ConversationID = strings.TrimSpace(request.ConversationID)
+	if request.OperationID == "" || request.ConversationID == "" || request.ArchiveRevision == 0 {
+		return ArchiveResult{}, fmt.Errorf("%w: operation_id, conversation_id and archive_revision are required", ErrInvalidInput)
+	}
+	fingerprint := operationFingerprint(struct {
+		ConversationID    string
+		ArchiveRevision   uint64
+		LifecycleRevision uint64
+	}{request.ConversationID, request.ArchiveRevision, request.LifecycleRevision})
+
+	locked, err := s.lockWrite(ctx)
+	if err != nil {
+		return ArchiveResult{}, err
+	}
+	defer s.unlockWrite()
+	snapshot := locked
+	next := snapshot.clone()
+
+	if replay, ok, err := next.replayOperation(request.OperationID, operationArchive, fingerprint); err != nil {
+		return ArchiveResult{}, err
+	} else if ok {
+		return replay.(ArchiveResult), nil
+	}
+	conversation := next.lookup(request.ConversationID)
+	if conversation == nil || conversation.ownerScopeID == "" {
+		return ArchiveResult{}, fmt.Errorf("%w: conversation", ErrNotFound)
+	}
+	if request.ArchiveRevision < conversation.archiveRevision {
+		return ArchiveResult{}, fmt.Errorf("%w: current=%d requested=%d", ErrStaleArchive, conversation.archiveRevision, request.ArchiveRevision)
+	}
+	if err := validateLifecycle(conversation, request.LifecycleRevision); err != nil {
+		return ArchiveResult{}, err
+	}
+	conversation.archived = true
+	conversation.archiveRevision = request.ArchiveRevision
+	conversation.tombstoned = false
+	advanceLifecycle(conversation, request.LifecycleRevision)
+	result := ArchiveResult{
+		Status:            StatusArchived,
+		ArchiveRevision:   conversation.archiveRevision,
+		LifecycleRevision: conversation.lifecycleRevision,
+	}
+	next.recordOperation(request.OperationID, operationArchive, fingerprint, result)
+	if err := s.commit(ctx, snapshot, next); err != nil {
+		return ArchiveResult{}, err
+	}
+	return result, nil
+}
+
+// UpdateConversationAccess replaces the complete access snapshot. Chat has no
+// public equivalent, so an empty snapshot grants nothing.
+func (s *IndexService) UpdateConversationAccess(ctx context.Context, request UpdateConversationAccessRequest) (AccessState, error) {
+	request.OperationID = strings.TrimSpace(request.OperationID)
+	request.ConversationID = strings.TrimSpace(request.ConversationID)
+	request.GrantedScopeIDs = normalizeIDs(request.GrantedScopeIDs)
+	if request.OperationID == "" || request.ConversationID == "" || request.AccessRevision == 0 {
+		return AccessState{}, fmt.Errorf("%w: operation_id, conversation_id and access_revision are required", ErrInvalidInput)
+	}
+	fingerprint := operationFingerprint(struct {
+		ConversationID    string
+		AccessRevision    uint64
+		LifecycleRevision uint64
+		GrantedScopeIDs   []string
+	}{request.ConversationID, request.AccessRevision, request.LifecycleRevision, request.GrantedScopeIDs})
+
+	locked, err := s.lockWrite(ctx)
+	if err != nil {
+		return AccessState{}, err
+	}
+	defer s.unlockWrite()
+	snapshot := locked
+	next := snapshot.clone()
+
+	if replay, ok, err := next.replayOperation(request.OperationID, operationUpdateAccess, fingerprint); err != nil {
+		return AccessState{}, err
+	} else if ok {
+		return cloneAccessState(replay.(AccessState)), nil
+	}
+	conversation := next.lookup(request.ConversationID)
+	if conversation == nil || conversation.ownerScopeID == "" {
+		return AccessState{}, fmt.Errorf("%w: conversation", ErrNotFound)
+	}
+	if request.AccessRevision < conversation.accessRevision {
+		return AccessState{}, fmt.Errorf("%w: current=%d requested=%d", ErrStaleAccess, conversation.accessRevision, request.AccessRevision)
+	}
+	if request.AccessRevision == conversation.accessRevision &&
+		!equalStrings(request.GrantedScopeIDs, conversation.grantedScopeIDs) {
+		return AccessState{}, fmt.Errorf("%w: access revision %d has a different scope snapshot", ErrConflict, conversation.accessRevision)
+	}
+	if err := validateLifecycle(conversation, request.LifecycleRevision); err != nil {
+		return AccessState{}, err
+	}
+	conversation.accessRevision = request.AccessRevision
+	conversation.grantedScopeIDs = cloneStrings(request.GrantedScopeIDs)
+	advanceLifecycle(conversation, request.LifecycleRevision)
+	state := accessStateOf(request.ConversationID, conversation)
+	next.recordOperation(request.OperationID, operationUpdateAccess, fingerprint, state)
+	if err := s.commit(ctx, snapshot, next); err != nil {
+		return AccessState{}, err
+	}
+	return state, nil
+}
+
+// RetractMessage removes one message from retrieval. The message stays indexed
+// and stored: retraction is a retrievability decision, not a deletion.
+func (s *IndexService) RetractMessage(ctx context.Context, request RetractMessageRequest) (RetractResult, error) {
+	request.OperationID = strings.TrimSpace(request.OperationID)
+	request.ConversationID = strings.TrimSpace(request.ConversationID)
+	request.MessageID = strings.TrimSpace(request.MessageID)
+	if request.OperationID == "" || request.ConversationID == "" || request.MessageID == "" || request.RetractRevision == 0 {
+		return RetractResult{}, fmt.Errorf("%w: operation_id, conversation_id, message_id and retract_revision are required", ErrInvalidInput)
+	}
+	fingerprint := operationFingerprint(struct {
+		ConversationID    string
+		MessageID         string
+		RetractRevision   uint64
+		LifecycleRevision uint64
+	}{request.ConversationID, request.MessageID, request.RetractRevision, request.LifecycleRevision})
+
+	locked, err := s.lockWrite(ctx)
+	if err != nil {
+		return RetractResult{}, err
+	}
+	defer s.unlockWrite()
+	snapshot := locked
+	next := snapshot.clone()
+
+	if replay, ok, err := next.replayOperation(request.OperationID, operationRetract, fingerprint); err != nil {
+		return RetractResult{}, err
+	} else if ok {
+		return replay.(RetractResult), nil
+	}
+	conversation := next.conversations[request.ConversationID]
+	if conversation == nil {
+		return RetractResult{}, fmt.Errorf("%w: conversation", ErrNotFound)
+	}
+	message, ok := next.messages[messageKey(request.ConversationID, request.MessageID)]
+	if !ok {
+		return RetractResult{}, fmt.Errorf("%w: message", ErrNotFound)
+	}
+	if request.RetractRevision < message.retractRevision {
+		return RetractResult{}, fmt.Errorf("%w: current=%d requested=%d", ErrStaleRetract, message.retractRevision, request.RetractRevision)
+	}
+	if err := validateLifecycle(conversation, request.LifecycleRevision); err != nil {
+		return RetractResult{}, err
+	}
+	message.retracted = true
+	message.retractRevision = request.RetractRevision
+	advanceLifecycle(conversation, request.LifecycleRevision)
+	result := RetractResult{Retracted: true, RetractRevision: message.retractRevision}
+	next.recordOperation(request.OperationID, operationRetract, fingerprint, result)
+	if err := s.commit(ctx, snapshot, next); err != nil {
+		return RetractResult{}, err
+	}
+	return result, nil
+}
+
+// DeleteConversation tombstones a conversation and removes its derived index.
+// The tombstone and the decision revisions stay, so a late event can neither
+// resurrect the conversation nor replay an old deletion.
+func (s *IndexService) DeleteConversation(ctx context.Context, request DeleteConversationRequest) (DeleteResult, error) {
+	request.OperationID = strings.TrimSpace(request.OperationID)
+	request.ConversationID = strings.TrimSpace(request.ConversationID)
+	if request.OperationID == "" || request.ConversationID == "" || request.LifecycleRevision == 0 {
+		return DeleteResult{}, fmt.Errorf("%w: operation_id, conversation_id and lifecycle_revision are required", ErrInvalidInput)
+	}
+	fingerprint := operationFingerprint(struct {
+		ConversationID    string
+		LifecycleRevision uint64
+	}{request.ConversationID, request.LifecycleRevision})
+
+	locked, err := s.lockWrite(ctx)
+	if err != nil {
+		return DeleteResult{}, err
+	}
+	defer s.unlockWrite()
+	snapshot := locked
+	next := snapshot.clone()
+
+	if replay, ok, err := next.replayOperation(request.OperationID, operationDelete, fingerprint); err != nil {
+		return DeleteResult{}, err
+	} else if ok {
+		return replay.(DeleteResult), nil
+	}
+	conversation := next.conversation(request.ConversationID)
+	if result, ok := conversation.deleteResults[request.LifecycleRevision]; ok {
+		next.recordOperation(request.OperationID, operationDelete, fingerprint, result)
+		if err := s.commit(ctx, snapshot, next); err != nil {
+			return DeleteResult{}, err
+		}
+		return result, nil
+	}
+	if request.LifecycleRevision < conversation.lifecycleRevision {
+		return DeleteResult{}, fmt.Errorf("%w: current=%d requested=%d", ErrStaleLifecycle, conversation.lifecycleRevision, request.LifecycleRevision)
+	}
+	if request.LifecycleRevision == conversation.lifecycleRevision && conversation.ownerScopeID != "" {
+		return DeleteResult{}, fmt.Errorf("%w: lifecycle revision %d already represents a live conversation", ErrConflict, request.LifecycleRevision)
+	}
+
+	for key, message := range next.messages {
+		if message.conversationID != request.ConversationID {
+			continue
+		}
+		delete(next.messagesByStorage, message.storageID)
+		delete(next.messages, key)
+		next.pendingDeletes[message.storageID] = struct{}{}
+	}
+	conversation.archived = false
+	conversation.lifecycleRevision = request.LifecycleRevision
+	conversation.tombstoneRevision = request.LifecycleRevision
+	conversation.tombstoned = true
+	result := DeleteResult{Tombstoned: true, LifecycleRevision: request.LifecycleRevision}
+	conversation.deleteResults[request.LifecycleRevision] = result
+	next.recordOperation(request.OperationID, operationDelete, fingerprint, result)
+	if err := s.commit(ctx, snapshot, next); err != nil {
+		return DeleteResult{}, err
+	}
+	if err := s.cleanupPendingDeletes(ctx, next); err != nil {
+		return DeleteResult{}, err
+	}
+	return result, nil
+}
+
+// GetConversationIndexState is the reconciliation view: go-web and py-agent use
+// it to compare their own records with what this corpus actually indexed.
+func (s *IndexService) GetConversationIndexState(ctx context.Context, request GetConversationIndexStateRequest) (ConversationIndexState, error) {
+	request.ConversationID = strings.TrimSpace(request.ConversationID)
+	if request.ConversationID == "" {
+		return ConversationIndexState{}, fmt.Errorf("%w: conversation_id is required", ErrInvalidInput)
+	}
+	snapshot, err := s.readSnapshot(ctx)
+	if err != nil {
+		return ConversationIndexState{}, err
+	}
+	conversation := snapshot.conversations[request.ConversationID]
+	if conversation == nil {
+		return ConversationIndexState{}, nil
+	}
+	status := StatusIndexed
+	if conversation.archived && !conversation.tombstoned {
+		status = StatusArchived
+	}
+	state := ConversationIndexState{
+		Exists:            true,
+		Status:            status,
+		OwnerScopeID:      conversation.ownerScopeID,
+		ArchiveRevision:   conversation.archiveRevision,
+		AccessRevision:    conversation.accessRevision,
+		LifecycleRevision: conversation.lifecycleRevision,
+		TombstoneRevision: conversation.tombstoneRevision,
+		Tombstoned:        conversation.tombstoned,
+	}
+	for _, message := range snapshot.messages {
+		if message.conversationID != request.ConversationID {
+			continue
+		}
+		state.IndexedMessageCount++
+		if message.retracted {
+			state.RetractedMessageCount++
+		}
+	}
+	return state, nil
+}
+
+// SearchMessages recalls chat candidates and applies the retrievability rules.
+//
+// A conversation must be archived and not tombstoned, the message must not be
+// retracted, and the request must name an authorized scope or conversation. Chat
+// has no public corpus, so two empty allow-lists return nothing instead of
+// everything.
+func (s *IndexService) SearchMessages(ctx context.Context, request SearchMessagesRequest) (SearchMessagesResult, error) {
+	request.Query = strings.TrimSpace(request.Query)
+	if request.Query == "" {
+		return SearchMessagesResult{}, fmt.Errorf("%w: query is required", ErrInvalidInput)
+	}
+	if request.TopK < 0 || request.TopK > 100 {
+		return SearchMessagesResult{}, fmt.Errorf("%w: top_k must be between 0 and 100", ErrInvalidInput)
+	}
+	if request.TopK == 0 {
+		request.TopK = 3
+	}
+	allowedScopes := stringSet(request.AllowedScopeIDs)
+	allowedConversations := stringSet(request.AllowedConversationIDs)
+	if len(allowedScopes) == 0 && len(allowedConversations) == 0 {
+		return SearchMessagesResult{Query: request.Query}, nil
+	}
+	if s.searcher == nil {
+		return SearchMessagesResult{}, fmt.Errorf("%w: chat retrieval is not configured", ErrProjectionUnavailable)
+	}
+
+	snapshot, err := s.readSnapshot(ctx)
+	if err != nil {
+		return SearchMessagesResult{}, err
+	}
+	if err := s.ensureProjection(ctx, snapshot); err != nil {
+		return SearchMessagesResult{}, err
+	}
+
+	candidateLimit := max(request.TopK*2, 16)
+	maxCandidateLimit := min(max(request.TopK*16, 128), 800)
+	for {
+		raw, err := s.searcher.SearchMessages(ctx, request.Query, candidateLimit)
+		if err != nil {
+			return SearchMessagesResult{}, err
+		}
+		hits := make([]MessageHit, 0, request.TopK)
+		seen := make(map[string]struct{}, request.TopK)
+		for _, candidate := range raw {
+			message, ok := s.authorizedMessage(snapshot, candidate, allowedScopes, allowedConversations, request)
+			if !ok {
+				continue
+			}
+			if _, duplicate := seen[candidate.StorageID]; duplicate {
+				continue
+			}
+			seen[candidate.StorageID] = struct{}{}
+			conversation := snapshot.conversations[message.conversationID]
+			hits = append(hits, MessageHit{
+				ConversationID: message.conversationID,
+				MessageID:      message.messageID,
+				OwnerScopeID:   conversation.ownerScopeID,
+				SenderID:       message.senderID,
+				SentAtUnixMs:   message.sentAtUnixMs,
+				Position:       candidate.Position,
+				Snippet:        candidate.Snippet,
+				ContentSHA256:  message.contentSHA256,
+				Score:          candidate.Score,
+			})
+			if len(hits) == request.TopK {
+				break
+			}
+		}
+		exhausted := len(raw) < candidateLimit
+		if len(hits) == request.TopK || exhausted || candidateLimit >= maxCandidateLimit {
+			return SearchMessagesResult{
+				Query:     request.Query,
+				Hits:      hits,
+				Truncated: len(hits) < request.TopK && !exhausted,
+			}, nil
+		}
+		candidateLimit = min(candidateLimit*2, maxCandidateLimit)
+	}
+}
+
+// authorizedMessage is the single place that decides whether a candidate may be
+// returned. The vector store filters too, but a store that over-returns must not
+// be able to leak, so the decision is repeated here against the snapshot the
+// request was admitted with.
+func (s *IndexService) authorizedMessage(
+	snapshot *snapshot,
+	candidate ScoredMessageChunk,
+	allowedScopes map[string]struct{},
+	allowedConversations map[string]struct{},
+	request SearchMessagesRequest,
+) (*messageState, bool) {
+	message, ok := snapshot.messages[messageKey(candidate.ConversationID, candidate.MessageID)]
+	if !ok || message.storageID != candidate.StorageID {
+		return nil, false
+	}
+	conversation := snapshot.conversations[message.conversationID]
+	if conversation == nil || !conversation.archived || conversation.tombstoned {
+		return nil, false
+	}
+	if message.retracted {
+		return nil, false
+	}
+	if request.SentAfterUnixMs > 0 && message.sentAtUnixMs < request.SentAfterUnixMs {
+		return nil, false
+	}
+	if request.SentBeforeUnixMs > 0 && message.sentAtUnixMs > request.SentBeforeUnixMs {
+		return nil, false
+	}
+	if _, ok := allowedConversations[message.conversationID]; ok {
+		return message, true
+	}
+	if _, ok := allowedScopes[conversation.ownerScopeID]; ok {
+		return message, true
+	}
+	for _, granted := range conversation.grantedScopeIDs {
+		if _, ok := allowedScopes[granted]; ok {
+			return message, true
+		}
+	}
+	return nil, false
+}
+
+// readSnapshot returns the snapshot a read-only call should serve. The steady
+// state costs one generation probe and no lock; a changed generation reloads
+// under reloadMu, and pending maintenance is opportunistic so a reader never
+// queues behind a writer.
+func (s *IndexService) readSnapshot(ctx context.Context) (*snapshot, error) {
+	current := s.state.Load()
+	changed, err := s.controlStoreChanged(ctx, current)
+	if err != nil {
+		return nil, err
+	}
+	if changed {
+		s.reloadMu.Lock()
+		defer s.reloadMu.Unlock()
+		return s.reload(ctx, s.state.Load())
+	}
+	if !current.needsMaintenance(now().UnixMilli()) {
+		return current, nil
+	}
+	if !s.writeMu.TryLock() {
+		return current, nil
+	}
+	defer s.writeMu.Unlock()
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	return s.reload(ctx, s.state.Load())
+}
+
+func (s *IndexService) controlStoreChanged(ctx context.Context, current *snapshot) (bool, error) {
+	generation, err := s.store.Generation(ctx)
+	if err != nil {
+		return false, fmt.Errorf("%w: read chat control generation: %w", ErrControlStoreUnavailable, err)
+	}
+	if generation < current.generation {
+		return false, fmt.Errorf(
+			"%w: chat control generation regressed from %d to %d",
+			ErrControlStoreUnavailable, current.generation, generation,
+		)
+	}
+	return generation != current.generation, nil
+}
+
+// lockWrite serializes control-plane mutations and returns the snapshot they
+// build on.
+func (s *IndexService) lockWrite(ctx context.Context) (*snapshot, error) {
+	s.writeMu.Lock()
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	current, err := s.reload(ctx, s.state.Load())
+	if err != nil {
+		s.writeMu.Unlock()
+		return nil, err
+	}
+	return current, nil
+}
+
+func (s *IndexService) unlockWrite() { s.writeMu.Unlock() }
+
+// reload loads the durable chat control plane, fails closed on regression,
+// finishes pending vector maintenance, and publishes the result.
+func (s *IndexService) reload(ctx context.Context, current *snapshot) (*snapshot, error) {
+	state, err := s.store.Load(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: load chat control state: %w", ErrControlStoreUnavailable, err)
+	}
+	if state.Generation < current.generation {
+		return nil, fmt.Errorf(
+			"%w: chat control generation regressed from %d to %d",
+			ErrControlStoreUnavailable, current.generation, state.Generation,
+		)
+	}
+	loaded, err := snapshotFromControlState(state)
+	if err != nil {
+		return nil, fmt.Errorf("%w: load chat control state: %w", ErrControlStoreUnavailable, err)
+	}
+	s.publish(loaded)
+	if err := s.fenceExpiredWrites(ctx, loaded); err != nil {
+		return nil, err
+	}
+	if err := s.cleanupPendingDeletes(ctx, s.state.Load()); err != nil {
+		return nil, err
+	}
+	return s.state.Load(), nil
+}
+
+// commit persists a writer-private snapshot with compare-and-swap and publishes
+// it only after the durable write succeeded.
+func (s *IndexService) commit(ctx context.Context, previous, next *snapshot) error {
+	next.generation = previous.generation
+	generation, err := s.store.Save(ctx, previous.generation, next.toControlState())
+	if err != nil {
+		if errors.Is(err, ErrControlStoreConflict) {
+			return fmt.Errorf("%w: persist chat control state: %v", ErrControlStoreConflict, err)
+		}
+		return fmt.Errorf("%w: persist chat control state: %w", ErrControlStoreUnavailable, err)
+	}
+	next.generation = generation
+	s.publish(next)
+	return nil
+}
+
+func (s *IndexService) publish(next *snapshot) {
+	if s.state.Publish(next, next.generation) {
+		s.projection.Signal()
+	}
+}
+
+// abandonWrite fences one failed vector write into a pending delete and cleans
+// the orphaned vectors.
+func (s *IndexService) abandonWrite(ctx context.Context, current *snapshot, storage string) (*snapshot, error) {
+	next := current.clone()
+	delete(next.pendingWrites, storage)
+	next.pendingDeletes[storage] = struct{}{}
+	if err := s.commit(ctx, current, next); err != nil {
+		return nil, fmt.Errorf("claim abandoned chat vector write: %w", err)
+	}
+	if err := s.cleanupPendingDeletes(ctx, next); err != nil {
+		return nil, fmt.Errorf("clean abandoned chat vector write: %w", err)
+	}
+	return s.state.Load(), nil
+}
+
+// fenceExpiredWrites turns an expired write intent into a durable pending delete
+// before anything physical happens, so a crashed index call cannot leave vectors
+// that no intent accounts for.
+func (s *IndexService) fenceExpiredWrites(ctx context.Context, current *snapshot) error {
+	if len(current.pendingWrites) == 0 {
+		return nil
+	}
+	nowMilli := now().UnixMilli()
+	expired := false
+	for _, intent := range current.pendingWrites {
+		if intent.LeaseExpiresAtUnixMilli <= nowMilli {
+			expired = true
+			break
+		}
+	}
+	if !expired {
+		return nil
+	}
+	next := current.clone()
+	for storage, intent := range next.pendingWrites {
+		if intent.LeaseExpiresAtUnixMilli > nowMilli {
+			continue
+		}
+		delete(next.pendingWrites, storage)
+		next.pendingDeletes[storage] = struct{}{}
+	}
+	if err := s.commit(ctx, current, next); err != nil {
+		return fmt.Errorf("fence expired chat vector write: %w", err)
+	}
+	return nil
+}
+
+// cleanupPendingDeletes performs only physical cleanup: the logical decision is
+// already durable, so a store failure leaves an invisible, retryable orphan.
+func (s *IndexService) cleanupPendingDeletes(ctx context.Context, current *snapshot) error {
+	if len(current.pendingDeletes) == 0 {
+		return nil
+	}
+	next := current.clone()
+	removed := false
+	for storage := range next.pendingDeletes {
+		if err := s.indexer.DeleteMessage(ctx, storage); err != nil {
+			continue
+		}
+		delete(next.pendingDeletes, storage)
+		removed = true
+	}
+	if !removed {
+		return nil
+	}
+	if err := s.commit(ctx, current, next); err != nil {
+		return fmt.Errorf("persist chat vector cleanup progress: %w", err)
+	}
+	return nil
+}
+
+// ensureProjection guarantees the derived index is at least as new as the
+// snapshot a search is about to filter against, and fails closed when it cannot
+// be brought there.
+func (s *IndexService) ensureProjection(ctx context.Context, current *snapshot) error {
+	if s.projectionStore == nil {
+		return nil
+	}
+	if s.projection.Synced() >= current.generation {
+		return nil
+	}
+	return s.projection.Converge(ctx, current.generation, func(inner context.Context) error {
+		return s.syncProjection(inner, current)
+	})
+}
+
+func (s *IndexService) convergeProjection(ctx context.Context, generation uint64) error {
+	current := s.state.Load()
+	if s.projectionStore == nil || current.generation != generation {
+		return nil
+	}
+	return s.projection.Converge(ctx, generation, func(inner context.Context) error {
+		return s.syncProjection(inner, current)
+	})
+}
+
+func (s *IndexService) syncProjection(ctx context.Context, current *snapshot) error {
+	if err := s.projectionStore.SyncChatControls(ctx, current.vectorControls(s.storageDomain)); err != nil {
+		return fmt.Errorf("%w: %w", ErrProjectionUnavailable, err)
+	}
+	return nil
+}
+
+func validateLifecycle(conversation *conversationState, revision uint64) error {
+	if conversation.tombstoned {
+		if revision <= conversation.tombstoneRevision {
+			return fmt.Errorf("%w: conversation is tombstoned at %d", ErrStaleLifecycle, conversation.tombstoneRevision)
+		}
+		return nil
+	}
+	if revision < conversation.lifecycleRevision {
+		return fmt.Errorf("%w: current=%d requested=%d", ErrStaleLifecycle, conversation.lifecycleRevision, revision)
+	}
+	return nil
+}
+
+func advanceLifecycle(conversation *conversationState, revision uint64) {
+	if revision > conversation.lifecycleRevision {
+		conversation.lifecycleRevision = revision
+	}
+}
+
+func messageStateOf(message *messageState, conversation *conversationState) MessageState {
+	state := MessageState{
+		ConversationID:    message.conversationID,
+		MessageID:         message.messageID,
+		OwnerScopeID:      conversation.ownerScopeID,
+		SenderID:          message.senderID,
+		SentAtUnixMs:      message.sentAtUnixMs,
+		LifecycleRevision: message.lifecycleRevision,
+		Retracted:         message.retracted,
+		RetractRevision:   message.retractRevision,
+		ChunkCount:        message.chunkCount,
+		ContentSHA256:     message.contentSHA256,
+	}
+	state.ArchiveRevision = conversation.archiveRevision
+	state.AccessRevision = conversation.accessRevision
+	return state
+}
+
+func accessStateOf(conversationID string, conversation *conversationState) AccessState {
+	return AccessState{
+		ConversationID:    conversationID,
+		AccessRevision:    conversation.accessRevision,
+		LifecycleRevision: conversation.lifecycleRevision,
+		GrantedScopeIDs:   cloneStrings(conversation.grantedScopeIDs),
+	}
+}
+
+func stringSet(values []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(values))
+	for _, value := range normalizeIDs(values) {
+		set[value] = struct{}{}
+	}
+	return set
+}

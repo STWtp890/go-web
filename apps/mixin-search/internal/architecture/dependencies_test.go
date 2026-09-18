@@ -59,6 +59,31 @@ func TestDependencyRules(t *testing.T) {
 			},
 			reason: "transport may map protocol types to rag and verify capabilities only, and must not depend on commands or concrete lower layers",
 		},
+		{
+			name: "controlplane stays a mechanism",
+			root: filepath.Join(internalRoot, "controlplane"),
+			forbidden: func(path string) bool {
+				return strings.HasPrefix(path, "mixin-search/")
+			},
+			reason: "internal/controlplane is shared by every corpus, so it must not depend on any corpus, transport or command",
+		},
+		{
+			name: "chat control plane is independent of the document corpus",
+			root: filepath.Join(internalRoot, "chat"),
+			forbidden: func(path string) bool {
+				if strings.HasPrefix(path, "mixin-search/cmd/") ||
+					strings.HasPrefix(path, "mixin-search/internal/transport/") {
+					return true
+				}
+				// ADR-014: the two corpora may share the publication and projection
+				// mechanism, never each other's state or service. Chat reaches a
+				// vector store through its own ports, which the composition root
+				// satisfies, so it never needs this import.
+				return strings.HasPrefix(path, "mixin-search/internal/rag") ||
+					strings.HasPrefix(path, "mixin-search/internal/chat/")
+			},
+			reason: "the chat corpus must not depend on the document corpus, transport or commands",
+		},
 	}
 
 	for _, rule := range rules {
