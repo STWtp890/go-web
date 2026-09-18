@@ -3,7 +3,7 @@
 > 文档职责：当前唯一阶段排期与实施入口
 > 上位目标：[ECOSYSTEM_EVOLUTION_GUIDE.md](../ECOSYSTEM_EVOLUTION_GUIDE.md)
 > 相关决策：[ADR-001](../adr/001-search-service-boundary.md)、[ADR-002](../adr/002-document-index-ownership.md)、[ADR-004](../adr/004-bm25-migration-strategy.md)、[ADR-005](../adr/005-development-baseline-over-production-migration.md)、[ADR-006](../adr/006-mixin-search-control-state-commit-order.md)、[ADR-007](../adr/007-qdrant-control-projection-and-filtering.md)、[ADR-008](../adr/008-document-index-transactional-outbox.md)、[ADR-009](../adr/009-shadow-index-compose-and-health-boundary.md)、[ADR-010](../adr/010-shadow-query-evaluation-gate.md)、[ADR-011](../adr/011-bounded-cache-runtime-and-revision-fencing.md)、[ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)、[ADR-013](../adr/013-immutable-control-snapshot-and-background-projection.md)、[ADR-014](../adr/014-per-corpus-control-plane-isolation.md)、[ADR-015](../adr/015-control-plane-idempotency-ledger-retention.md)
-> 当前状态：生态阶段二已收口（P2.0-P2.5 全部通过）；阶段三实施基线已建立，P3.0、P3.0a、P3.1、P3.2、P3.3a 已完成；**P3.3 已完成并归档**——正式验收点 `32f4648`（tag `p3.3-accepted`），功能树最后变更 `49be7c5`；多语料契约、授权、控制面、存储与 alias 切换机制已完成，容量 A 档（30,000/24 MiB/7 天/30,000 条）已启用且口径冻结。证据见 `docs/reports/evidence/phase3/`；**下一实施包的唯一入口是 §7.1 结尾的"P3.6 前置待办"与"P3.5 承接项"两张表**（完整蓝绿重建编排属 P3.5，接入约定属 P3.6）
+> 当前状态：生态阶段二已收口（P2.0-P2.5 全部通过）；阶段三实施基线已建立，P3.0、P3.0a、P3.1、P3.2、P3.3a 已完成；**P3.3 已完成并归档**——正式验收点 `32f4648`（tag `p3.3-accepted`），功能树最后变更 `49be7c5`；多语料契约、授权、控制面、存储与 alias 切换机制已完成，容量 A 档（30,000/24 MiB/7 天/30,000 条）已启用且口径冻结。证据见 `docs/reports/evidence/phase3/`。**下一实施包是 P3.4（QQ 身份与知识空间映射，§8）**；P3.3 移交给 P3.5/P3.6 的待办（完整蓝绿重建编排属 P3.5，接入约定属 P3.6）见 §7.1 结尾的两张表，须按 `P3.3 → P3.4 → P3.5 → P3.6` 的顺序执行
 > 更新日期：2026-09-19
 
 ## 1. 当前全局进度结论
@@ -262,7 +262,7 @@ P3.3 **已完成**：独立聊天契约、独立控制面与持久化、独立 Q
 | 容量启用与实测 | `41a7bbf`、`49be7c5` | A 档参数写入根 Compose、metadata 预算与边界 CAS 实测、错误码修正 |
 | 证据归档 | `docs/reports/evidence/phase3/` | 当日十轮门禁运行的原始报告已入库（`deployments/test-results/*_20260919_*`），P3.3 正式验收集为 `*_044948` 族 |
 
-**容量口径已冻结**：`30,000` 是数量保险丝、`有效容量 = min(消息数量上限, 24 MiB 快照上限)`、账本保留 `= min(7 天, 30,000 条)`。该口径已在契约 §7、ADR-015、实测证据与 Compose 注释之间形成一致证据链，后续实施包**不得再次变更**，也无需重读阶段三全过程——下一包的唯一入口是 §7.1 结尾的两张待办表（"P3.6 前置待办"与"P3.5 承接项"）。
+**容量口径已冻结**：`30,000` 是数量保险丝、`有效容量 = min(消息数量上限, 24 MiB 快照上限)`、账本保留 `= min(7 天, 30,000 条)`。该口径已在契约 §7、ADR-015、实测证据与 Compose 注释之间形成一致证据链，后续实施包**不得再次变更**，也无需重读阶段三全过程——P3.3 的移交清单是 §7.1 结尾的两张待办表（"P3.6 前置待办"与"P3.5 承接项"），按 `P3.3 → P3.4 → P3.5 → P3.6` 的顺序，当前应开工的是 **P3.4（§8）**。
 
 已落地的部分：
 
@@ -409,14 +409,16 @@ go test ./internal/chat -run TestChatCapacity -v
 docker compose -p p33cap -f docker-compose.yaml down -v
 ```
 
-### 下一步的唯一入口（P3.3 验收点 `32f4648` 起生效）
+### P3.3 向 P3.5 / P3.6 移交的待办入口（P3.3 验收点 `32f4648` 起生效）
 
-P3.3 已归档，**结构性问题不再回头讨论**。下一实施包（P3.5 / P3.6）开工时只读下面两张表，不必重新翻阅阶段三全过程，也不得重新打开已确认的容量口径：
+**先读清顺序：当前下一实施包是 P3.4（§8），不是 P3.5 或 P3.6。** 顺序由 §3 的实施表与 §12 的依赖图固定（`P3.3 → P3.4 → P3.5 → P3.6`，P3.5 依赖 P3.4，P3.6 依赖 P3.5），本节的两张表**不是当前下一包的入口，而是 P3.3 交给未来 P3.5/P3.6 的移交清单**。
+
+P3.3 已归档，**结构性问题不再回头讨论**。等到 P3.5 / P3.6 开工时，这两张表就是它们各自的完整入口，不必重新翻阅阶段三全过程，也不得重新打开已确认的容量口径：
 
 - **P3.6 前置待办** → 归属 P3.6 的接入前事项（容量已就绪，剩余的是接入约定与加固项）；
 - **P3.5 承接项** → 归属 P3.5 的 alias 编排事项。
 
-两张表就是完整清单；表中每一条都写明归属包、验收方式与所引证据，新增事项只能追加到对应表中，不得反向扩大 P3.3 范围。
+两张表就是完整清单；表中每一条都写明归属包、验收方式与所引证据，新增事项只能追加到对应表中，不得反向扩大 P3.3 范围。**P3.4 开工不需要读本节**——它的任务与验收在 §8。
 
 **P3.6 前置待办（归属 P3.6；`py-agent` 正式接入前完成）**
 
