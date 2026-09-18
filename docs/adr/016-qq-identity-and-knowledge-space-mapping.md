@@ -1,7 +1,7 @@
 # ADR-016：QQ 身份与知识空间映射
 
-> 状态：**草案 v2，待评审**（评审通过后转为"已接受"，届时才据本 ADR 编码）
-> 修订：v2（2026-09-19，按协作评审修订：上下文化解析、撤销生效点、绑定写入口、验收重写）
+> 状态：**已接受**
+> 修订：v2（2026-09-19，按协作评审修订：上下文化解析、撤销生效点、绑定写入口、验收重写）；v2.1（2026-09-19 第二轮评审后接受：判定二态 + 三类服务端标签、标签不变量验收、`Denied` 终止签发链）
 > 日期：2026-09-19
 > 决策范围：P3.4（QQ 身份与知识空间映射）；P3.6 的接入前置
 > 相关决策：[ADR-003](./003-chat-domain-boundary.md)、[ADR-012](./012-multi-consumer-search-boundary-and-critical-path-shift.md)、[ADR-014](./014-per-corpus-control-plane-isolation.md)、[ADR-015](./015-control-plane-idempotency-ledger-retention.md)；契约 [SERVICE_CALL_CAPABILITY.md](../contracts/SERVICE_CALL_CAPABILITY.md)、[CHAT_SEARCH_V1_CONTRACT.md](../contracts/CHAT_SEARCH_V1_CONTRACT.md)
@@ -91,25 +91,45 @@ ResolveQQResourceScope(
 ) Resolution
 ```
 
-`Resolution` 是**三态 + 角色标签**，不是裸集合：
+`Resolution` 是**判定二态 + 三类服务端标签**，不是裸集合、也不是三态：
 
 ```text
-Decision:      Granted | Denied{reason}
-Private:       []spaceID     // 该用户的私人空间（0 或 1）
-CurrentTeam:   spaceID | none // 群聊：当前群绑定的空间；私聊恒为 none
-OtherTeams:    []spaceID     // 该用户的其他活动团队空间
+Decision:      Granted | Denied{reason}   // 判定只有两个分支
+Private:       []spaceID     // Granted 专有：该用户的私人空间（0 或 1）
+CurrentTeam:   spaceID | none // Granted 专有：群聊为当前群绑定的空间；私聊恒为 none
+OtherTeams:    []spaceID     // Granted 专有：该用户的其他活动团队空间
 ```
+
+`Denied` 分支**不携带任何范围字段**，也不得降级为空 `Granted`（理由见背景第 2 条）。当前不需要第三种判定状态：非法输入按既有契约返回 `INVALID_ARGUMENT`，依赖不可用返回 `UNAVAILABLE`，两者都不是"范围解析结果"。
 
 确定性规则：
 
 - **私聊**：`Private` = 绑定用户的私人空间；`CurrentTeam` 恒为 none（私聊不得把任何团队标成"当前团队"）；
 - **群聊**：`CurrentTeam` = **当前群**的活动绑定空间，且仅当该用户是它的活动成员；未绑定群 → `Denied`；其他群绑定的空间**不得**出现在 `CurrentTeam`；
 - 用户属于其他团队空间时，它们只能出现在 `OtherTeams`（**带标签**），供编排层按生态指南 §7 的语义决定是否使用，而不得被当作"当前团队"；
+- **标签不变量**：三类标签由服务端生成、互不重叠——`CurrentTeam` 不得同时出现在 `OtherTeams`，`Private` 不得出现在任何团队标签里；绑定目标必须是 `team` 空间，因此 private 空间**不可能**成为 `CurrentTeam`；调用方不能提交标签，也不能通过重新标记改变权限类别；
 - `Denied` 的四种来源：未绑定用户、未绑定群、绑定已撤销、不是该空间的活动成员；
 - `ListUserSpaces(userID)` 可以存在（供管理界面与对账），**但不得用于签发任何会话的 capability**；
 - 多表读取必须使用**单条 JOIN 或一致性读事务**，不得在并发改绑时拼出"旧用户绑定 + 新群绑定"这类混合快照。
 
 **关于范围宽窄的一处刻意保留**：生态指南 §7 允许私聊访问"其有权加入的团队空间"，也允许群聊使用"私人、当前团队或其他授权团队的知识"（由 Agent 选择、权限系统约束）。因此本 ADR 定义的是**带标签的最大信封**，而"某次回答实际取哪个子集"属于编排策略（P3.6）；若产品决定收紧为"私聊只允许私人空间、群聊只允许当前群绑定空间"，那是策略层的一处开关，不改变本 ADR 的解析结构。
+
+**信封 → capability 的唯一链条（P3.6 实现，本 ADR 固定语义）**：
+
+```text
+最大资源信封（go-web 解析，带标签）
+  ∩ 可信渠道策略（python-agent 提供结论，go-web 按标签屏蔽当前会话不允许的类别）
+  ∩ 调用方请求的子集（Agent/Model 只能提出候选空间 ID）
+  = 最终 capability 范围
+```
+
+配套的五条硬规则，用来保证与决策 6 的"Model 输出不参与权限判定"完全一致：
+
+1. **标签只由 go-web 生成**：调用方不得提交、改写或重新标记标签，尤其不得把 `OtherTeams` 标成 `CurrentTeam`；
+2. **Agent/Model 只能提议空间 ID**，不能提议标签、不能扩大信封；
+3. **渠道策略可以按标签裁剪**：若渠道策略禁止群聊使用私人空间，即使 `Private` 在最大信封里，也不得进入最终 capability；
+4. **每次签发都重新解析**：不得复用调用方缓存或上次的最大信封；
+5. **出现任意越界 ID 时整体拒绝**，不静默裁剪。
 
 ### 9. 绑定写入主体与审计（P3.4 只开受信内部入口）
 
@@ -124,7 +144,7 @@ OtherTeams:    []spaceID     // 该用户的其他活动团队空间
 | --- | --- | --- |
 | QQ 身份 | `qq_identities`（渠道 + 外部标识） | `(channel, external_id)` 唯一 |
 | 用户绑定 | `qq_user_bindings`（身份、用户、`revoked_at`、actor/source/reason） | 每个身份至多一条活动绑定 |
-| 群↔空间绑定 | `group_space_bindings`（群标识、空间、`revoked_at`、actor/source/reason） | 群与空间各自至多一条活动绑定 |
+| 群↔空间绑定 | `group_space_bindings`（群标识、空间、`revoked_at`、actor/source/reason） | 群与空间各自至多一条活动绑定；**目标空间必须是 `team` 类型**（private 空间不得被绑定） |
 | 团队空间成员 | 复用 `space_members` | 复用既有延迟约束触发器；创建空间与 owner 成员须同一事务 |
 
 ## 结果与权衡
@@ -143,12 +163,15 @@ OtherTeams:    []spaceID     // 该用户的其他活动团队空间
 6. **包含规则**：请求空间必须是本次上下文解析结果的子集，越界整体拒绝，不静默裁剪。
 7. **并发与一致性**：用户绑定、群绑定、空间反向绑定的活动唯一性在并发事务下成立；改绑提交前读旧值、提交后读新值，不出现混合快照；历史行可审计。
 8. **写入授权**：未授权主体不能创建、撤销或改绑关系；失败写入不改变活动绑定与审计历史。
+9. **标签不变量**：`Private` / `CurrentTeam` / `OtherTeams` 由服务端生成且互不重叠——`CurrentTeam` 不得同时出现在 `OtherTeams`，`Private` 不出现在团队标签中，private 空间不能成为 `CurrentTeam`；调用方无法通过提交或重新标记标签改变权限类别（越权提交被整体拒绝）。
 
 ## P3.6 再验收（不属于 P3.4）
 
+- **范围链**固定为 `最大资源信封 ∩ 可信渠道策略 ∩ 调用方请求子集 = capability 范围`；
 - 渠道允许、资源拒绝；资源允许、渠道拒绝（两类反例）；
+- **`Denied` 的最终处置**：任意 `Denied` 解析结果都**不得签发 capability、不得降级为空范围、不得发起 `mixin-search` 调用**，对应审计记录必须保留稳定的拒绝原因（否则适配层仍可能把 `Denied` 错误映射成"仅公开文档"检索）；
 - capability 签发、TTL 与撤销残留窗口的处置结论；
-- `py-agent` 不能自行扩大空间 allow-list；
+- `py-agent` 不能自行扩大空间 allow-list，也不能复用缓存的最大信封；
 - 双端 golden vector 与审计字段（含"代表哪个最终用户"）。
 
 ## 复审条件
