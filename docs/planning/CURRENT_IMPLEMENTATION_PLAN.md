@@ -425,7 +425,8 @@ P3.3 已归档，**结构性问题不再回头讨论**。等到 P3.5 / P3.6 开�
 - **容量上限数值与账本窗口（已拍板并已启用，不再是待办）**：A 档已写入根 Compose 并验证生效——30,000 条消息 / 24 MiB 快照 / 7 天 / 30,000 条账本，metadata 预算 8 项、key ≤ 32 B、value ≤ 64 B、keys+values ≤ 64 B。**2026-09-19 复核确认不下调 `maxMessages` 为 26,000**：有效容量本就是 `min(条数, 字节)`，下调只会制造"保证能存 26k"的错觉（26k + 64 B metadata 距 24 MiB 仅约 2% 余量）；`maxMessages` 的定性是第二道保险，不是产品容量指标，契约与运维文档均不得把它写成保证容量。真实 ID 形态下字节上限约在 29.5k（无 metadata）/ 27k（32 B）/ 26k（64 B）先触发，证据见 `docs/reports/evidence/phase3/p33-chat-capacity-profile_20260919.md`；P3.6 的接入约定需据此限制每消息 metadata 规模；
 - **分片/行级 CAS 的触发**：命中任一硬限制或持续 p95 超 SLO 时，启动独立 ADR 讨论迁移；本包不做；
 - **聊天侧 PostgreSQL 适配器已补上集成测试**（`internal/chat/capacity_postgres_test.go`，`CHAT_CONTROL_STORE_INTEGRATION=1` + `CONTROL_DATABASE_DSN`，覆盖消息上限、快照上限与账本清理三条真实路径）；
-- **纯加固两项**（判定为既有行为或不必需，不构成错误状态）：适配器把包装后的内部错误文本回给调用方（文档与聊天同样如此，改动会变更客户端可见文本）；聊天索引写入没有按意图租约设 deadline（只影响写锁持有时长）。
+- **纯加固两项**（判定为既有行为或不必需，不构成错误状态）：适配器把包装后的内部错误文本回给调用方（文档与聊天同样如此，改动会变更客户端可见文本）；聊天索引写入没有按意图租约设 deadline（只影响写锁持有时长）；
+- **一处注释漂移待定**（2026-09-19 耦合度复核发现）：`apps/mixin-search/internal/chat/service.go` 的 `GetConversationIndexState` 注释写"go-web 与 py-agent 用它做对账"，但 `go-web` 既不签发也不调用聊天语料（`mixinSearchSecurityConf.go` 明确声明），`gin-backend` 代码中没有任何聊天语料引用。待 P3.6 决定 go-web 是否真的消费聊天对账状态：若消费则补实现，若不消费则改注释——**本包不改代码**，以免验收点之后出现功能树变更。
 
 **P3.5 承接项（归属 P3.5）**：alias 机制与切换已交付，**蓝绿重建编排**（把数据填进新世代、完整性校验、保留上一代用于回退）仍属 P3.5。编排还必须处理本包明确留下的 **alias 单写者与补偿竞态**：
 
