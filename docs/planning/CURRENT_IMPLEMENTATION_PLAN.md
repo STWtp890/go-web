@@ -260,9 +260,9 @@ P3.3 尚未完成。已落地的部分：
 
 **控制面（第二片）**
 
-- 新增 `internal/controlplane`：两个语料共用的机制——不可变快照的单调发布（`State`）与派生投影的收敛和后台 reconciler（`Projection`）；该包不持有任何语料状态，并由架构测试强制不得 import 任何 `mixin-search/` 包。**目前只有聊天语料接入它**：文档语料的 `internal/rag/projection.go` 仍是自己的实现，把文档侧迁移到该机制属于后续独立提交（不在本轮动已验证的 P3.2 代码）；
+- 新增 `internal/controlplane`：两个语料共用的机制——不可变快照的单调发布（`State`）与派生投影的收敛和后台 reconciler（`Projection`）；该包不持有任何语料状态，并由架构测试强制不得 import 任何 `mixin-search/` 包；
+- **两个语料都接入了该机制**：聊天语料从一开始就用它；文档语料的 `internal/rag/projection.go` 已在本轮迁移过来，删掉了自己那份 `projectionMu`/`projectionSynced`/`projectionErr`/`projectionWake` 与 `convergeProjection`/`signalProjection`/`projectionGeneration`，改为 `controlplane.State`（`publish` 用单调 `Publish` + `Signal`，读路径用 `State.Load()`）与 `controlplane.Projection`（`ensureProjection` 走 `Converge`，reconciler 走 `StartReconciler`）。迁移只换机制、不动已验证的 P3.2 语义：文档侧 `internal/rag` 全量测试与 `internal/architecture` 边界测试通过，行为不变（含"reconciler 无请求也能收敛"与"投影失败时检索失败关闭"两条测试）。两套状态仍然完全分离：各自的快照类型、generation、控制存储表与 reconciler 都没有合并；
 
-**尚未落地**
 - 新增 `internal/chat`：聊天语料自己的控制面——会话/消息状态机、四类修订、幂等账本、写入意图围栏、独立 `ControlStore` 端口与内存/PostgreSQL 适配器（独立 `chat_control_states` 表）、以及按自己 generation 收敛的投影；
 - 聊天通过三个端口访问向量侧（消息索引、控制投影同步、候选检索），由组合根注入，因此 `internal/chat` 不依赖 `internal/rag`（已由架构测试强制）；
 - ADR-014 的五条最低验收条件已有可执行证据（`internal/chat/isolation_test.go`）：聊天活动使文档控制面的 `Load`/`Generation`/`Save` 计数**零增长**且文档控制负载字节数不变、文档活动不推进聊天 generation、聊天规模增长不改变文档控制快照大小、聊天投影故障不影响文档检索、聊天投影被挂起时文档授权撤销与检索照常完成；

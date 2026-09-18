@@ -10,8 +10,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
+
+	"mixin-search/internal/controlplane"
 )
 
 var (
@@ -176,18 +177,19 @@ type DocumentIndexService struct {
 	controlStore  ControlStore
 	storageDomain string
 
-	snapshot atomic.Pointer[controlSnapshot]
+	// state is the published control snapshot. Publication is monotonic in
+	// generation and goes through the same corpus-agnostic mechanism the chat
+	// corpus uses; only the mechanism is shared, never the state.
+	state *controlplane.State[controlSnapshot]
 	// writeMu serializes control-plane mutations; readers never take it.
 	writeMu sync.Mutex
 	// reloadMu serializes control-plane reloads. It is separate from writeMu so a
 	// reader whose snapshot is stale does not wait behind a writer's vector I/O.
 	reloadMu sync.Mutex
 
-	projectionMu     sync.Mutex
-	projectionSynced uint64
-	projectionErr    error
-
-	projectionWake chan struct{}
+	// projection tracks how far the vector store has been converged to the
+	// published generation, and is driven by the background reconciler.
+	projection *controlplane.Projection
 }
 
 func NewDocumentIndexService(core *Service) (*DocumentIndexService, error) {
@@ -225,12 +227,12 @@ func NewDocumentIndexServiceWithControlStore(
 		return nil, fmt.Errorf("%w: restore control state: %w", ErrControlStoreUnavailable, err)
 	}
 	service := &DocumentIndexService{
-		core:           core,
-		controlStore:   controlStore,
-		storageDomain:  storageDomain,
-		projectionWake: make(chan struct{}, 1),
+		core:          core,
+		controlStore:  controlStore,
+		storageDomain: storageDomain,
+		state:         controlplane.NewState(restored, restored.generation),
+		projection:    controlplane.NewProjection(),
 	}
-	service.snapshot.Store(restored)
 	return service, nil
 }
 

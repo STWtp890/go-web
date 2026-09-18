@@ -3,6 +3,8 @@ package rag
 import (
 	"context"
 	"time"
+
+	"mixin-search/internal/controlplane"
 )
 
 // projectionReconcileInterval is how often the background reconciler checks
@@ -26,74 +28,40 @@ const projectionSyncTimeout = 10 * time.Second
 // Callers must stop the reconciler by cancelling ctx. Tests that do not start it
 // still behave correctly: a read that finds the projection behind converges it
 // itself, which is what preserves the fail-closed contract.
+//
+// The closure performs the raw projection write only: controlplane.Converge owns
+// the locking and the synced-generation bookkeeping, so calling it from inside
+// this callback would re-enter its own lock.
 func (s *DocumentIndexService) StartProjectionReconciler(ctx context.Context) {
-	go func() {
-		ticker := time.NewTicker(projectionReconcileInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-s.projectionWake:
-			case <-ticker.C:
+	s.projection.StartReconciler(ctx, controlplane.ReconcilerConfig{
+		Interval: projectionReconcileInterval,
+		Timeout:  projectionSyncTimeout,
+		Target:   func() uint64 { return s.state.Generation() },
+		Sync: func(syncCtx context.Context, generation uint64) error {
+			current := s.state.Load()
+			if current.generation != generation {
+				return nil
 			}
-			s.reconcileProjection(ctx)
-		}
-	}()
-}
-
-func (s *DocumentIndexService) reconcileProjection(ctx context.Context) {
-	snapshot := s.snapshot.Load()
-	if s.projectionGeneration() >= snapshot.generation {
-		return
-	}
-	syncCtx, cancel := context.WithTimeout(ctx, projectionSyncTimeout)
-	defer cancel()
-	// A background failure is recorded, not raised: the next read that needs a
-	// current projection fails closed with the recorded error.
-	_ = s.convergeProjection(syncCtx, snapshot)
+			return s.syncProjection(syncCtx, current)
+		},
+	})
 }
 
 // ensureProjection guarantees that the projection is at least as new as the
 // snapshot a request is about to filter against, and fails closed with the
 // vector-store error when it cannot be brought there.
 func (s *DocumentIndexService) ensureProjection(ctx context.Context, snapshot *controlSnapshot) error {
-	if s.projectionGeneration() >= snapshot.generation {
+	if s.projection.Synced() >= snapshot.generation {
 		return nil
 	}
-	return s.convergeProjection(ctx, snapshot)
+	return s.projection.Converge(ctx, snapshot.generation, func(inner context.Context) error {
+		return s.syncProjection(inner, snapshot)
+	})
 }
 
-// convergeProjection writes the snapshot's controls to the vector store once,
-// even when several requests and the reconciler ask at the same time.
-func (s *DocumentIndexService) convergeProjection(ctx context.Context, snapshot *controlSnapshot) error {
-	s.projectionMu.Lock()
-	defer s.projectionMu.Unlock()
-	if s.projectionSynced >= snapshot.generation {
-		return nil
-	}
-	err := s.core.SyncDocumentControls(ctx, snapshot.vectorDocumentControls(s.storageDomain))
-	if err == nil {
-		s.projectionSynced = snapshot.generation
-		s.projectionErr = nil
-		return nil
-	}
-	s.projectionErr = err
-	return err
-}
-
-func (s *DocumentIndexService) projectionGeneration() uint64 {
-	s.projectionMu.Lock()
-	defer s.projectionMu.Unlock()
-	return s.projectionSynced
-}
-
-// signalProjection wakes the reconciler without blocking: a pending wake-up
-// already covers any number of published snapshots, because the reconciler
-// always converges to the newest published generation.
-func (s *DocumentIndexService) signalProjection() {
-	select {
-	case s.projectionWake <- struct{}{}:
-	default:
-	}
+// syncProjection writes the snapshot's controls to the vector store. It is the
+// raw write: callers reach it through controlplane.Projection, which serializes
+// concurrent convergence.
+func (s *DocumentIndexService) syncProjection(ctx context.Context, snapshot *controlSnapshot) error {
+	return s.core.SyncDocumentControls(ctx, snapshot.vectorDocumentControls(s.storageDomain))
 }

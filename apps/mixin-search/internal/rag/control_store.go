@@ -338,7 +338,7 @@ func controlOperationValue(operation ControlOperation) (any, error) {
 //     writer lock without waiting and serves the current snapshot when a writer
 //     is busy, leaving the cleanup to that writer or to a later request.
 func (s *DocumentIndexService) readSnapshot(ctx context.Context) (*controlSnapshot, error) {
-	snapshot := s.snapshot.Load()
+	snapshot := s.state.Load()
 	changed, err := s.controlStoreChanged(ctx, snapshot)
 	if err != nil {
 		return nil, err
@@ -346,7 +346,7 @@ func (s *DocumentIndexService) readSnapshot(ctx context.Context) (*controlSnapsh
 	if changed {
 		s.reloadMu.Lock()
 		defer s.reloadMu.Unlock()
-		return s.reloadLocked(ctx, s.snapshot.Load())
+		return s.reloadLocked(ctx, s.state.Load())
 	}
 	if !snapshot.needsMaintenance(time.Now().UnixMilli()) {
 		return snapshot, nil
@@ -357,7 +357,7 @@ func (s *DocumentIndexService) readSnapshot(ctx context.Context) (*controlSnapsh
 	defer s.writeMu.Unlock()
 	s.reloadMu.Lock()
 	defer s.reloadMu.Unlock()
-	return s.reloadLocked(ctx, s.snapshot.Load())
+	return s.reloadLocked(ctx, s.state.Load())
 }
 
 func (s *DocumentIndexService) controlStoreChanged(ctx context.Context, snapshot *controlSnapshot) (bool, error) {
@@ -383,7 +383,7 @@ func (s *DocumentIndexService) lockWrite(ctx context.Context) (*controlSnapshot,
 	s.writeMu.Lock()
 	s.reloadMu.Lock()
 	defer s.reloadMu.Unlock()
-	snapshot, err := s.reloadLocked(ctx, s.snapshot.Load())
+	snapshot, err := s.reloadLocked(ctx, s.state.Load())
 	if err != nil {
 		s.writeMu.Unlock()
 		return nil, err
@@ -422,10 +422,10 @@ func (s *DocumentIndexService) reloadLocked(ctx context.Context, current *contro
 	// Fencing an expired intent publishes a new snapshot that carries the pending
 	// delete, so the physical cleanup pass must read the newest one: passing the
 	// pre-fence snapshot would skip it and leave the orphaned vectors behind.
-	if err := s.reconcilePendingVectorDeletes(ctx, s.snapshot.Load()); err != nil {
+	if err := s.reconcilePendingVectorDeletes(ctx, s.state.Load()); err != nil {
 		return nil, err
 	}
-	return s.snapshot.Load(), nil
+	return s.state.Load(), nil
 }
 
 // commit persists a writer-private snapshot with compare-and-swap and publishes
@@ -452,18 +452,12 @@ func (s *DocumentIndexService) commit(ctx context.Context, previous, next *contr
 // Publication never moves backwards: a reader that loaded the control plane
 // while a writer was committing could otherwise re-publish the older state it
 // read before that commit. Generation is the total order here, so the newest
-// persisted snapshot always wins.
+// persisted snapshot always wins, and the shared mechanism refuses the older one.
 func (s *DocumentIndexService) publish(snapshot *controlSnapshot) {
-	for {
-		current := s.snapshot.Load()
-		if current != nil && snapshot.generation < current.generation {
-			return
-		}
-		if s.snapshot.CompareAndSwap(current, snapshot) {
-			break
-		}
+	if !s.state.Publish(snapshot, snapshot.generation) {
+		return
 	}
-	s.signalProjection()
+	s.projection.Signal()
 }
 
 // reconcilePendingVectorWrites fences expired write intents with a durable
@@ -539,5 +533,5 @@ func (s *DocumentIndexService) abandonVectorWrite(
 	if err := s.reconcilePendingVectorDeletes(ctx, next); err != nil {
 		return nil, fmt.Errorf("clean abandoned vector write: %w", err)
 	}
-	return s.snapshot.Load(), nil
+	return s.state.Load(), nil
 }

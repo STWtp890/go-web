@@ -220,14 +220,14 @@ func TestProjectionReconcilerConvergesWithoutARequest(t *testing.T) {
 	// would be racy: an earlier write's sync must not satisfy the wait.
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		snapshot := service.snapshot.Load()
-		if snapshot.generation > 0 && service.projectionGeneration() >= snapshot.generation {
+		snapshot := service.state.Load()
+		if snapshot.generation > 0 && service.projection.Synced() >= snapshot.generation {
 			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf(
 				"projection was not converged in the background: synced=%d published=%d",
-				service.projectionGeneration(), snapshot.generation,
+				service.projection.Synced(), snapshot.generation,
 			)
 		}
 		time.Sleep(5 * time.Millisecond)
