@@ -1,6 +1,6 @@
 # go-web 项目结构与依赖约束
 
-> 状态：阶段 1 结构基线，P2.1-P2.5 控制面、Qdrant 过滤、可靠投递、影子索引与影子查询评估已落地
+> 状态：阶段 1 结构基线；P2.1-P2.5 控制面、Qdrant 过滤、可靠投递、影子索引与影子查询评估已落地；P3.1-P3.3 调用方 capability 边界、不可变控制快照与多语料（文档 + 聊天）隔离已落地
 > 生效日期：2026-09-14
 
 ## 1. 结构原则
@@ -120,7 +120,8 @@ apps/mixin-search/
 │   │   ├── store.go                        # 按聊天投影过滤候选的存储包装（不实现文档的受控接口）
 │   │   └── pipeline.go                     # 聊天消息的平面切分管道（不复用 Markdown/DOCX）
 │   └── transport/grpc/                     # Protobuf DTO 与业务 Service 的适配层
-│       ├── server.go                       # 协议转换与错误码映射
+│       ├── server.go                       # 文档语料：协议转换与错误码映射
+│       ├── server_chat.go                  # 聊天语料：协议转换、错误码映射与容量/metadata 语义
 │       └── auth.go                         # 调用方认证、角色策略与范围包含校验拦截器
 ├── compose.yaml                            # 控制 PostgreSQL、Qdrant、pgvector 本地依赖
 ├── verify-control-store.ps1                # 一次性 PostgreSQL P2.1 验收入口
@@ -176,7 +177,7 @@ cmd ──> app (composition root)
 - P2.1 的 PostgreSQL 控制状态和向量索引均为可重建派生数据；P2.3 已提供失败重放、差异对账和 repeatable-read 全量重建编排。
 - P2.2 已完成 Qdrant 授权、活动版本、墓碑与 storage domain 过滤下推；P2.3 已完成 gin-backend 可靠投递；P2.4 已完成根 Compose、分层健康状态与持续影子索引；P2.5 已完成非阻塞影子查询、事实复核、来源分层观测和质量报告。当前结论为 KEEP_BM25，正式读取方地位仍未改变。
 - P2.5 完成后的缓存加固统一了进程级 Redis/内存/singleflight 运行时。内存回退按实体与文档分区受 TTL、LRU、条目和字节预算约束；User/Manager 使用 PostgreSQL 单调 `cache_revision` 版本键隔离延迟旧回填，JWT 会话状态继续保持 Redis 故障时失败关闭。完整边界见 [ADR-011](../adr/011-bounded-cache-runtime-and-revision-fencing.md)。
-- 阶段 3 的实施基线已于 2026-09-17 建立（P3.0），调用方 capability 边界与不可变控制快照已落地。当前未完成项集中在 `mixin-search`：多语料控制面隔离（[ADR-014](../adr/014-per-corpus-control-plane-isolation.md)）与聊天语料契约和索引隔离（P3.3）。`go-web` 侧在本阶段只新增 `py-agent` 接入所需的身份映射与治理边界，不建设完整聊天产品域。范围与门禁见 [CURRENT_IMPLEMENTATION_PLAN.md](../planning/CURRENT_IMPLEMENTATION_PLAN.md)。
+- 阶段 3 已建立调用方 capability 边界（P3.1）、不可变控制快照（P3.2）与多语料隔离（P3.3：独立契约、独立控制面与持久化、按语料 audience、Qdrant alias 与 `_g1` 基线，见 [ADR-014](../adr/014-per-corpus-control-plane-isolation.md) 与 [聊天语料契约](../contracts/CHAT_SEARCH_V1_CONTRACT.md)）。**当前未完成项**：QQ 身份与知识空间映射（`go-web` 侧，见 [ADR-016](../adr/016-qq-identity-and-knowledge-space-mapping.md)）、在线可靠性门禁与蓝绿重建编排（`mixin-search` 侧）、以及 `py-agent` 的正式接入。范围与门禁见 [CURRENT_IMPLEMENTATION_PLAN.md](../planning/CURRENT_IMPLEMENTATION_PLAN.md)。
 
 ## 7. P1.3 的结构结果
 

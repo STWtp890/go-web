@@ -8,7 +8,7 @@
 
 契约路径使用 `mixin-search/v1`，Protobuf 完整服务名为 `mixin_search.v1.RAGService`。该服务只负责正式文档版本的派生索引，不承载聊天语料、用户体系、空间成员关系或文档发布流程。
 
-聊天语料**不会**加入本契约：它使用独立领域契约、独立控制面与独立索引集合，见 [ADR-014](../adr/014-per-corpus-control-plane-isolation.md)。给本契约增加 `corpus_type` 字段、或让 `SearchDocuments` 接受聊天请求，都在该决策中被明确拒绝；`storage_domain` 是存储隔离，不是语料类型契约。
+聊天语料**不会**加入本契约：它使用独立领域契约、独立控制面与独立索引集合，见 [聊天语料索引契约](./CHAT_SEARCH_V1_CONTRACT.md) 与 [ADR-014](../adr/014-per-corpus-control-plane-isolation.md)。给本契约增加 `corpus_type` 字段、或让 `SearchDocuments` 接受聊天请求，都在该决策中被明确拒绝；`storage_domain` 是存储隔离，不是语料类型契约。
 
 `go-web` 是文档、版本、归属空间、访问策略、授权和生命周期的唯一事实源，负责分配 `activation_revision`、`access_revision`、`lifecycle_revision`，并在完成身份、成员和资源权限校验后计算搜索请求中的 allow-list。该 allow-list 同时决定签发调用方 capability 时写入的已授予范围，服务端据此拒绝任何扩大范围的请求，见 5.1 与 [SERVICE_CALL_CAPABILITY.md](./SERVICE_CALL_CAPABILITY.md)。
 

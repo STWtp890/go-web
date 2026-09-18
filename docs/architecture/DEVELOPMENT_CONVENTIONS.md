@@ -270,6 +270,7 @@ func ManagerAuthRequired(opts ...AuthOption) gin.HandlerFunc  // 管理面
 3. 当且仅当出现真实复用或循环风险时，才把具体后端抽为子包；抽取方向依据真实依赖图决定，**禁止**预设横向 `model/service/store` 切分。
 4. `document_pipeline` 的公开范围待产品确认；确认前**禁止**扩大其导出 API。
 5. 测试文件按**行为**命名，禁止使用阶段号（如 `p2_2_test.go`）。
+6. **语料级落位规则**（P3.3 起有两个语料）：每个语料拥有自己的领域包（文档 `internal/rag`、聊天 `internal/chat`）与自己到向量集合的适配层（聊天为 `internal/chatindex`）；**与语料无关的机制放 `internal/controlplane`，且不得 import 任何语料包**。新增第三个语料时照此落位：契约独立、控制面状态独立、集合与 alias 独立、角色与 audience 独立，不得给现有契约加语料选择器字段，也不得让某个语料的包依赖另一个语料的包（由 `internal/architecture/dependencies_test.go` 强制）。
 
 ---
 

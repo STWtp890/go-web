@@ -1,6 +1,6 @@
 # mixin-search 聊天语料索引契约
 
-> 状态：契约已定型；服务端实现属于 P3.3 实施包，进度见 [当前实施计划](../planning/CURRENT_IMPLEMENTATION_PLAN.md)
+> 状态：契约已定型，服务端实现已随 P3.3 交付并归档（验收点 `32f4648`，tag `p3.3-accepted`；证据见 [阶段三证据快照](../reports/evidence/phase3/README.md)）
 > 责任边界：§8 是 `py-agent` 接入前后的核对清单（谁负责什么、mixin-search 不做哪些事）
 > 日期：2026-09-17
 > Proto：`packages/proto/mixin-search/chat/v1/chat.proto`

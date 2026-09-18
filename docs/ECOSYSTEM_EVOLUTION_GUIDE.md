@@ -204,7 +204,7 @@ AI Agent 的职责是理解用户意图、选择合适的知识域、组织工�
 - 先完成持久化控制状态、真实存储授权过滤、重试重放、状态对账和影子评估，再讨论受控切换检索读取方；
 - 在保持 Web 搜索产品语义清晰的前提下，形成统一的文档检索入口。
 
-当前进度：go-web 阶段 1 和阶段 2 的 P2.0-P2.5 已完成，已经贯通文档事实、BM25、可靠影子索引、异步影子查询与来源分层评估。P2.5 的七类基线质量和收敛后正确性通过，但当前检索仍使用 local-hash-v1 评估 embedding，书面结论为 KEEP_BM25；正式搜索继续由 PostgreSQL BM25 提供。阶段 2 已收口，文档 BM25 的正式交接属于独立的 B 线工作，不阻塞后续阶段。
+当前进度：go-web 阶段 1 与阶段 2 已完成并收口，已经贯通文档事实、BM25、可靠影子索引、异步影子查询与来源分层评估。P2.5 的七类基线质量和收敛后正确性通过，但当前检索仍使用 local-hash-v1 评估 embedding，书面结论为 KEEP_BM25；正式搜索继续由 PostgreSQL BM25 提供。文档 BM25 的正式交接属于独立的 B 线工作，不阻塞后续阶段。
 
 ### 阶段三：QQ 身份与知识空间融合
 
@@ -272,4 +272,4 @@ AI Agent 的职责是理解用户意图、选择合适的知识域、组织工�
 
 当前映射：宏观阶段一与阶段二已由 go-web 阶段 0、阶段 1 和阶段 2 完成并冻结，阶段二的书面结论为 KEEP_BM25。宏观阶段三正在推进。
 
-**本文不记录实施包编号和完成进度**：当前状态、实施顺序与验收门禁只在 [`CURRENT_IMPLEMENTATION_PLAN.md`](./planning/CURRENT_IMPLEMENTATION_PLAN.md) 维护。跨阶段决策见 [`ADR-012`](./adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)（多消费者检索边界与关键路径转折点）与 [`ADR-013`](./adr/013-immutable-control-snapshot-and-background-projection.md)（控制面不可变快照与后台投影收敛）。阶段 1 与阶段 2 的实施证据分别保存在 [`PHASE1_IMPLEMENTATION_LOG.md`](./reports/PHASE1_IMPLEMENTATION_LOG.md) 与 [`PHASE2_IMPLEMENTATION_LOG.md`](./reports/PHASE2_IMPLEMENTATION_LOG.md)。
+**本文不记录实施包编号和完成进度**：当前状态、实施顺序与验收门禁只在 [`CURRENT_IMPLEMENTATION_PLAN.md`](./planning/CURRENT_IMPLEMENTATION_PLAN.md) 维护。跨阶段决策见 [`ADR-012`](./adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)（多消费者检索边界与关键路径转折点）、[`ADR-013`](./adr/013-immutable-control-snapshot-and-background-projection.md)（控制面不可变快照与后台投影收敛）、[`ADR-014`](./adr/014-per-corpus-control-plane-isolation.md)（多语料控制面与索引隔离）与 [`ADR-016`](./adr/016-qq-identity-and-knowledge-space-mapping.md)（QQ 身份与知识空间映射）。阶段 1 与阶段 2 的实施证据分别保存在 [`PHASE1_IMPLEMENTATION_LOG.md`](./reports/PHASE1_IMPLEMENTATION_LOG.md) 与 [`PHASE2_IMPLEMENTATION_LOG.md`](./reports/PHASE2_IMPLEMENTATION_LOG.md)。
