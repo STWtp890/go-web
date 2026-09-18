@@ -3,7 +3,7 @@
 > 文档职责：当前唯一阶段排期与实施入口
 > 上位目标：[ECOSYSTEM_EVOLUTION_GUIDE.md](../ECOSYSTEM_EVOLUTION_GUIDE.md)
 > 相关决策：[ADR-001](../adr/001-search-service-boundary.md)、[ADR-002](../adr/002-document-index-ownership.md)、[ADR-004](../adr/004-bm25-migration-strategy.md)、[ADR-005](../adr/005-development-baseline-over-production-migration.md)、[ADR-006](../adr/006-mixin-search-control-state-commit-order.md)、[ADR-007](../adr/007-qdrant-control-projection-and-filtering.md)、[ADR-008](../adr/008-document-index-transactional-outbox.md)、[ADR-009](../adr/009-shadow-index-compose-and-health-boundary.md)、[ADR-010](../adr/010-shadow-query-evaluation-gate.md)、[ADR-011](../adr/011-bounded-cache-runtime-and-revision-fencing.md)、[ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)、[ADR-013](../adr/013-immutable-control-snapshot-and-background-projection.md)、[ADR-014](../adr/014-per-corpus-control-plane-isolation.md)、[ADR-015](../adr/015-control-plane-idempotency-ledger-retention.md)
-> 当前状态：生态阶段二已收口（P2.0-P2.5 全部通过）；阶段三实施基线已建立，P3.0、P3.0a、P3.1、P3.2、P3.3a 已完成；**P3.3 进行中**——独立聊天契约、独立控制面与持久化、独立 Qdrant alias 与 `_g1` 基线、capability 硬隔离（角色 + audience 双锁）、容量硬限制机制与容器级验收均已落地并通过门禁，唯一未决项是容量上限的**数值**（待确认后填入配置与 Compose，见 §7.1）；蓝绿重建编排属 P3.5
+> 当前状态：生态阶段二已收口（P2.0-P2.5 全部通过）；阶段三实施基线已建立，P3.0、P3.0a、P3.1、P3.2、P3.3a 已完成；**P3.3 已完成**——独立聊天契约、独立控制面与持久化、独立 Qdrant alias 与 `_g1` 基线、capability 硬隔离（角色 + audience 双锁）、容量与账本保留机制均已落地，并通过本地单元/架构门禁与容器整栈验收（验收提交 `5483b65`，证据见 `docs/reports/evidence/phase3/`）。唯一前置待办是**容量上限数值与账本保留窗口的启用**（机制与数据已就位，须在 P3.6 接入前拍板，见 §7.1）
 > 更新日期：2026-09-19
 
 ## 1. 当前全局进度结论
@@ -66,7 +66,7 @@
 | P3.1 | mixin-search 调用身份与授权边界 | P3.0 | 已完成 |
 | P3.2 | 在线检索并发模型 | P3.0 | 已完成 |
 | P3.3a | 多语料控制面隔离决策 | P3.2 | 已完成 |
-| P3.3 | 多语料契约与索引隔离 | P3.0、P3.3a | 进行中（主体已落地并通过本地与容器验收，未完成项见 §7.1） |
+| P3.3 | 多语料契约与索引隔离 | P3.0、P3.3a | 已完成（一处 P3.6 前置待办：容量上限数值与账本窗口启用，见 §7.1） |
 | P3.4 | QQ 身份与知识空间映射 | P3.1、P3.3 | 待推进 |
 | P3.5 | 在线可靠性门禁 | P3.1、P3.2、P3.4 | 待推进 |
 | P3.6 | py-agent 文档知识闭环 | P3.5 | 待推进 |
@@ -247,11 +247,11 @@ P3.3a 已于 2026-09-17 完成，决策记录为 [ADR-014](../adr/014-per-corpus
 - 撤回、归档与索引移除的传播路径有明确契约和测试；
 - 满足 [ADR-014](../adr/014-per-corpus-control-plane-isolation.md) 的最低验收条件：聊天 generation 变化不触发文档快照重新加载（以控制存储 `Generation`/`Load` 计数断言）、聊天索引重建不切换文档 alias、文档授权撤销不等待聊天投影收敛、聊天语料规模增长不增加文档控制快照大小、任一语料故障不污染另一语料的生命周期状态。
 
-> 验收现状（2026-09-19 核查后更新）：第 1、3、4、5 条有可执行证据（`internal/chat/isolation_test.go`），其中第 1、4 条另有容器与真实 PostgreSQL 证据，并已进入整栈门禁的自动断言；第 2 条自"第八片"起由**真实的 alias 机制与直接映射断言**保证（切换前后记录映射、聊天切到空世代后检索为空、文档 alias 不变、切回恢复），不再是"集合名独立"的弱形式。audience 按语料划分已于 2026-09-19 落地（见"第七片"）；容量上限确定后本实施包才能关闭（蓝绿重建编排本身仍是 P3.5）。
+> 验收现状（2026-09-19 收口）：第 1、3、4、5 条有可执行证据（`internal/chat/isolation_test.go`），其中第 1、4 条另有容器与真实 PostgreSQL 证据，并已进入整栈门禁的自动断言；第 2 条自"第八片"起由**真实的 alias 机制与直接映射断言**保证（切换前后记录映射、聊天切到空世代后检索为空、文档 alias 不变、切回恢复），不再是"集合名独立"的弱形式。audience 按语料划分已于"第七片"落地。**五项全部有证据，P3.3 于 2026-09-19 收口**；残留的是容量上限的**数值**与账本窗口的启用（机制、数据与候选组合都已就位，属 P3.6 接入前的前置拍板项，见下"P3.6 前置待办"），以及 P3.5 的蓝绿重建编排（本包只交付 alias 机制与切换）。
 
 ### 进展
 
-P3.3 **仍在进行中，不能定性为"全部完成"**：主体功能与独立语料链路已落地并通过本地单元/架构门禁、进程内端到端与容器内验收（见下"容器级验收"），但 ADR-014 的三项要求尚未落地——Qdrant alias 的蓝绿原子切换（决策 1、4）、capability audience 按语料划分（决策 5）、以及聊天控制快照的容量上限与迁移触发条件（见"尚未落地"）。因此 P3.3 的验收只能算"主体验收通过"，不是"实施包关闭"。
+P3.3 **已完成**（验收提交 `5483b65`，证据归档于 `docs/reports/evidence/phase3/`）：独立聊天契约、独立控制面与持久化、独立 Qdrant alias 与 `_g1` 基线、capability 硬隔离（角色 + audience 双锁）、容量硬限制与幂等账本保留机制全部落地，本地单元/架构门禁、进程内端到端与容器整栈验收全绿。收口前经过两轮独立对抗性复审，确认的 9 处缺陷（含一处 HIGH：alias 两段式切换在 Qdrant 上是非原子的、失败会把 alias 删掉）已全部修复并各自带回归测试。
 
 已落地的部分：
 
@@ -361,7 +361,7 @@ Docker Desktop 恢复运行后，P3.3 缺失的那一项终于有了容器内证
 
 **幂等账本保留窗口（ADR-015，2026-09-19：决策已定，机制已落地、默认不清理）**：账本只进不出，是快照里唯一没有回收路径的部分，因此"重放保证的有效窗口"必须先写成契约再实现。已接受 [ADR-015](../adr/015-control-plane-idempotency-ledger-retention.md)：窗口内重放返回首次响应、改绑被拒；窗口外不承诺响应复现与改绑检测，但**不重复写入**由状态本身保证（向量键含 `operation_id`、消息内容不可变、修订号幂等）；清理按年龄为主（建议 7 天）并以条数上限兜底（建议 100,000 条），走既有机会式维护路径，不新增后台任务。机制已实现并配置化（`-chat-operation-retention`、`-chat-operation-max-entries`，默认 0 = 不清理，行为与今天一致；账本条目新增 `recorded_at_unix_milli`，无时间戳的旧条目按"年龄未知"处理：不被年龄清理、在条数上限下最先被丢弃）。实现时发现并修正了 ADR 的一处措辞：窗口外**第一次**以不同载荷到达时改绑无从检测（接受），但该 id 被重新接受后会重新记录、保护恢复——测试 `TestOperationLedgerRebindingOutsideTheWindowIsAccepted` 与 `TestOperationLedgerRetentionKeepsTheWindowAndForgetsBeyondIt` 分别固定这两种情形，另有条数上限最旧优先、默认不清理、清理后快照变小三条测试。启用（填数值）与容量上限一并落地，避免两次契约变更。
 
-**拒绝机制已就位（数值待确认）**：`-chat-max-messages` 与 `-chat-max-snapshot-bytes` 两个配置项（默认 0 = 不限）已落地，超限写入返回 `ErrCapacityExceeded` → gRPC `FAILED_PRECONDITION`；消息数为精确检查，快照字节数按上一次持久化的快照判定（最多滞后一次写入，避免把候选快照再编码一遍——50k 时那会多花约 340 ms/次）。`SizingControlStore` 让持久化适配器与内存适配器都把刚写入的负载大小报给守卫，零额外编码。测试：`TestCapacityGuardRefusesWritesPastTheMessageLimit`、`TestCapacityGuardRefusesOnceTheSnapshotLimitIsReached`、`TestZeroCapacityLimitsDoNotRestrictWrites`、`TestNegativeCapacityLimitsAreRejected`，以及适配器的错误码映射用例。确认上限后只需把数值填进配置与 Compose（并写进契约 §7 的默认值）。
+**拒绝机制已就位（数值待拍板，属 P3.6 前置）**：`-chat-max-messages` 与 `-chat-max-snapshot-bytes` 两个配置项（默认 0 = 不限）已落地，超限写入返回 `ErrCapacityExceeded` → gRPC `FAILED_PRECONDITION`；消息数为精确检查；快照字节数按**已持久化的快照**判定（Postgres 适配器在 `Load` 时记录真实 payload 长度，因此别的实例写入的更大快照也会被看见），最多滞后一次写入——刻意取舍，避免把候选快照再编码一遍（50k 时约多花 550 ms/次）。达到快照上限后**所有**写入路径（索引/归档/访问/撤回/删除）都被拒绝，读取不受影响；只在索引路径设限不会真正约束快照，因为其余四种写入同样会新增账本记录。测试：`TestCapacityGuardRefusesWritesPastTheMessageLimit`、`TestCapacityGuardRefusesOnceTheSnapshotLimitIsReached`、`TestSnapshotCeilingRefusesEveryMutationNotJustIndexing`、`TestSnapshotCeilingSeesASnapshotAnotherInstanceGrew`、`TestZeroCapacityLimitsDoNotRestrictWrites`、`TestNegativeCapacityLimitsAreRejected`，以及适配器的错误码映射用例；真实 PostgreSQL 上另有三条集成子测试（消息上限、快照上限、账本清理）。拍板后只需把数值填进配置与 Compose（并写进契约 §7 的默认值）。
 
 复跑方式（真实 CAS 需要控制 PostgreSQL 可达）：
 
@@ -373,18 +373,16 @@ go test ./internal/chat -run TestChatCapacity -v
 docker compose -p p33cap -f docker-compose.yaml down -v
 ```
 
-**尚未落地**
+**P3.6 前置待办（不阻塞 P3.3 收口，但必须在 `py-agent` 正式接入前完成）**
 
-- **alias 机制已落地，蓝绿重建编排仍属 P3.5**：两个语料各有独立 alias（配置名即为 alias），物理集合为 `_gN` 世代，切换为原子操作并有直接映射断言（见"第八片"）。尚未实现的是重建编排本身——把数据填进新世代、完整性校验、保留上一代用于回退，这些属于计划中 P3.5 的任务；
-- **聊天控制快照的容量上限数值待确认（机制已就位）**：P3.2 消除的是**读**路径的全局排他锁与每次全量加载；**写**路径仍是"一个全局 `writeMu` + 一份完整 `ControlState`"——每次变更复制整份快照、序列化整份快照、再做一次 CAS（`internal/chat/service.go`、`internal/chat/snapshot.go`），且幂等 operation ledger 没有清理策略。对聊天这种高基数、持续增长的语料，这比文档索引更容易触顶。这不影响当前正确性验收，但 `py-agent` 正式接入前必须定下四项：单 corpus 的最大消息数或快照字节数、operation ledger 的保留期限、单次 CAS 序列化的延迟阈值、迁移到分区存储或行级 CAS 的触发指标；
-- **聊天侧 PostgreSQL 适配器仍没有集成测试**：文档语料有环境变量门控的 `internal/rag/control_store_integration_test.go`（`CONTROL_STORE_INTEGRATION=1` + `CONTROL_DATABASE_DSN`）。聊天侧本轮补的是两项**不依赖数据库**的替代证据，而不是一份无法执行的集成测试：
-  - `internal/chat/control_schema_test.go`：断言聊天 schema 只创建自己的 `chat_control_states`，不触碰文档的 `control_states`（复制文档 schema 却漏改表名这类错误对 PostgreSQL 是合法的，只会在容器门禁里暴露）；
-  - `internal/chat/control_store_encoding_test.go`：把真实控制状态走一遍持久化编码边界（`json.Marshal` → `Unmarshal` → `normalize` → `validate`），再断言恢复后的语料检索结果、对账视图、幂等账本与墓碑围栏与原来一致；该断言经一次刻意的反向改动确认有效（去掉 generation 列还原即失败）。
-  两项都不覆盖 SQL 本身（DDL 执行、CAS `UPDATE ... RETURNING`、连接池行为），后者仍只能在容器门禁里验证。
-- **复审记录在案、判定为"既有行为或纯加固"的两项**（不构成越权或错误状态，也不计入 P3.3 未完成项）：
-  - 适配器把包装后的内部错误文本回给调用方（`codes.Internal`、`Unavailable` 分支），文档与聊天适配器同样如此，是既有行为而非本轮引入；
-  - 聊天索引写入没有按意图租约设置 deadline（文档语料有），只影响写锁持有时长，不会产生错误状态（复审逐一推演过交错执行）。
-- **远程 CI 尚无本次提交的运行证据**：`.github/workflows/verify.yml` 存在且覆盖两个契约，本地门禁（含整栈 `verify.ps1`）已通过，但仓库领先 `origin/main` 38 个提交，因此只能声明"workflow 已创建、本地门禁通过"，不能声明"远程 CI 已通过"。
+- **容量上限数值与账本窗口的启用（唯一需要拍板的一项）**：测量数据、候选组合与机制都已在上面给出，两个候选是 A（30k 消息 / 24 MiB / p95 ≤ 1 s，推荐）与 B（50k 消息 / 48 MiB / p95 ≤ 1.5 s）；账本建议保留 7 天 + 100,000 条上限并与容量同批启用。选定后只需填默认值与 Compose，并复跑整栈门禁；
+- **分片/行级 CAS 的触发**：命中任一硬限制或持续 p95 超 SLO 时，启动独立 ADR 讨论迁移；本包不做；
+- **聊天侧 PostgreSQL 适配器已补上集成测试**（`internal/chat/capacity_postgres_test.go`，`CHAT_CONTROL_STORE_INTEGRATION=1` + `CONTROL_DATABASE_DSN`，覆盖消息上限、快照上限与账本清理三条真实路径）；
+- **纯加固两项**（判定为既有行为或不必需，不构成错误状态）：适配器把包装后的内部错误文本回给调用方（文档与聊天同样如此，改动会变更客户端可见文本）；聊天索引写入没有按意图租约设 deadline（只影响写锁持有时长）。
+
+**P3.5 承接项**：alias 机制与切换已交付，**蓝绿重建编排**（把数据填进新世代、完整性校验、保留上一代用于回退）仍属 P3.5；`verify-qdrant-control.ps1` 已补上 store 级 alias 套件的选择。
+
+**环境记录**：远程 CI 仍无本次提交的运行证据（仓库领先 `origin/main`），本文档只声明本地门禁与容器验收的结果。
 
 ## 8. P3.4：QQ 身份与知识空间映射
 
@@ -436,6 +434,10 @@ docker compose -p p33cap -f docker-compose.yaml down -v
 ### 目标
 
 在上述门禁全部通过后，使 `py-agent` 成为 `mixin-search` 的第一个正式在线消费者，并保持 `go-web` 的文档治理权。
+
+### 前置（由 P3.3 结转）
+
+- **容量上限数值与账本保留窗口必须在此实施包开工前拍板并启用**：两个候选组合与全部实测数据见 §7.1 的"P3.6 前置待办"；未启用时聊天语料以"默认不限"运行，高基数写入下快照会持续增长（机制已在，只是数值为空）。
 
 ### 任务
 
