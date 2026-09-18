@@ -1,7 +1,9 @@
 package chat
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -117,6 +119,183 @@ func stateWithoutOperations(state ControlState) ControlState {
 	return copied
 }
 
+// TestChatCapacityIsContentLengthIndependent documents a fact that changes how the
+// profile should be read: the control snapshot stores no message content, only its
+// SHA-256 digest, so message length cannot move it. Length matters to the vector
+// collection, which is a different capacity domain.
+//
+// The test keeps everything else identical and varies the content from a short
+// message to the largest one a producer might send. The snapshot length must not
+// move: only the digest's *value* changes, never its 64-character width.
+func TestChatCapacityIsContentLengthIndependent(t *testing.T) {
+	referenceBytes := 0
+	for _, contentBytes := range []int{20, 200, 2_000, 4_000} {
+		state := buildCapacityStateWithContent(1_000, 50, contentBytes)
+		encoded := mustMarshal(t, state)
+		if referenceBytes == 0 {
+			referenceBytes = len(encoded)
+			t.Logf("content_bytes=%d payload_bytes=%d", contentBytes, len(encoded))
+			continue
+		}
+		if len(encoded) != referenceBytes {
+			t.Fatalf(
+				"snapshot grew with content length %d bytes: %d vs %d bytes; the control plane must store digests of fixed width",
+				contentBytes, len(encoded), referenceBytes,
+			)
+		}
+		t.Logf("content_bytes=%d payload_bytes=%d (same length)", contentBytes, len(encoded))
+	}
+}
+
+// TestChatCapacityRealisticShape re-runs the profile with the identifiers and
+// metadata a real chat producer sends, which - unlike message length - do move the
+// snapshot: storage keys carry the corpus domain, conversation, message and
+// operation, and messages may carry metadata.
+func TestChatCapacityRealisticShape(t *testing.T) {
+	if os.Getenv("CHAT_CAPACITY_PROFILE") != "1" {
+		t.Skip("set CHAT_CAPACITY_PROFILE=1 to measure the control snapshot")
+	}
+	for _, messages := range []int{10_000, 30_000} {
+		synthetic := mustMarshal(t, buildCapacityState(messages, 50))
+		realistic := mustMarshal(t, buildRealisticCapacityState(messages, 50))
+		delta := len(realistic) - len(synthetic)
+		budget := 24 * 1024 * 1024
+		verdict := "fits"
+		if len(realistic) > budget {
+			verdict = "EXCEEDS"
+		}
+		t.Logf(
+			"realistic messages=%d synthetic_bytes=%d realistic_bytes=%d delta_bytes=%d realistic_mib=%.1f budget24mib=%s",
+			messages, len(synthetic), len(realistic), delta, float64(len(realistic))/(1024*1024), verdict,
+		)
+	}
+}
+
+// buildRealisticCapacityState models the identifier and metadata shapes a real
+// producer sends: QQ-style conversation and sender ids, message ids of the length
+// a timestamped id has, storage keys built by the production storageID shape, and a
+// small metadata map per message. Content is irrelevant here by construction.
+func buildRealisticCapacityState(messages, batchSize int) ControlState {
+	return buildCapacityStateWithShape(messages, batchSize, realisticShape)
+}
+
+// buildCapacityStateWithContent is buildRealisticCapacityState with a chosen content
+// length, used to show that length does not reach the snapshot.
+func buildCapacityStateWithContent(messages, batchSize, contentBytes int) ControlState {
+	state := buildCapacityStateWithShape(messages, batchSize, syntheticShape)
+	content := bytes.Repeat([]byte("x"), contentBytes)
+	digest := fmt.Sprintf("%x", sha256.Sum256(content))
+	for key, message := range state.Messages {
+		message.ContentSHA256 = digest
+		state.Messages[key] = message
+	}
+	return state
+}
+
+const (
+	syntheticShape = iota
+	realisticShape
+)
+
+func buildCapacityStateWithShape(messages, batchSize, shape int) ControlState {
+	state := newControlState()
+	const conversations = 100
+	conversationsCount := conversations
+	if messages < conversationsCount {
+		conversationsCount = messages
+	}
+	conversationID := func(index int) string {
+		if shape == realisticShape {
+			return fmt.Sprintf("qq-group-%010d", index%conversationsCount)
+		}
+		return fmt.Sprintf("conversation-%d", index%conversationsCount)
+	}
+	messageID := func(index int) string {
+		if shape == realisticShape {
+			return fmt.Sprintf("10001-%d-%08x", 1_758_260_000_000+int64(index), index)
+		}
+		return fmt.Sprintf("message-%d", index)
+	}
+	senderID := func(index int) string {
+		if shape == realisticShape {
+			return fmt.Sprintf("qq-%010d", index%1_000)
+		}
+		return fmt.Sprintf("qq-%d", index%1000)
+	}
+	metadata := func(index int) map[string]string {
+		if shape != realisticShape {
+			return map[string]string{"batch": fmt.Sprintf("%d", index/batchSize)}
+		}
+		return map[string]string{
+			"source":      "qq-group",
+			"channel_id":  fmt.Sprintf("qq-group-%010d", index%conversationsCount),
+			"received_at": fmt.Sprintf("%d", 1_758_260_000_000+int64(index)),
+		}
+	}
+	batch := make([]MessageState, 0, batchSize)
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		operationID := fmt.Sprintf("operation-%d", len(state.Operations))
+		states := append([]MessageState(nil), batch...)
+		state.Operations[operationID] = ControlOperation{
+			Kind:                operationIndexMessages,
+			Fingerprint:         fmt.Sprintf("sha256:%064x", len(state.Operations)),
+			RecordedAtUnixMilli: 1_760_000_000_000,
+			Result:              ControlOperationResult{Messages: states},
+		}
+		batch = batch[:0]
+	}
+	for index := 0; index < messages; index++ {
+		conversation := conversationID(index)
+		message := messageID(index)
+		sender := senderID(index)
+		operation := fmt.Sprintf("operation-%d", index/batchSize)
+		storage := storageID("go_web_chat_v1", conversation, message, operation)
+		if shape != realisticShape {
+			storage = fmt.Sprintf("chat-postgres:capacity/%s/%s", conversation, message)
+		}
+		state.Conversations[conversation] = ControlConversation{
+			OwnerScopeID:      "scope-" + conversation,
+			Archived:          true,
+			ArchiveRevision:   1,
+			AccessRevision:    1,
+			GrantedScopeIDs:   []string{"scope-" + conversation},
+			LifecycleRevision: 1,
+			DeleteResults:     map[uint64]DeleteResult{},
+		}
+		state.Messages[messageKey(conversation, message)] = ControlMessage{
+			ConversationID:    conversation,
+			MessageID:         message,
+			SenderID:          sender,
+			SentAtUnixMs:      1_700_000_000_000 + int64(index),
+			ContentSHA256:     fmt.Sprintf("%064x", index),
+			StorageID:         storage,
+			ChunkCount:        1,
+			LifecycleRevision: 1,
+			Metadata:          metadata(index),
+		}
+		batch = append(batch, MessageState{
+			ConversationID:    conversation,
+			MessageID:         message,
+			OwnerScopeID:      "scope-" + conversation,
+			SenderID:          sender,
+			SentAtUnixMs:      1_700_000_000_000 + int64(index),
+			ArchiveRevision:   1,
+			AccessRevision:    1,
+			LifecycleRevision: 1,
+			ChunkCount:        1,
+			ContentSHA256:     fmt.Sprintf("%064x", index),
+		})
+		if len(batch) == batchSize {
+			flush()
+		}
+	}
+	flush()
+	return state
+}
+
 // buildLedgerState builds a state whose ledger holds a chosen number of receipts,
 // each carrying statesPerOperation message states taken from the message set. It
 // models a corpus indexed in fixed-size batches under a given retention ceiling.
@@ -169,7 +348,10 @@ func TestChatCapacityCASLatency(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	const batchSize = 50
-	for _, messages := range []int{1_000, 10_000, 50_000} {
+	// 30k is measured directly, not interpolated: it is the message ceiling the
+	// capacity tier is set from, so its latency is the number that decides whether
+	// the tier is affordable.
+	for _, messages := range []int{1_000, 10_000, 30_000, 50_000} {
 		namespace := fmt.Sprintf("capacity-%d-%d", messages, time.Now().UnixNano())
 		store, err := NewPostgresControlStore(ctx, PostgresControlStoreConfig{
 			DSN: dsn, Namespace: namespace, Bootstrap: true,
@@ -308,73 +490,5 @@ func mustMarshal(t *testing.T, state ControlState) []byte {
 // comes from: an earlier version of this builder stored a single state per batch
 // and under-measured the ledger by the batch size.
 func buildCapacityState(messages, batchSize int) ControlState {
-	state := newControlState()
-	const conversations = 100
-	conversationsCount := conversations
-	if messages < conversationsCount {
-		conversationsCount = messages
-	}
-	batch := make([]MessageState, 0, batchSize)
-	flush := func() {
-		if len(batch) == 0 {
-			return
-		}
-		operationID := fmt.Sprintf("operation-%d", len(state.Operations))
-		states := append([]MessageState(nil), batch...)
-		state.Operations[operationID] = ControlOperation{
-			Kind:                operationIndexMessages,
-			Fingerprint:         fmt.Sprintf("sha256:%064x", len(state.Operations)),
-			RecordedAtUnixMilli: 1_760_000_000_000,
-			Result:              ControlOperationResult{Messages: states},
-		}
-		batch = batch[:0]
-	}
-	for index := 0; index < messages; index++ {
-		conversationID := fmt.Sprintf("conversation-%d", index%conversationsCount)
-		conversation, ok := state.Conversations[conversationID]
-		if !ok {
-			conversation = ControlConversation{
-				OwnerScopeID:      "scope-" + conversationID,
-				Archived:          true,
-				ArchiveRevision:   1,
-				AccessRevision:    1,
-				GrantedScopeIDs:   []string{"scope-" + conversationID},
-				LifecycleRevision: 1,
-				DeleteResults:     map[uint64]DeleteResult{},
-			}
-			state.Conversations[conversationID] = conversation
-		}
-		messageID := fmt.Sprintf("message-%d", index)
-		storageID := fmt.Sprintf("chat-postgres:capacity/%s/%s", conversationID, messageID)
-		state.Messages[messageKey(conversationID, messageID)] = ControlMessage{
-			ConversationID:    conversationID,
-			MessageID:         messageID,
-			SenderID:          fmt.Sprintf("qq-%d", index%1000),
-			SentAtUnixMs:      1_700_000_000_000 + int64(index),
-			ContentSHA256:     fmt.Sprintf("%064x", index),
-			StorageID:         storageID,
-			ChunkCount:        1,
-			LifecycleRevision: 1,
-			Metadata:          map[string]string{"batch": fmt.Sprintf("%d", index/batchSize)},
-		}
-		// The ledger entry records the response IndexMessages would return for the
-		// batch, which is one state per message.
-		batch = append(batch, MessageState{
-			ConversationID:    conversationID,
-			MessageID:         messageID,
-			OwnerScopeID:      "scope-" + conversationID,
-			SenderID:          fmt.Sprintf("qq-%d", index%1000),
-			SentAtUnixMs:      1_700_000_000_000 + int64(index),
-			ArchiveRevision:   1,
-			AccessRevision:    1,
-			LifecycleRevision: 1,
-			ChunkCount:        1,
-			ContentSHA256:     fmt.Sprintf("%064x", index),
-		})
-		if len(batch) == batchSize {
-			flush()
-		}
-	}
-	flush()
-	return state
+	return buildCapacityStateWithShape(messages, batchSize, syntheticShape)
 }

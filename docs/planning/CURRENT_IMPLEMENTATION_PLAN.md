@@ -351,15 +351,24 @@ Docker Desktop 恢复运行后，P3.3 缺失的那一项终于有了容器内证
 
 按约 766 字节/消息线性增长。要读出的结论有三条：①写路径的代价是"整份快照重写"——50k 消息时每次写入约 1.35 s、重写约 37 MiB，写入频率与 WAL 放大直接由快照大小决定；②clone+编码占其中约 41%，换更快的数据库也压不下去；③**幂等账本不是可忽略项**：它约等于把每条消息的响应再存一份，因此 ADR-015 的保留窗口直接决定快照大小，属于容量治理的一部分。
 
-**建议值（修正后，待你确认）**：
+**容量档位已拍板并写入部署配置（A 档，2026-09-19）**
 
-- 硬限制：单 corpus 最多 **30,000** 条消息、单 corpus 快照最多 **24 MiB**（30k 实测 21.9 MiB，其中账本 10.1 MiB）；超限的写入请求**明确拒绝**（`FAILED_PRECONDITION`）；
-- SLO（不作为拒绝依据）：在硬限制内，单次写入 p95 ≤ **1 s**（50k 实测 p95 1.58 s；30k 内插约 950 ms，**内插值非实测**）；
-- 迁移触发（改成分区/行级 CAS 的判据，任一命中即启动独立 ADR）：消息数 ≥ 30k、快照 ≥ 24 MiB、或持续观测到 p95 写入 > 1 s；
-- 账本：保留 **7 天**（建议），**条数上限必须按字节预算推导而不是固定 100,000**——实测"30k 消息 + 100k 条 receipt"为 **63.8 MiB（超预算 2.7 倍，账本独占 81%）**；按 `maxEntries ≈ (预算 − 消息占用) / (每 receipt 平均状态数 × ~350 B + 开销)` 推导：每批 50 条约 700 条、每批 5 条约 7,000 条、每条 1 个响应约 38,000 条。**开启保留窗口会直接缩小快照**（30k 时把账本压到约一份语料副本），因此必须与容量上限同批启用；
-- 若你更希望保留 50k 的消息上限，则快照上限需同步提到 **48 MiB**，SLO 放宽到 p95 ≤ 1.5 s——同一份数据下的另一种自洽组合，选择权在你。
+```text
+maxMessages         = 30,000
+maxSnapshotBytes    = 24 MiB (25,165,824)
+operationRetention  = 7 days (168h)
+operationMaxEntries = 30,000        （不采用 100,000）
+CAS p95 target      ≤ 1 second      （30k 直接实测 p95 = 750.9 ms）
+```
 
-完整测量表（含环境、假设、账本占比、CAS p50/p95、两个上限的相互作用）见 [p33-chat-capacity-profile_20260919.md](../reports/evidence/phase3/p33-chat-capacity-profile_20260919.md)。
+语义：`有效容量 = min(30,000 条消息, 24 MiB 快照)`、`账本保留 = min(7 天, 30,000 条记录)`。四个参数已写入根 Compose（`MIXIN_SEARCH_CHAT_MAX_*` 可覆盖）；`rag-server` 的运行期默认仍为 0（不限）——**保护由部署配置给出，根 Compose 是本项目唯一的生产基线**，测试与嵌入式用法不被默认限制影响。
+
+**30k 是数量天花板，不保证所有消息长度分布都能装到 30k**：真实标识符 + 每消息 3 项 metadata 的形态下 30k 达 **27.2 MiB**，即 24 MiB 约在 **26k** 处先触发；metadata 更重的生产者会更早触顶，建议在 P3.6 的接入约定里限制每消息 metadata 规模。
+
+被实测推翻的两个直觉（详见证据文件）：
+
+- **消息长度不进入控制快照**（只存 `content_sha256`；20 → 4,000 字节内容，快照恒为 782,128 字节），它影响的是向量集合；
+- **"7 天窗口至多保留一份语料副本"只对本次画像模型成立**：在"一轮完整索引、每批 50 条"的假设下，7 天约保留一份语料对应的 receipt；**实际占用取决于操作速率、批大小与操作类型**（反复归档、授权变更或撤回会在窗口内产生多份 receipt），并受 30,000 条账本上限与 24 MiB 总快照上限共同约束。
 
 **幂等账本保留窗口（ADR-015，2026-09-19：决策已定，机制已落地、默认不清理）**：账本只进不出，是快照里唯一没有回收路径的部分，因此"重放保证的有效窗口"必须先写成契约再实现。已接受 [ADR-015](../adr/015-control-plane-idempotency-ledger-retention.md)：窗口内重放返回首次响应、改绑被拒；窗口外不承诺响应复现与改绑检测，但**不重复写入**由状态本身保证（向量键含 `operation_id`、消息内容不可变、修订号幂等）；清理按年龄为主（建议 7 天）并以条数上限兜底（建议 100,000 条），走既有机会式维护路径，不新增后台任务。机制已实现并配置化（`-chat-operation-retention`、`-chat-operation-max-entries`，默认 0 = 不清理，行为与今天一致；账本条目新增 `recorded_at_unix_milli`，无时间戳的旧条目按"年龄未知"处理：不被年龄清理、在条数上限下最先被丢弃）。实现时发现并修正了 ADR 的一处措辞：窗口外**第一次**以不同载荷到达时改绑无从检测（接受），但该 id 被重新接受后会重新记录、保护恢复——测试 `TestOperationLedgerRebindingOutsideTheWindowIsAccepted` 与 `TestOperationLedgerRetentionKeepsTheWindowAndForgetsBeyondIt` 分别固定这两种情形，另有条数上限最旧优先、默认不清理、清理后快照变小三条测试。启用（填数值）与容量上限一并落地，避免两次契约变更。
 
@@ -369,7 +378,7 @@ Docker Desktop 恢复运行后，P3.3 缺失的那一项终于有了容器内证
 
 机制细节：`-chat-max-messages` 与 `-chat-max-snapshot-bytes` 两个配置项（默认 0 = 不限）已落地，超限写入返回 `ErrCapacityExceeded` → gRPC `FAILED_PRECONDITION`；消息数为精确检查；快照字节数按**已持久化的快照**判定（Postgres 适配器在 `Load` 时记录真实 payload 长度，因此别的实例写入的更大快照也会被看见），最多滞后一次写入——刻意取舍，避免把候选快照再编码一遍（50k 时约多花 550 ms/次）。达到快照上限后**所有**写入路径（索引/归档/访问/撤回/删除）都被拒绝，读取不受影响；只在索引路径设限不会真正约束快照，因为其余四种写入同样会新增账本记录。**超限不产生部分提交**已由测试断言：被拒后 generation 不变、会话/消息/pending 状态逐字段相等、向量计数不变（`TestSnapshotCeilingRefusesEveryMutationNotJustIndexing`）。测试清单：`TestCapacityGuardRefusesWritesPastTheMessageLimit`、`TestCapacityGuardRefusesOnceTheSnapshotLimitIsReached`、`TestSnapshotCeilingRefusesEveryMutationNotJustIndexing`、`TestSnapshotCeilingSeesASnapshotAnotherInstanceGrew`、`TestZeroCapacityLimitsDoNotRestrictWrites`、`TestNegativeCapacityLimitsAreRejected`，以及适配器的错误码映射用例；真实 PostgreSQL 上另有三条集成子测试（消息上限、快照上限、账本清理）。
 
-**P3.6 开工前必须完成的五步（评审要求）**：①完整测量表已归档（含 30k 行、账本占比、CAS p50/p95、环境与假设、两个上限的相互作用：`docs/reports/evidence/phase3/p33-chat-capacity-profile_20260919.md`）；②拍板 A/B 档位与账本参数（条数上限按字节预算推导，**不要直接填 100,000**）；③在 Compose 中写入非零值；④超限不部分提交的断言已就位（同上）；⑤重跑 PostgreSQL 集成与整栈门禁。**在第 ①–⑤ 完成前，不应把容量描述为"已受控"。**
+**启用状态（2026-09-19 更新）**：四个参数已写入根 Compose，因此**根 Compose 部署的容量是受控的**；不在 Compose 中部署的用法（测试、嵌入式）保持 0 = 不限。P3.6 开工前仍需复核第 ⑤ 步（超限无部分提交、PostgreSQL 集成、整栈门禁在启用后的组合下全绿）——本片已随参数写入复跑。**在任何非根 Compose 的部署里，容量仍不受控，必须显式传入这四个参数。**
 
 复跑方式（真实 CAS 需要控制 PostgreSQL 可达）：
 

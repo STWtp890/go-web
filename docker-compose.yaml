@@ -99,6 +99,17 @@ services:
       - -chat-enabled=${MIXIN_SEARCH_CHAT_ENABLED:-true}
       - -chat-collection=go_web_chat_v1
       - -chat-control-namespace=chat-v1
+      # 容量与账本保留（A 档，2026-09-19 拍板）。语义是
+      #   有效容量 = min(30,000 条消息, 24 MiB 快照)
+      #   账本保留 = min(7 天时间窗口, 30,000 条记录)
+      # 数值来自实测画像（docs/reports/evidence/phase3/p33-chat-capacity-profile_20260919.md）：
+      # 30k 消息实测 CAS p95 ≈ 0.75 s；真实标识符形态下 24 MiB 约在 26k 消息处先触发，
+      # 因此字节上限是最终保护。条数上限按字节预算推导（单响应 receipt 约 38k 容量，
+      # 取 30k 留约 20% 余量），不使用 100,000。
+      - -chat-max-messages=${MIXIN_SEARCH_CHAT_MAX_MESSAGES:-30000}
+      - -chat-max-snapshot-bytes=${MIXIN_SEARCH_CHAT_MAX_SNAPSHOT_BYTES:-25165824}
+      - -chat-operation-retention=${MIXIN_SEARCH_CHAT_OPERATION_RETENTION:-168h}
+      - -chat-operation-max-entries=${MIXIN_SEARCH_CHAT_OPERATION_MAX_ENTRIES:-30000}
       # 调用方身份：缺少 capability 的调用被拒绝，因此密钥必须挂载。
       - -capability-key-file=/app/secrets/mixin_search_capability.key
       - -capability-issuer=go-web

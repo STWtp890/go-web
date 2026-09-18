@@ -274,6 +274,16 @@ func main() {
 		limiter.Enabled(),
 		*enableReflection,
 	)
+	// The effective capacity and retention values are part of the contract, so they
+	// are stated at startup: "0" means unlimited, and an operator must be able to
+	// see that the deployment is (or is not) protected without reading Compose.
+	log.Printf(
+		"chat capacity (effective): max_messages=%d max_snapshot_bytes=%d operation_retention=%s operation_max_entries=%d (0 means unlimited)",
+		*chatMaxMessages,
+		*chatMaxSnapshotBytes,
+		chatOperationRetention.String(),
+		*chatOperationMaxEntries,
+	)
 	if err := server.Serve(listener); err != nil {
 		log.Fatal(err)
 	}
