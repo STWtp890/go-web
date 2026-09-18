@@ -1,10 +1,10 @@
 # P3.3 聊天语料容器级验收证据（2026-09-19）
 
 本文件记录 P3.3（多语料契约与索引隔离）在**容器内**取得的聊天语料专项证据。同一次运行的三个通用报告族见
-`full-api-p15_20260919_034719`、`full-api-p24_outage_20260919_034727`、
-`document-search-evaluation-p25_20260919_034724`；本文件只记录那些报告族没有覆盖的部分。
+`full-api-p15_20260919_040430`、`full-api-p24_outage_20260919_040439`、
+`document-search-evaluation-p25_20260919_040435`；本文件只记录那些报告族没有覆盖的部分。
 
-验收时提交：`5483b65`（含按语料划分 audience、Qdrant alias 与 `_g1` 基线、容量硬限制与幂等账本保留机制，以及两轮对抗性复审后的修复；更早的运行已被本次取代）。
+验收时提交：`a544a34`（功能树最后变更；含按语料划分 audience、Qdrant alias 与 `_g1` 基线、容量与账本保留机制、官方形式的 alias 切换与失败补偿，以及两轮对抗性复审后的修复）。
 
 ## 运行方式
 
@@ -58,22 +58,33 @@ namespace 从 generation 0 推到 4，而文档 namespace 在同一窗口内保�
 - 用文档凭证检索同一关键词，文档语料返回 0 条（聊天内容不出现在文档集合）；
 - 用同一 `operation_id` 重放索引，返回持久化账本里记录的响应而不是重复写入。
 
-## 证据 3：alias 独立且切换原子（部署栈上的直接映射断言）
+## 证据 3：alias 独立、切换原子且可补偿（部署栈上的直接映射断言）
 
-容器日志确认配置名是 alias：
+容器日志确认配置名是 alias，并**直接列出**物理集合与 alias 表（不再依赖容器内 `curl`）：
 
 ```
-document corpus alias "go_web_shadow_v1" -> physical collection "go_web_shadow_v1_g1"
-chat corpus alias "go_web_chat_v1" -> physical collection "go_web_chat_v1_g1"
+qdrant collections: [go_web_chat_v1_g1 go_web_shadow_v1_g1]
+alias "go_web_chat_v1" -> collection "go_web_chat_v1_g1"
+alias "go_web_shadow_v1" -> collection "go_web_shadow_v1_g1"
 ```
+
+切换本身使用 Qdrant 官方文档形式：同一次 `UpdateAliases` 里提交 `Delete(alias)` + `Create(alias→目标)`。
+争议点"整批是否原子"由锁定版本上的决定性实验定论（qdrant v1.19.1）：
+
+```
+observed server behaviour: a failed create action leaves alias "..." deleted (no rollback)
+```
+
+即**服务端不回滚**，因此 `SwitchAlias` 在批次失败时执行显式补偿（把 alias 重新建在原集合上，
+错误里带上原始失败与修复结果），并有 `TestQdrantAliasBatchFailureIsCompensated` 证明补偿有效；
+`RestoreAlias` 是同一路径的操作员入口。
 
 `TestChatAliasSwitchAgainstADeployedStack` 对着**运行中的部署**执行并 PASS：两个配置名必须是
-alias 且**精确指向** `_g1`（只要求 `_g1` 后缀会让"两个语料共用同一集合"也判为健康）；把 chat
-alias 切到一个新建的空世代后，聊天检索立即为空（无需重启），**文档 alias 的映射保持不变**；
-切回后聊天检索恢复；切到不存在的集合被拒绝且映射不动。切换本身用**单条 CreateAlias 重指**
-完成——两段式的"删 + 建"在 Qdrant v1.19.1 上是顺序执行且无回滚的，建失败会把 alias 留在
-已删除状态。清理阶段恢复**两个** alias，任一映射无法恢复时不删除本测试创建的世代，并在结束
-时报告两个 alias 的最终指向。
+alias 且**精确指向** `_g1`（只要求 `_g1` 后缀会让"两个语料共用同一集合"也判为健康）；断言两个
+`_g1` 物理集合确实存在；把 chat alias 切到新建的空世代后聊天检索立即为空（无需重启），
+**文档 alias 的映射保持不变**；切回后聊天检索恢复；切到不存在的集合被拒绝且映射不动；清理阶段
+恢复**两个** alias，任一映射无法恢复时不删除本测试创建的世代，并在结束时报告两个 alias 的最终
+指向与临时世代确实已删除。
 
 ## 未覆盖的部分
 

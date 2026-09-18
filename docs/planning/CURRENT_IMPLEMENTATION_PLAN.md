@@ -3,7 +3,7 @@
 > 文档职责：当前唯一阶段排期与实施入口
 > 上位目标：[ECOSYSTEM_EVOLUTION_GUIDE.md](../ECOSYSTEM_EVOLUTION_GUIDE.md)
 > 相关决策：[ADR-001](../adr/001-search-service-boundary.md)、[ADR-002](../adr/002-document-index-ownership.md)、[ADR-004](../adr/004-bm25-migration-strategy.md)、[ADR-005](../adr/005-development-baseline-over-production-migration.md)、[ADR-006](../adr/006-mixin-search-control-state-commit-order.md)、[ADR-007](../adr/007-qdrant-control-projection-and-filtering.md)、[ADR-008](../adr/008-document-index-transactional-outbox.md)、[ADR-009](../adr/009-shadow-index-compose-and-health-boundary.md)、[ADR-010](../adr/010-shadow-query-evaluation-gate.md)、[ADR-011](../adr/011-bounded-cache-runtime-and-revision-fencing.md)、[ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)、[ADR-013](../adr/013-immutable-control-snapshot-and-background-projection.md)、[ADR-014](../adr/014-per-corpus-control-plane-isolation.md)、[ADR-015](../adr/015-control-plane-idempotency-ledger-retention.md)
-> 当前状态：生态阶段二已收口（P2.0-P2.5 全部通过）；阶段三实施基线已建立，P3.0、P3.0a、P3.1、P3.2、P3.3a 已完成；**P3.3 已完成**——独立聊天契约、独立控制面与持久化、独立 Qdrant alias 与 `_g1` 基线、capability 硬隔离（角色 + audience 双锁）、容量与账本保留机制均已落地，并通过本地单元/架构门禁与容器整栈验收（验收提交 `5483b65`，证据见 `docs/reports/evidence/phase3/`）。唯一前置待办是**容量上限数值与账本保留窗口的启用**（机制与数据已就位，须在 P3.6 接入前拍板，见 §7.1）
+> 当前状态：生态阶段二已收口（P2.0-P2.5 全部通过）；阶段三实施基线已建立，P3.0、P3.0a、P3.1、P3.2、P3.3a 已完成；**P3.3 已完成**（口径：多语料契约、授权、控制面、存储与 alias 切换机制已完成；**容量参数启用属于 P3.6 前置**，完整蓝绿重建编排属于 P3.5）。验收提交 `a544a34`（功能树最后变更），证据见 `docs/reports/evidence/phase3/`
 > 更新日期：2026-09-19
 
 ## 1. 当前全局进度结论
