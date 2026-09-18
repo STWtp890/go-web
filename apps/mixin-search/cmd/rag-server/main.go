@@ -54,8 +54,13 @@ func main() {
 	)
 	capabilityAudience := flag.String(
 		"capability-audience",
-		envOrDefault("MIXIN_SEARCH_CAPABILITY_AUDIENCE", "mixin-search"),
-		"accepted capability audience",
+		envOrDefault("MIXIN_SEARCH_CAPABILITY_AUDIENCE", security.AudienceDocuments),
+		"accepted capability audience for the document corpus",
+	)
+	chatCapabilityAudience := flag.String(
+		"chat-capability-audience",
+		envOrDefault("MIXIN_SEARCH_CHAT_CAPABILITY_AUDIENCE", security.AudienceChat),
+		"accepted capability audience for the chat corpus; must differ from the document audience",
 	)
 	callerRate := flag.Float64(
 		"caller-rate-per-second",
@@ -109,15 +114,26 @@ func main() {
 			log.Fatalf("chat vector backend: %v", err)
 		}
 	}
+	if err := validateCapabilityAudiences(*capabilityAudience, *chatCapabilityAudience); err != nil {
+		log.Fatalf("capability audiences: %v", err)
+	}
 	verifier, err := security.NewVerifier(boundaryKey, *capabilityIssuer, *capabilityAudience)
 	if err != nil {
 		log.Fatalf("build capability verifier: %v", err)
 	}
+	// The chat corpus gets its own verifier with its own audience. The two are
+	// never interchangeable: a chat capability fails the document audience check
+	// before any role is considered, and the reverse.
+	chatVerifier, err := security.NewVerifier(boundaryKey, *capabilityIssuer, *chatCapabilityAudience)
+	if err != nil {
+		log.Fatalf("build chat capability verifier: %v", err)
+	}
 	limiter := security.NewRateLimiter(*callerRate, *callerBurst)
 	authenticator, err := grpcadapter.NewAuthenticator(grpcadapter.AuthConfig{
-		Verifier: verifier,
-		Limiter:  limiter,
-		Audit:    security.SlogAuditSink(slog.Default()),
+		Verifier:     verifier,
+		ChatVerifier: chatVerifier,
+		Limiter:      limiter,
+		Audit:        security.SlogAuditSink(slog.Default()),
 	})
 	if err != nil {
 		log.Fatalf("build boundary authenticator: %v", err)
@@ -212,7 +228,7 @@ func main() {
 	server := newGRPCServer(*maxReceiveBytes, handler, chatServer, authenticator, *enableReflection)
 
 	log.Printf(
-		"RAG gRPC server listening on %s (store=%s control_store=%s chat=%t chat_collection=%s issuer=%s audience=%s throttling=%t reflection=%t)",
+		"RAG gRPC server listening on %s (store=%s control_store=%s chat=%t chat_collection=%s issuer=%s audience=%s chat_audience=%s throttling=%t reflection=%t)",
 		listener.Addr(),
 		strings.ToLower(*backend),
 		strings.ToLower(*controlBackend),
@@ -220,6 +236,7 @@ func main() {
 		*chatCollection,
 		*capabilityIssuer,
 		*capabilityAudience,
+		*chatCapabilityAudience,
 		limiter.Enabled(),
 		*enableReflection,
 	)
@@ -393,6 +410,25 @@ func validateCorpusIsolation(documentCollection, chatCollection string, chatEnab
 	}
 	if chatEnabled && documentCollection == chatCollection {
 		return fmt.Errorf("chat and document corpora must not share the collection %q", chatCollection)
+	}
+	return nil
+}
+
+// validateCapabilityAudiences refuses a configuration in which both corpora
+// accept the same audience.
+//
+// Audience is the first of the two locks between the corpora (the role sets are
+// the second). Sharing one audience would make the separation depend on the role
+// table alone and would let an operator believe the corpora are separated by
+// credentials when they are not, so it is a startup error rather than a warning.
+func validateCapabilityAudiences(documentAudience, chatAudience string) error {
+	documentAudience = strings.TrimSpace(documentAudience)
+	chatAudience = strings.TrimSpace(chatAudience)
+	if documentAudience == "" || chatAudience == "" {
+		return errors.New("both capability audiences are required")
+	}
+	if documentAudience == chatAudience {
+		return fmt.Errorf("the two corpora must not share the capability audience %q", chatAudience)
 	}
 	return nil
 }

@@ -28,19 +28,31 @@ func main() {
 	capabilityKey := flag.String("capability-key", "", "boundary key inline; prefer -capability-key-file")
 	issuer := flag.String("issuer", "go-web", "issuer identity recorded in the token")
 	subject := flag.String("subject", "dev-tool", "caller identity the token is minted for")
-	audience := flag.String("audience", "mixin-search", "audience the token is minted for")
-	role := flag.String("role", security.RoleSearcher, "caller role: index-writer, searcher or ops")
+	audience := flag.String("audience", "", "audience the token is minted for (default: derived from the role)")
+	role := flag.String("role", security.RoleSearcher, "caller role: index-writer, searcher, ops or a chat-* role")
 	userID := flag.String("user", "", "end user the caller acts for (optional)")
 	spaces := flag.String("space", "", "comma-separated granted space IDs (searcher only)")
 	documents := flag.String("document", "", "comma-separated granted document IDs (searcher only)")
 	ttl := flag.Duration("ttl", 10*time.Minute, "token lifetime")
 	flag.Parse()
 
+	// The role decides the audience, so a hand-minted chat token cannot carry the
+	// document audience (or the reverse) and produce a credential that the
+	// service rejects only after a confusing permission error.
+	resolvedAudience := strings.TrimSpace(*audience)
+	if resolvedAudience == "" {
+		derived, ok := security.RoleAudience(*role)
+		if !ok {
+			log.Fatalf("role %q has no audience binding; pass -audience explicitly only for a custom setup", *role)
+		}
+		resolvedAudience = derived
+	}
+
 	key, err := loadBoundaryKey(*capabilityKeyPath, *capabilityKey)
 	if err != nil {
 		log.Fatalf("load capability boundary key: %v", err)
 	}
-	mintingIssuer, err := security.NewIssuer(key, *issuer, *audience, *ttl)
+	mintingIssuer, err := security.NewIssuer(key, *issuer, resolvedAudience, *ttl)
 	if err != nil {
 		log.Fatalf("build capability issuer: %v", err)
 	}
@@ -51,7 +63,7 @@ func main() {
 	slog.Info("minted caller capability",
 		slog.String("subject", *subject),
 		slog.String("role", *role),
-		slog.String("audience", *audience),
+		slog.String("audience", resolvedAudience),
 		slog.Duration("ttl", *ttl),
 	)
 	fmt.Println(token)

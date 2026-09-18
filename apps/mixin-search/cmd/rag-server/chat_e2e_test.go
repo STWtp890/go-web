@@ -44,11 +44,18 @@ func TestChatCorpusEndToEndOverGRPC(t *testing.T) {
 	t.Cleanup(func() { _ = corpus.Close() })
 	corpus.StartProjectionReconciler(ctx)
 
-	verifier, err := security.NewVerifier([]byte(boundaryKey), "go-web", "mixin-search")
+	verifier, err := security.NewVerifier([]byte(boundaryKey), "go-web", security.AudienceDocuments)
 	if err != nil {
 		t.Fatalf("build verifier: %v", err)
 	}
-	authenticator, err := grpcadapter.NewAuthenticator(grpcadapter.AuthConfig{Verifier: verifier})
+	chatVerifier, err := security.NewVerifier([]byte(boundaryKey), "go-web", security.AudienceChat)
+	if err != nil {
+		t.Fatalf("build chat verifier: %v", err)
+	}
+	authenticator, err := grpcadapter.NewAuthenticator(grpcadapter.AuthConfig{
+		Verifier:     verifier,
+		ChatVerifier: chatVerifier,
+	})
 	if err != nil {
 		t.Fatalf("build authenticator: %v", err)
 	}
@@ -92,17 +99,27 @@ func TestChatCorpusEndToEndOverGRPC(t *testing.T) {
 		}
 	}
 
-	issuer, err := security.NewIssuer([]byte(boundaryKey), "go-web", "mixin-search", 5*time.Minute)
+	issuer, err := security.NewIssuer([]byte(boundaryKey), "go-web", security.AudienceDocuments, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("build issuer: %v", err)
 	}
-	writerToken, err := issuer.Issue("py-agent-index", security.RoleChatIndexWriter, "", nil, nil)
+	chatIssuer, err := security.NewIssuer([]byte(boundaryKey), "go-web", security.AudienceChat, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("build chat issuer: %v", err)
+	}
+	writerToken, err := chatIssuer.Issue("py-agent-index", security.RoleChatIndexWriter, "", nil, nil)
 	if err != nil {
 		t.Fatalf("issue chat writer token: %v", err)
 	}
-	searcherToken, err := issuer.Issue("py-agent", security.RoleChatSearcher, "7", []string{"scope-group-42"}, []string{"group-42"})
+	searcherToken, err := chatIssuer.Issue("py-agent", security.RoleChatSearcher, "7", []string{"scope-group-42"}, []string{"group-42"})
 	if err != nil {
 		t.Fatalf("issue chat searcher token: %v", err)
+	}
+	// A chat role minted with the document audience: valid signature, wrong
+	// corpus. It must be refused before any role is considered.
+	mixedToken, err := issuer.Issue("py-agent", security.RoleChatSearcher, "7", []string{"scope-group-42"}, []string{"group-42"})
+	if err != nil {
+		t.Fatalf("issue mixed-corpus token: %v", err)
 	}
 	documentToken, err := issuer.Issue("go-web-shadow-search", security.RoleSearcher, "42", []string{"space-a"}, nil)
 	if err != nil {
@@ -145,11 +162,14 @@ func TestChatCorpusEndToEndOverGRPC(t *testing.T) {
 	}
 
 	// Role separation through the real interceptor: a document capability must
-	// not be able to search chat.
-	if _, err := client.SearchChatMessages(withToken(ctx, documentToken), &mixinsearchchatv1.SearchChatMessagesRequest{
-		Query: "e2eneedle", AllowedScopeIds: []string{"scope-group-42"},
-	}); status.Code(err) != codes.PermissionDenied {
-		t.Fatalf("document capability on chat search code = %s, want PermissionDenied", status.Code(err))
+	// not be able to search chat, and a chat role carrying the document audience
+	// must not either - the audience lock comes before the role table.
+	for name, token := range map[string]string{"document capability": documentToken, "mixed corpus credential": mixedToken} {
+		if _, err := client.SearchChatMessages(withToken(ctx, token), &mixinsearchchatv1.SearchChatMessagesRequest{
+			Query: "e2eneedle", AllowedScopeIds: []string{"scope-group-42"},
+		}); status.Code(err) != codes.Unauthenticated {
+			t.Fatalf("%s on chat search code = %s, want Unauthenticated", name, status.Code(err))
+		}
 	}
 
 	// Scope containment: asking for a scope the capability does not hold is

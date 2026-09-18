@@ -172,6 +172,26 @@ func TestChatVectorBackendRejectsASharedTable(t *testing.T) {
 	}
 }
 
+// TestCapabilityAudiencesMustDiffer keeps the two corpora separated by audience
+// as well as by role: sharing one audience would make the whole separation rest
+// on the role table alone, which is exactly what ADR-014 does not accept.
+func TestCapabilityAudiencesMustDiffer(t *testing.T) {
+	t.Parallel()
+
+	if err := validateCapabilityAudiences(security.AudienceDocuments, security.AudienceChat); err != nil {
+		t.Fatalf("the default audiences were rejected: %v", err)
+	}
+	if err := validateCapabilityAudiences("shared", "shared"); err == nil {
+		t.Fatal("a shared capability audience was accepted")
+	}
+	if err := validateCapabilityAudiences("", security.AudienceChat); err == nil {
+		t.Fatal("an empty document audience was accepted")
+	}
+	if err := validateCapabilityAudiences(security.AudienceDocuments, " "); err == nil {
+		t.Fatal("an empty chat audience was accepted")
+	}
+}
+
 func TestLoadBoundaryKey(t *testing.T) {
 	t.Parallel()
 

@@ -16,7 +16,9 @@ type MixinSearchSecurityConfig struct {
 	CapabilityKeyPath string `yaml:"capability_key_path"`
 	// Issuer 是签发方标识，写入 token 的 issuer 声明。
 	Issuer string `yaml:"issuer"`
-	// Audience 是被调服务标识，必须与 mixin-search 接受的值一致。
+	// Audience 是被调语料的标识：go-web 只调用文档语料，因此这里填文档语料的
+	// audience（mixin-search），必须与 mixin-search 文档校验器接受的值一致。
+	// 聊天语料有自己的 audience（mixin-search-chat），go-web 不签发也不调用它。
 	Audience string `yaml:"audience"`
 	// TokenTTL 是 capability 有效期，必须覆盖最长 RPC 超时。
 	TokenTTL time.Duration `yaml:"token_ttl"`

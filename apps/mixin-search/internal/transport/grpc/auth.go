@@ -67,8 +67,14 @@ var protectedServicePrefixes = []string{
 
 // AuthConfig configures the boundary authenticator.
 type AuthConfig struct {
-	// Verifier is required: without it the service cannot prove any caller.
+	// Verifier verifies document-corpus capabilities. It is required: without it
+	// the service cannot prove any caller of the document corpus.
 	Verifier *security.Verifier
+	// ChatVerifier verifies chat-corpus capabilities. It is required whenever the
+	// chat service is served; a chat call without it is denied rather than
+	// checked against the document verifier, because no service may accept two
+	// audiences (docs/adr/014-per-corpus-control-plane-isolation.md).
+	ChatVerifier *security.Verifier
 	// Limiter bounds per-caller request rate. A nil limiter disables throttling.
 	Limiter *security.RateLimiter
 	// Audit receives one record per protected call. A nil sink discards records.
@@ -80,10 +86,11 @@ type AuthConfig struct {
 // Authenticator authenticates and authorises every protected RPC before the
 // transport adapter sees it.
 type Authenticator struct {
-	verifier *security.Verifier
-	limiter  *security.RateLimiter
-	audit    security.AuditSink
-	now      func() time.Time
+	verifier     *security.Verifier
+	chatVerifier *security.Verifier
+	limiter      *security.RateLimiter
+	audit        security.AuditSink
+	now          func() time.Time
 }
 
 // NewAuthenticator validates the configuration. A missing verifier is an error
@@ -96,7 +103,27 @@ func NewAuthenticator(config AuthConfig) (*Authenticator, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &Authenticator{verifier: config.Verifier, limiter: config.Limiter, audit: config.Audit, now: now}, nil
+	return &Authenticator{
+		verifier:     config.Verifier,
+		chatVerifier: config.ChatVerifier,
+		limiter:      config.Limiter,
+		audit:        config.Audit,
+		now:          now,
+	}, nil
+}
+
+// verifierFor picks the single verifier that owns a method's corpus. There is no
+// fallback: a service whose verifier is not configured cannot be called at all,
+// which is what keeps one corpus from accepting the other's audience.
+func (a *Authenticator) verifierFor(fullMethod string) *security.Verifier {
+	switch {
+	case strings.HasPrefix(fullMethod, "/"+mixinsearchv1.RAGService_ServiceDesc.ServiceName+"/"):
+		return a.verifier
+	case strings.HasPrefix(fullMethod, "/"+mixinsearchchatv1.ChatIndexService_ServiceDesc.ServiceName+"/"):
+		return a.chatVerifier
+	default:
+		return nil
+	}
 }
 
 // UnaryInterceptor enforces caller identity, per-caller throttling, role
@@ -125,7 +152,7 @@ func (a *Authenticator) UnaryInterceptor(
 		return nil, status.Errorf(codes.PermissionDenied, "method %s has no caller policy", info.FullMethod)
 	}
 
-	identity, err := a.authenticate(ctx)
+	identity, err := a.authenticate(ctx, info.FullMethod)
 	if err != nil {
 		a.record(security.AuditRecord{
 			Method: info.FullMethod, Outcome: security.OutcomeDenied, Detail: err.Error(),
@@ -213,7 +240,14 @@ func (a *Authenticator) UnaryInterceptor(
 	return response, handlerErr
 }
 
-func (a *Authenticator) authenticate(ctx context.Context) (security.Identity, error) {
+func (a *Authenticator) authenticate(ctx context.Context, fullMethod string) (security.Identity, error) {
+	verifier := a.verifierFor(fullMethod)
+	if verifier == nil {
+		// The corpus of this method has no verifier configured. Denying is the
+		// only safe answer: checking it against the other corpus's verifier would
+		// be exactly the cross-corpus acceptance this design forbids.
+		return security.Identity{}, fmt.Errorf("no capability verifier is configured for %s", fullMethod)
+	}
 	values := metadata.ValueFromIncomingContext(ctx, authorizationHeader)
 	if len(values) == 0 {
 		return security.Identity{}, errors.New("no caller capability was presented")
@@ -225,7 +259,7 @@ func (a *Authenticator) authenticate(ctx context.Context) (security.Identity, er
 	if len(value) < len(bearerPrefix) || !strings.EqualFold(value[:len(bearerPrefix)], bearerPrefix) {
 		return security.Identity{}, errors.New("caller capability must use the Bearer scheme")
 	}
-	return a.verifier.Verify(value[len(bearerPrefix):])
+	return verifier.Verify(value[len(bearerPrefix):])
 }
 
 func (a *Authenticator) record(record security.AuditRecord, startedAt time.Time) {

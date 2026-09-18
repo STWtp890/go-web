@@ -95,6 +95,10 @@ services:
       # 调用方身份：缺少 capability 的调用被拒绝，因此密钥必须挂载。
       - -capability-key-file=/app/secrets/mixin_search_capability.key
       - -capability-issuer=go-web
+      # audience 按语料划分：文档用 mixin-search，聊天用 mixin-search-chat。
+      # 两个值相同会被服务端拒绝启动（不得让两个语料共用同一 audience）。
+      - -capability-audience=${MIXIN_SEARCH_CAPABILITY_AUDIENCE:-mixin-search}
+      - -chat-capability-audience=${MIXIN_SEARCH_CHAT_CAPABILITY_AUDIENCE:-mixin-search-chat}
       # reflection 让任何能连上端口者枚举全部 API，只在本地调试时开启。
       - -enable-reflection=false
     ports:

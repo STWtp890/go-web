@@ -57,7 +57,7 @@
 
 - 聊天**没有** `authenticated_public` 对应物：检索必须命中已授予范围，两个 allow-list 都为空时返回空结果，不存在"默认公开"；
 - `granted_scope_ids` 是完整快照而不是补丁：遗漏某个范围即表示撤销；
-- 调用方必须携带 capability，角色为 `chat-index-writer`（写）或 `chat-searcher`（检索）：这两个角色与文档的 `index-writer` / `searcher` 不通用，因此文档侧凭证无法调用聊天 RPC，反之亦然；
+- 调用方必须携带 capability，角色为 `chat-index-writer`（写）、`chat-searcher`（检索）或 `chat-ops`（只读运维）：这三个角色与文档的 `index-writer` / `searcher` / `ops` 不通用；聊天语料的 audience 是 `mixin-search-chat`（文档语料是 `mixin-search`），角色与 audience 绑定，因此**文档侧凭证以及"聊天角色 + 文档 audience"这类混合凭证都在校验阶段被拒绝**，不会走到权限判定；服务端启动时也拒绝两个语料共用同一个 audience；
 - 范围判定沿用文档契约的**包含**规则：请求范围必须是已授予范围的子集，越界整体拒绝，不做静默裁剪。
 
 ## 5. 引用形式

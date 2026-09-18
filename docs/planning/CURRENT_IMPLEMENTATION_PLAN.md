@@ -3,7 +3,7 @@
 > 文档职责：当前唯一阶段排期与实施入口
 > 上位目标：[ECOSYSTEM_EVOLUTION_GUIDE.md](../ECOSYSTEM_EVOLUTION_GUIDE.md)
 > 相关决策：[ADR-001](../adr/001-search-service-boundary.md)、[ADR-002](../adr/002-document-index-ownership.md)、[ADR-004](../adr/004-bm25-migration-strategy.md)、[ADR-005](../adr/005-development-baseline-over-production-migration.md)、[ADR-006](../adr/006-mixin-search-control-state-commit-order.md)、[ADR-007](../adr/007-qdrant-control-projection-and-filtering.md)、[ADR-008](../adr/008-document-index-transactional-outbox.md)、[ADR-009](../adr/009-shadow-index-compose-and-health-boundary.md)、[ADR-010](../adr/010-shadow-query-evaluation-gate.md)、[ADR-011](../adr/011-bounded-cache-runtime-and-revision-fencing.md)、[ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)、[ADR-013](../adr/013-immutable-control-snapshot-and-background-projection.md)、[ADR-014](../adr/014-per-corpus-control-plane-isolation.md)
-> 当前状态：生态阶段二已收口（P2.0-P2.5 全部通过）；阶段三实施基线已建立，P3.0、P3.0a、P3.1、P3.2、P3.3a 已完成；**P3.3 进行中**——独立聊天契约、独立控制面与持久化、独立 Qdrant collection、capability 硬隔离与容器级验收均已落地，未完成项为 Qdrant alias 蓝绿切换、按语料划分 capability audience、聊天控制快照容量治理（见 §7.1 的"尚未落地"）
+> 当前状态：生态阶段二已收口（P2.0-P2.5 全部通过）；阶段三实施基线已建立，P3.0、P3.0a、P3.1、P3.2、P3.3a 已完成；**P3.3 进行中**——独立聊天契约、独立控制面与持久化、独立 Qdrant collection、capability 硬隔离（角色 + audience 双锁）与容器级验收均已落地，未完成项为 Qdrant alias 蓝绿切换与聊天控制快照容量治理（见 §7.1 的"尚未落地"）
 > 更新日期：2026-09-19
 
 ## 1. 当前全局进度结论
@@ -247,7 +247,7 @@ P3.3a 已于 2026-09-17 完成，决策记录为 [ADR-014](../adr/014-per-corpus
 - 撤回、归档与索引移除的传播路径有明确契约和测试；
 - 满足 [ADR-014](../adr/014-per-corpus-control-plane-isolation.md) 的最低验收条件：聊天 generation 变化不触发文档快照重新加载（以控制存储 `Generation`/`Load` 计数断言）、聊天索引重建不切换文档 alias、文档授权撤销不等待聊天投影收敛、聊天语料规模增长不增加文档控制快照大小、任一语料故障不污染另一语料的生命周期状态。
 
-> 验收现状（2026-09-19 核查后更新）：第 1、3、4、5 条有可执行证据（`internal/chat/isolation_test.go`），其中第 1、4 条另有容器与真实 PostgreSQL 证据，并已进入整栈门禁的自动断言；第 2 条**目前只以较弱形式成立**——两侧都还没有 alias 机制，"聊天重建不切换文档 alias"是由"集合名独立 + 聊天重建只操作自己的集合"保证的，`TestChatRebuildDoesNotTouchTheDocumentCorpus` 证明的是后者，**不能**当作 alias 切换流程的证据。alias 与按语料 audience 落地后，本实施包才能关闭。
+> 验收现状（2026-09-19 核查后更新）：第 1、3、4、5 条有可执行证据（`internal/chat/isolation_test.go`），其中第 1、4 条另有容器与真实 PostgreSQL 证据，并已进入整栈门禁的自动断言；第 2 条**目前只以较弱形式成立**——两侧都还没有 alias 机制，"聊天重建不切换文档 alias"是由"集合名独立 + 聊天重建只操作自己的集合"保证的，`TestChatRebuildDoesNotTouchTheDocumentCorpus` 证明的是后者，**不能**当作 alias 切换流程的证据。audience 按语料划分已于 2026-09-19 落地（见进展"第七片"）；alias 蓝绿切换与容量上限确定后，本实施包才能关闭。
 
 ### 进展
 
@@ -319,10 +319,18 @@ Docker Desktop 恢复运行后，P3.3 缺失的那一项终于有了容器内证
 - `deployments/verify.ps1` 增加两步门禁：运行上述容器验收测试，以及用 psql 断言两个语料各自的控制 namespace 互不出现（聊天表必须有 `chat-v1`，文档表必须没有）。**本轮核查后升级为三步**：容器验收测试作为"聊天活动"的刺激，其前后各采样一次两个语料的 generation，断言聊天 generation 必须前进、文档 generation 必须不动——把 ADR-014 第 1 条从"本次专项取证"变成每次整栈门禁都会重复执行的断言；
 - **整栈门禁已跑通**：宿主把 gin-backend 的发布端口参数化后（`GIN_BACKEND_PORT`，容器内仍是 8080；Windows 保留 8070–8169 时改用一个未保留的宿主端口，本次用 18080），`deployments/verify.ps1` 以 0 退出，末尾三项全部 PASS：`P1.5_BUILD_TEST_DEPLOYMENT=PASS`、`P2.4_SHADOW_INDEX=PASS`、`P2.5_SHADOW_QUERY_EVALUATION=PASS`；其中包含本轮新增的两步——`Run chat corpus container acceptance` 中 `TestChatCorpusAgainstADeployedStack` PASS，以及 `PASS control namespace isolation: chat=[chat-v1] documents=[go-web-shadow-v1]`。这次运行同时是**文档语料在容器内的回归证据**：控制面迁移到 `internal/controlplane` 之后，影子索引投递、对账排水、mixin-search 停机期间的可用性与恢复、以及 P2.5 评估门禁全部照旧通过。
 
+**capability audience 按语料划分（第七片，2026-09-19）**
+
+- `internal/security` 新增两个语料 audience 常量（`AudienceDocuments = "mixin-search"`、`AudienceChat = "mixin-search-chat"`）与 `roleAudiences` 绑定表：**每个角色绑定唯一的 audience**，`Verify` 在签名/签发方/有效期都通过之后、角色判定之前检查"角色所属语料 == 校验器 audience"，混合凭证（聊天角色 + 文档 audience，或反向）在校验阶段即被拒绝，返回 `UNAUTHENTICATED` 而不是 `PERMISSION_DENIED`；
+- `internal/transport/grpc` 的 `AuthConfig` 增加 `ChatVerifier`，拦截器按方法所属服务**选择唯一校验器**，不存在"任一 audience 皆可"的路径；某语料未配置校验器时该语料的方法一律拒绝（失败关闭）；
+- `cmd/rag-server` 新增 `-chat-capability-audience`（默认 `mixin-search-chat`），启动时 `validateCapabilityAudiences` **拒绝两个语料共用同一 audience**，启动日志同时打印两个 audience；
+- `cmd/rag-token` 的 `-audience` 默认改为**按角色推导**，手工签发不会再产生"角色与 audience 不匹配"的混淆凭证；根 Compose 显式传入两个 audience；
+- 测试：`TestVerifyBindsEveryRoleToItsCorpusAudience`（6 组角色×audience 组合）、`TestRoleAudience`、`TestCapabilityAudiencesMustDiffer`；传输层用例更新为"文档凭证与混合凭证调聊天 RPC 均 `UNAUTHENTICATED`"，并保留角色维度的 `PERMISSION_DENIED` 用例；容器端到端（bufconn 与部署端点）同步改用聊天 audience 并新增混合凭证断言；
+- 文档：`SERVICE_CALL_CAPABILITY.md` 的角色表加 audience 列、校验顺序加入第 6 步、状态码表说明跨语料为 `UNAUTHENTICATED`；`CHAT_SEARCH_V1_CONTRACT.md` §4 同步。
+
 **尚未落地**
 
 - **alias 蓝绿切换未实现（P3.3 未完成项）**：ADR-014 决策 1、4 要求两个语料各自拥有 alias，且一个语料的重建不得切换另一个语料的 alias。当前代码里**两侧都没有 alias 机制**，两个语料直接用各自的 collection 名检索。因此"聊天索引重建不切换文档 alias"只以较弱形式成立：`TestChatRebuildDoesNotTouchTheDocumentCorpus` 断言的是"聊天重建只操作自己的集合、不改动文档块的增删与检索"，它**不能**证明 alias 切换流程；alias 落地后必须补一条真正的切换断言。P3.5 的蓝绿重建会用到 alias，但这条要求本身来自 ADR-014，计入 P3.3 未完成项；`deployments/verify-qdrant-control.ps1` 这类脚本也不能代替容器内的 alias 检查；
-- **capability audience 尚未按语料划分（P3.3 未完成项）**：ADR-014 决策 5 要求 audience 与角色都按服务/语料划分。当前两侧共用一个 audience（`mixin-search`），跨语料调用只靠角色集合不相交挡住（`TestChatAndDocumentCapabilitiesAreNotInterchangeable` 证明的是角色那一半）。落地需要为两个服务各定义 audience、在拦截器里按服务选择校验器，并同步改 `cmd/rag-token`、`cmd/rag-server` 与 Compose；
 - **聊天控制快照的容量天花板尚未定义（容量治理，接入前必须定）**：P3.2 消除的是**读**路径的全局排他锁与每次全量加载；**写**路径仍是"一个全局 `writeMu` + 一份完整 `ControlState`"——每次变更复制整份快照、序列化整份快照、再做一次 CAS（`internal/chat/service.go`、`internal/chat/snapshot.go`），且幂等 operation ledger 没有清理策略。对聊天这种高基数、持续增长的语料，这比文档索引更容易触顶。这不影响当前正确性验收，但 `py-agent` 正式接入前必须定下四项：单 corpus 的最大消息数或快照字节数、operation ledger 的保留期限、单次 CAS 序列化的延迟阈值、迁移到分区存储或行级 CAS 的触发指标；
 - **聊天侧 PostgreSQL 适配器仍没有集成测试**：文档语料有环境变量门控的 `internal/rag/control_store_integration_test.go`（`CONTROL_STORE_INTEGRATION=1` + `CONTROL_DATABASE_DSN`）。聊天侧本轮补的是两项**不依赖数据库**的替代证据，而不是一份无法执行的集成测试：
   - `internal/chat/control_schema_test.go`：断言聊天 schema 只创建自己的 `chat_control_states`，不触碰文档的 `control_states`（复制文档 schema 却漏改表名这类错误对 PostgreSQL 是合法的，只会在容器门禁里暴露）；

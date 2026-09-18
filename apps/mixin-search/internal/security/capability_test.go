@@ -64,6 +64,89 @@ func TestVerifyStoresTheCanonicalRole(t *testing.T) {
 	}
 }
 
+// TestVerifyBindsEveryRoleToItsCorpusAudience covers the second lock between the
+// corpora: even with a valid signature, issuer and expiry, a role may only be
+// presented with its own corpus's audience. Without this, splitting the audience
+// would only move the cross-corpus decision from verification to authorisation.
+func TestVerifyBindsEveryRoleToItsCorpusAudience(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		role       string
+		audience   string
+		wantReject bool
+	}{
+		{name: "document role with document audience", role: RoleSearcher, audience: AudienceDocuments},
+		{name: "chat role with chat audience", role: RoleChatSearcher, audience: AudienceChat},
+		{name: "chat role with document audience", role: RoleChatSearcher, audience: AudienceDocuments, wantReject: true},
+		{name: "document role with chat audience", role: RoleSearcher, audience: AudienceChat, wantReject: true},
+		{name: "chat ops role with document audience", role: RoleChatOps, audience: AudienceDocuments, wantReject: true},
+		{name: "document index writer with chat audience", role: RoleIndexWriter, audience: AudienceChat, wantReject: true},
+	}
+	for _, testCase := range cases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			issuer, err := NewIssuer([]byte(testKey), "go-web", testCase.audience, time.Minute, WithClock(fixedClock))
+			if err != nil {
+				t.Fatalf("NewIssuer: %v", err)
+			}
+			token, err := issuer.Issue("caller", testCase.role, "", []string{"scope-a"}, nil)
+			if err != nil {
+				t.Fatalf("Issue: %v", err)
+			}
+			verifier, err := NewVerifier([]byte(testKey), "go-web", testCase.audience, WithClock(fixedClock))
+			if err != nil {
+				t.Fatalf("NewVerifier: %v", err)
+			}
+
+			identity, err := verifier.Verify(token)
+			if testCase.wantReject {
+				// The token above is minted for its own audience, so the rejection
+				// comes from the role/audience binding, not from a mismatch between
+				// the claims and the verifier.
+				if !errors.Is(err, ErrWrongAudience) {
+					t.Fatalf("Verify(%s/%s) error = %v, want ErrWrongAudience", testCase.audience, testCase.role, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Verify: %v", err)
+			}
+			if identity.Role != testCase.role {
+				t.Fatalf("role = %q, want %q", identity.Role, testCase.role)
+			}
+		})
+	}
+}
+
+func TestRoleAudience(t *testing.T) {
+	t.Parallel()
+
+	for role, want := range map[string]string{
+		RoleIndexWriter:     AudienceDocuments,
+		RoleSearcher:        AudienceDocuments,
+		RoleOps:             AudienceDocuments,
+		RoleChatIndexWriter: AudienceChat,
+		RoleChatSearcher:    AudienceChat,
+		RoleChatOps:         AudienceChat,
+	} {
+		got, ok := RoleAudience(role)
+		if !ok || got != want {
+			t.Fatalf("RoleAudience(%q) = %q, %t, want %q, true", role, got, ok, want)
+		}
+	}
+	// A padded role is normalised first, and an unknown role has no corpus.
+	if got, ok := RoleAudience(" " + RoleChatSearcher + " "); !ok || got != AudienceChat {
+		t.Fatalf("RoleAudience(padded chat role) = %q, %t", got, ok)
+	}
+	if _, ok := RoleAudience("root"); ok {
+		t.Fatal("an undefined role reported a corpus audience")
+	}
+}
+
 func TestSignAndVerifyRoundTrip(t *testing.T) {
 	t.Parallel()
 

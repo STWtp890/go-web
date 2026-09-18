@@ -1,9 +1,9 @@
 # mixin-search 调用方 capability 契约
 
-> 状态：P3.1 已落地（调用身份、角色权限、范围包含校验、审计与限流）
-> 日期：2026-09-17
-> 相关决策：[ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md) 决策 4
-> 相关契约：[mixin-search/v1 文档索引契约](./MIXIN_SEARCH_V1_CONTRACT.md)
+> 状态：P3.1 已落地（调用身份、角色权限、范围包含校验、审计与限流）；P3.3 起 audience 按语料划分
+> 日期：2026-09-19
+> 相关决策：[ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md) 决策 4、[ADR-014](../adr/014-per-corpus-control-plane-isolation.md) 决策 5
+> 相关契约：[mixin-search/v1 文档索引契约](./MIXIN_SEARCH_V1_CONTRACT.md)、[聊天索引契约](./CHAT_SEARCH_V1_CONTRACT.md)
 
 ## 1. 目的
 
@@ -13,22 +13,31 @@
 
 现在这项声明必须由事实源签发，且服务端校验 `requested ⊆ granted`。
 
-## 2. 角色
+## 2. 角色与 audience
 
-角色决定**可调用哪些 RPC**，不决定数据范围。角色按语料划分：文档角色与聊天角色是两组不相交的字符串，因此为某一语料签发的 capability 无法调用另一语料的 RPC（[ADR-014](../adr/014-per-corpus-control-plane-isolation.md) 决策 5）。
+角色决定**可调用哪些 RPC**，不决定数据范围。角色按语料划分：文档角色与聊天角色是两组不相交的字符串（[ADR-014](../adr/014-per-corpus-control-plane-isolation.md) 决策 5）。
 
-| 语料 | 角色 | 允许的 RPC | 持有者 |
-| --- | --- | --- | --- |
-| 文档 | `index-writer` | `IndexDocumentVersion`、`ActivateDocumentVersion`、`UpdateDocumentAccess`、`DeleteDocumentVersion`、`DeleteDocument`、`GetDocumentVersionState` | `go-web` 的索引 Worker、对账与全量重建 |
-| 文档 | `searcher` | `SearchDocuments` | `go-web` 影子查询、检索评测，以及后续经 `go-web` 授权的 `py-agent` |
-| 文档 | `ops` | `GetDocumentVersionState` | 运维/诊断工具，只读且不能检索或写入 |
-| 聊天 | `chat-index-writer` | `IndexConversationMessages`、`ArchiveConversation`、`UpdateConversationAccess`、`RetractMessage`、`DeleteConversation`、`GetConversationIndexState` | `py-agent` 的聊天索引路径 |
-| 聊天 | `chat-searcher` | `SearchChatMessages` | `py-agent` 的检索路径，范围由 `go-web` 或未来的统一授权入口签发 |
-| 聊天 | `chat-ops` | `GetConversationIndexState` | 聊天语料的诊断工具，只读 |
+audience 是第二道锁，同样按语料划分，且**每个角色绑定唯一的 audience**：
+
+| 语料 | audience | 角色 | 允许的 RPC | 持有者 |
+| --- | --- | --- | --- | --- |
+| 文档 | `mixin-search` | `index-writer` | `IndexDocumentVersion`、`ActivateDocumentVersion`、`UpdateDocumentAccess`、`DeleteDocumentVersion`、`DeleteDocument`、`GetDocumentVersionState` | `go-web` 的索引 Worker、对账与全量重建 |
+| 文档 | `mixin-search` | `searcher` | `SearchDocuments` | `go-web` 影子查询、检索评测，以及后续经 `go-web` 授权的 `py-agent` |
+| 文档 | `mixin-search` | `ops` | `GetDocumentVersionState` | 运维/诊断工具，只读且不能检索或写入 |
+| 聊天 | `mixin-search-chat` | `chat-index-writer` | `IndexConversationMessages`、`ArchiveConversation`、`UpdateConversationAccess`、`RetractMessage`、`DeleteConversation`、`GetConversationIndexState` | `py-agent` 的聊天索引路径 |
+| 聊天 | `mixin-search-chat` | `chat-searcher` | `SearchChatMessages` | `py-agent` 的检索路径，范围由 `go-web` 或未来的统一授权入口签发 |
+| 聊天 | `mixin-search-chat` | `chat-ops` | `GetConversationIndexState` | 聊天语料的诊断工具，只读 |
+
+两条规则同时生效，且互不替代：
+
+1. **服务只接受自己语料的 audience**：文档服务用 `mixin-search` 校验，聊天服务用 `mixin-search-chat` 校验，**不存在"任一 audience 皆可"的配置**——服务端启动时即拒绝两个语料共用同一个 audience；
+2. **角色绑定它自己的 audience**：签名、签发方、有效期都合法、但把聊天角色放进文档 audience（或反向）的 token，在校验阶段就被拒绝，不会走到角色判定。
+
+因此跨语料调用返回的是 `UNAUTHENTICATED`（凭证不属于本语料），而不是 `PERMISSION_DENIED`（凭证有效但该角色无权限）。
 
 索引写入与检索刻意分离：负责写派生索引的进程不是提供检索的进程，因此被攻陷的检索调用方无法改写它读取的内容。`SearchDocuments` 不接受 `index-writer`，`SearchChatMessages` 不接受 `chat-index-writer`，即使请求范围很小。
 
-未在角色表中登记的方法一律拒绝（失败关闭）；新增 RPC 时必须同时登记策略，否则运行期拒绝，且 `internal/transport/grpc` 的测试会直接失败。
+未在角色表中登记的方法一律拒绝（失败关闭）；新增 RPC 时必须同时登记策略，否则运行期拒绝，且 `internal/transport/grpc` 的测试会直接失败。新增角色时必须同时在 `internal/security` 的 `roleAudiences` 中登记它所属的语料，否则该校验器无法验证任何携带该角色的 token。
 
 ## 3. 凭据格式
 
@@ -53,8 +62,8 @@ base64url(payload_json) "." base64url(HMAC-SHA256(key, base64url(payload_json)))
 | `version` | int | 固定为 `1` |
 | `issuer` | string | 签发方标识，必须等于服务端配置的可信签发方（当前为 `go-web`） |
 | `subject` | string | 调用方标识，例如 `go-web-index-worker` |
-| `audience` | string | 被调服务标识，必须是 `mixin-search` |
-| `role` | string | `index-writer`、`searcher` 或 `ops` |
+| `audience` | string | 被调语料的标识：文档服务为 `mixin-search`，聊天服务为 `mixin-search-chat`；必须与 `role` 所属语料一致 |
+| `role` | string | 文档角色 `index-writer`、`searcher`、`ops`；聊天角色 `chat-index-writer`、`chat-searcher`、`chat-ops` |
 | `user_id` | string | 可选；调用方代表的最终用户，只用于审计 |
 | `issued_at` | int64 | Unix 秒 |
 | `expires_at` | int64 | Unix 秒，必须晚于 `issued_at` |
@@ -79,17 +88,18 @@ base64url(payload_json) "." base64url(HMAC-SHA256(key, base64url(payload_json)))
 2. 签名与边界密钥匹配（常量时间比较）；
 3. payload 可解析、无未知字段、`version` 受支持、必填声明非空、`expires_at > issued_at`；
 4. `issuer` 等于服务端配置的可信签发方；
-5. `audience` 等于本服务标识；
-6. 当前时间不超过 `expires_at`（允许 30 秒时钟偏差），且 `issued_at` 不晚于当前时间加同一偏差；
-7. 调用方角色在该方法的策略中；
-8. 调用方未超出其请求预算；
-9. `SearchDocuments` 的 `allowed_space_ids` 与 `allowed_document_ids` **全部**包含在已授予范围内。
+5. `audience` 等于被调语料的 audience（文档服务与聊天服务各有一个校验器，任何一个都不接受另一个的 audience）；
+6. `role` 所属语料与第 5 步的 audience 一致（否则拒绝，不进入角色判定）；
+7. 当前时间不超过 `expires_at`（允许 30 秒时钟偏差），且 `issued_at` 不晚于当前时间加同一偏差；
+8. 调用方角色在该方法的策略中；
+9. 调用方未超出其请求预算；
+10. `SearchDocuments` / `SearchChatMessages` 请求中的范围标识**全部**包含在已授予范围内。
 
 失败时返回：
 
 | 场景 | gRPC 状态 |
 | --- | --- |
-| 缺少、格式错误、签名无效、已过期、issuer/audience 不符 | `UNAUTHENTICATED` |
+| 缺少、格式错误、签名无效、已过期、issuer/audience 不符、角色与其 audience 不属同一语料 | `UNAUTHENTICATED` |
 | 角色不允许该方法 | `PERMISSION_DENIED` |
 | 请求范围超出已授予范围 | `PERMISSION_DENIED` |
 | 超出该调用方的请求预算 | `RESOURCE_EXHAUSTED` |

@@ -35,16 +35,20 @@ func (sink *capturedAudit) last() security.AuditRecord {
 
 func newTestAuthenticator(t *testing.T, options ...func(*AuthConfig)) (*Authenticator, *security.Issuer, *capturedAudit) {
 	t.Helper()
-	verifier, err := security.NewVerifier([]byte(testBoundaryKey), "go-web", "mixin-search")
+	verifier, err := security.NewVerifier([]byte(testBoundaryKey), "go-web", security.AudienceDocuments)
 	if err != nil {
 		t.Fatalf("build verifier: %v", err)
 	}
-	issuer, err := security.NewIssuer([]byte(testBoundaryKey), "go-web", "mixin-search", 5*time.Minute)
+	chatVerifier, err := security.NewVerifier([]byte(testBoundaryKey), "go-web", security.AudienceChat)
+	if err != nil {
+		t.Fatalf("build chat verifier: %v", err)
+	}
+	issuer, err := security.NewIssuer([]byte(testBoundaryKey), "go-web", security.AudienceDocuments, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("build issuer: %v", err)
 	}
 	sink := &capturedAudit{}
-	config := AuthConfig{Verifier: verifier, Audit: sink.record}
+	config := AuthConfig{Verifier: verifier, ChatVerifier: chatVerifier, Audit: sink.record}
 	for _, option := range options {
 		option(&config)
 	}
@@ -53,6 +57,19 @@ func newTestAuthenticator(t *testing.T, options ...func(*AuthConfig)) (*Authenti
 		t.Fatalf("build authenticator: %v", err)
 	}
 	return authenticator, issuer, sink
+}
+
+// testChatIssuer mints credentials for the chat corpus. Its audience is what
+// makes them chat credentials: a chat role minted with the document audience is
+// exactly the mixed credential the service must refuse, so chat tests must not
+// reuse the document issuer.
+func testChatIssuer(t *testing.T) *security.Issuer {
+	t.Helper()
+	issuer, err := security.NewIssuer([]byte(testBoundaryKey), "go-web", security.AudienceChat, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("build chat issuer: %v", err)
+	}
+	return issuer
 }
 
 func incomingContext(token string) context.Context {

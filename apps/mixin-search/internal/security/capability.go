@@ -53,6 +53,44 @@ const (
 	RoleChatOps = "chat-ops"
 )
 
+// Corpus audiences. Each corpus is addressed by its own audience string, and a
+// role belongs to exactly one of them.
+//
+// This is the second lock behind the disjoint role sets: the document service
+// verifies with AudienceDocuments and the chat service with AudienceChat, and
+// Verify refuses a token whose role belongs to the other corpus even when the
+// signature, issuer and expiry are all valid. A capability can therefore never
+// be replayed across corpora by getting its role right, and no service accepts
+// "either" audience (docs/adr/014-per-corpus-control-plane-isolation.md).
+const (
+	// AudienceDocuments is the audience of the document corpus (RAGService).
+	AudienceDocuments = "mixin-search"
+	// AudienceChat is the audience of the chat corpus (ChatIndexService).
+	AudienceChat = "mixin-search-chat"
+)
+
+// roleAudiences binds every defined role to the audience it must be presented
+// with. A role that is missing here cannot be verified at all, so adding a role
+// without deciding its corpus fails closed.
+var roleAudiences = map[string]string{
+	RoleIndexWriter:     AudienceDocuments,
+	RoleSearcher:        AudienceDocuments,
+	RoleOps:             AudienceDocuments,
+	RoleChatIndexWriter: AudienceChat,
+	RoleChatSearcher:    AudienceChat,
+	RoleChatOps:         AudienceChat,
+}
+
+// RoleAudience reports the audience a role must be presented with.
+func RoleAudience(role string) (string, bool) {
+	parsed, err := ParseRole(role)
+	if err != nil {
+		return "", false
+	}
+	audience, ok := roleAudiences[parsed]
+	return audience, ok
+}
+
 // MinKeyBytes is the shortest accepted boundary key. HMAC-SHA256 keys shorter
 // than the hash block are padded, so short keys weaken the only secret on this
 // boundary; 32 bytes is the security level of the MAC itself.
@@ -233,6 +271,10 @@ type Verifier struct {
 }
 
 // NewVerifier builds a verifier for one trusted issuer and audience.
+//
+// The audience also fixes which corpus the verifier accepts: a role from the
+// other corpus is refused by Verify, so a verifier never accepts a credential
+// that mixes corpora.
 func NewVerifier(key []byte, issuer, audience string, options ...VerifierOption) (*Verifier, error) {
 	if err := validateKey(key); err != nil {
 		return nil, err
@@ -267,6 +309,20 @@ func (verifier *Verifier) Verify(token string) (Identity, error) {
 	role, err := ParseRole(claims.Role)
 	if err != nil {
 		return Identity{}, err
+	}
+	// The role decides which corpus this credential may be used for. A token that
+	// mixes corpora - a chat role presented to the document service, or the
+	// reverse - is rejected here rather than at authorisation, so no service ever
+	// has to reason about a credential that belongs to the other corpus.
+	expected, known := roleAudiences[role]
+	if !known {
+		return Identity{}, fmt.Errorf("%w: %q has no corpus binding", ErrUnknownRole, role)
+	}
+	if verifier.audience != expected {
+		return Identity{}, fmt.Errorf(
+			"%w: role %q is minted for %q, this service verifies %q",
+			ErrWrongAudience, role, expected, verifier.audience,
+		)
 	}
 	return Identity{
 		CallerID:           claims.Subject,

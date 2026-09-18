@@ -5,6 +5,7 @@ import (
 
 	"mixin-search/internal/security"
 	mixinsearchchatv1 "packages/gen/mixin-search/chat/v1"
+	mixinsearchv1 "packages/gen/mixin-search/v1"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -16,8 +17,8 @@ import (
 func TestChatSearchEnforcesScopeContainment(t *testing.T) {
 	t.Parallel()
 
-	authenticator, issuer, sink := newTestAuthenticator(t)
-	token, err := issuer.Issue("py-agent", security.RoleChatSearcher, "7",
+	authenticator, _, sink := newTestAuthenticator(t)
+	token, err := testChatIssuer(t).Issue("py-agent", security.RoleChatSearcher, "7",
 		[]string{"scope-group-42"}, []string{"group-42"})
 	if err != nil {
 		t.Fatalf("issue chat searcher token: %v", err)
@@ -66,8 +67,8 @@ func TestChatSearchEnforcesScopeContainment(t *testing.T) {
 func TestChatAuditCountsRequestedScopesTheWayItCountsGrantedOnes(t *testing.T) {
 	t.Parallel()
 
-	authenticator, issuer, sink := newTestAuthenticator(t)
-	token, err := issuer.Issue("py-agent", security.RoleChatSearcher, "7",
+	authenticator, _, sink := newTestAuthenticator(t)
+	token, err := testChatIssuer(t).Issue("py-agent", security.RoleChatSearcher, "7",
 		[]string{"scope-group-42"}, []string{"group-42"})
 	if err != nil {
 		t.Fatalf("issue chat searcher token: %v", err)
@@ -108,9 +109,21 @@ func TestChatAndDocumentCapabilitiesAreNotInterchangeable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("issue document writer token: %v", err)
 	}
-	chatSearcher, err := issuer.Issue("py-agent", security.RoleChatSearcher, "7", []string{"scope-a"}, nil)
+	chatIssuer := testChatIssuer(t)
+	chatSearcher, err := chatIssuer.Issue("py-agent", security.RoleChatSearcher, "7", []string{"scope-a"}, nil)
 	if err != nil {
 		t.Fatalf("issue chat searcher token: %v", err)
+	}
+	// Two mixed credentials: a valid audience carrying the other corpus's role,
+	// and the reverse. Neither may be admitted, and neither may be reported as a
+	// plain permission problem on a credential the boundary accepted.
+	chatRoleWithDocumentAudience, err := issuer.Issue("py-agent", security.RoleChatSearcher, "7", []string{"scope-a"}, nil)
+	if err != nil {
+		t.Fatalf("issue mixed chat-role token: %v", err)
+	}
+	documentRoleWithChatAudience, err := chatIssuer.Issue("go-web-shadow-search", security.RoleSearcher, "42", []string{"space-a"}, nil)
+	if err != nil {
+		t.Fatalf("issue mixed document-role token: %v", err)
 	}
 
 	cases := []struct {
@@ -125,14 +138,14 @@ func TestChatAndDocumentCapabilitiesAreNotInterchangeable(t *testing.T) {
 			token:  documentSearcher,
 			method: mixinsearchchatv1.ChatIndexService_SearchChatMessages_FullMethodName,
 			body:   &mixinsearchchatv1.SearchChatMessagesRequest{Query: "x"},
-			code:   codes.PermissionDenied,
+			code:   codes.Unauthenticated,
 		},
 		{
 			name:   "document writer cannot index chat",
 			token:  documentWriter,
 			method: mixinsearchchatv1.ChatIndexService_IndexConversationMessages_FullMethodName,
 			body:   &mixinsearchchatv1.IndexConversationMessagesRequest{OperationId: "op", ConversationId: "c"},
-			code:   codes.PermissionDenied,
+			code:   codes.Unauthenticated,
 		},
 		{
 			name:   "chat searcher cannot delete a conversation",
@@ -140,6 +153,20 @@ func TestChatAndDocumentCapabilitiesAreNotInterchangeable(t *testing.T) {
 			method: mixinsearchchatv1.ChatIndexService_DeleteConversation_FullMethodName,
 			body:   &mixinsearchchatv1.DeleteConversationRequest{OperationId: "op", ConversationId: "c"},
 			code:   codes.PermissionDenied,
+		},
+		{
+			name:   "chat role carried by the document audience is refused",
+			token:  chatRoleWithDocumentAudience,
+			method: mixinsearchchatv1.ChatIndexService_SearchChatMessages_FullMethodName,
+			body:   &mixinsearchchatv1.SearchChatMessagesRequest{Query: "x"},
+			code:   codes.Unauthenticated,
+		},
+		{
+			name:   "document role carried by the chat audience is refused",
+			token:  documentRoleWithChatAudience,
+			method: mixinsearchv1.RAGService_SearchDocuments_FullMethodName,
+			body:   &mixinsearchv1.SearchDocumentsRequest{Query: "x"},
+			code:   codes.Unauthenticated,
 		},
 	}
 	for _, testCase := range cases {
@@ -165,8 +192,8 @@ func TestChatAndDocumentCapabilitiesAreNotInterchangeable(t *testing.T) {
 func TestChatOpsMayOnlyReadState(t *testing.T) {
 	t.Parallel()
 
-	authenticator, issuer, _ := newTestAuthenticator(t)
-	token, err := issuer.Issue("py-agent-ops", security.RoleChatOps, "", nil, nil)
+	authenticator, _, _ := newTestAuthenticator(t)
+	token, err := testChatIssuer(t).Issue("py-agent-ops", security.RoleChatOps, "", nil, nil)
 	if err != nil {
 		t.Fatalf("issue chat ops token: %v", err)
 	}

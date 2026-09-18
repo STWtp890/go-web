@@ -50,9 +50,13 @@ func TestChatCorpusAgainstADeployedStack(t *testing.T) {
 		t.Fatalf("read boundary key: %v", err)
 	}
 
-	issuer, err := security.NewIssuer(trimBoundaryKey(key), "go-web", "mixin-search", 5*time.Minute)
+	issuer, err := security.NewIssuer(trimBoundaryKey(key), "go-web", security.AudienceDocuments, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("build issuer: %v", err)
+	}
+	chatIssuer, err := security.NewIssuer(trimBoundaryKey(key), "go-web", security.AudienceChat, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("build chat issuer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -83,9 +87,12 @@ func TestChatCorpusAgainstADeployedStack(t *testing.T) {
 	scopeID := "scope-" + run
 	needle := "containerneedle" + run
 
-	writerToken := mustIssue(t, issuer, "py-agent-index", security.RoleChatIndexWriter, "", nil, nil)
-	searcherToken := mustIssue(t, issuer, "py-agent", security.RoleChatSearcher, "7", []string{scopeID}, []string{conversationID})
+	writerToken := mustIssue(t, chatIssuer, "py-agent-index", security.RoleChatIndexWriter, "", nil, nil)
+	searcherToken := mustIssue(t, chatIssuer, "py-agent", security.RoleChatSearcher, "7", []string{scopeID}, []string{conversationID})
 	documentToken := mustIssue(t, issuer, "go-web-shadow-search", security.RoleSearcher, "42", []string{"space-a"}, nil)
+	// A chat role minted with the document audience: the deployed service must
+	// refuse it before looking at the role table.
+	mixedToken := mustIssue(t, issuer, "py-agent", security.RoleChatSearcher, "7", []string{scopeID}, []string{conversationID})
 
 	chat := mixinsearchchatv1.NewChatIndexServiceClient(connection)
 	indexRequest := &mixinsearchchatv1.IndexConversationMessagesRequest{
@@ -119,13 +126,16 @@ func TestChatCorpusAgainstADeployedStack(t *testing.T) {
 		t.Fatalf("hit = %+v", hits[0])
 	}
 
-	// Corpus isolation through the real transport: a document capability cannot
-	// reach the chat service, and the chat collection's content is not visible to
-	// the document corpus either.
-	if _, err := chat.SearchChatMessages(withToken(ctx, documentToken), &mixinsearchchatv1.SearchChatMessagesRequest{
-		Query: needle, AllowedScopeIds: []string{scopeID},
-	}); status.Code(err) != codes.PermissionDenied {
-		t.Fatalf("document capability on chat search code = %s, want PermissionDenied", status.Code(err))
+	// Corpus isolation through the real transport: neither a document capability
+	// nor a chat role minted with the document audience may reach the chat
+	// service, and the chat collection's content is not visible to the document
+	// corpus either.
+	for name, token := range map[string]string{"document capability": documentToken, "mixed corpus credential": mixedToken} {
+		if _, err := chat.SearchChatMessages(withToken(ctx, token), &mixinsearchchatv1.SearchChatMessagesRequest{
+			Query: needle, AllowedScopeIds: []string{scopeID},
+		}); status.Code(err) != codes.Unauthenticated {
+			t.Fatalf("%s on chat search code = %s, want Unauthenticated", name, status.Code(err))
+		}
 	}
 	documents := mixinsearchv1.NewRAGServiceClient(connection)
 	documentResponse, err := documents.SearchDocuments(withToken(ctx, documentToken), &mixinsearchv1.SearchDocumentsRequest{
