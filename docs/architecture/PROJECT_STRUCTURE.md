@@ -143,7 +143,7 @@ gRPC 层自 P3.1 起先认证调用方、再映射协议：`internal/transport/g
 
 Qdrant 通过 `ControlledVectorStore` 能力接口接收规范化控制投影；正式搜索在候选选择前统一下推 storage domain、活动/墓碑状态和三路 OR 授权，随后仍由 `DocumentIndexService` 复核并在不足时有界回填。memory 与 pgvector 保持基础 `VectorStore` 兼容，但不作为 P2.2 候选级过滤的验收后端。完整决策见 [ADR-007](../adr/007-qdrant-control-projection-and-filtering.md)。
 
-**语料的集合名是 alias，不是物理集合**：`QdrantConfig.Collection` 是每个语料稳定使用的 alias，物理集合为 `<alias>_<generation>`（首个世代 `_g1`），因此换世代只改 alias 指向，调用方与 storage domain 都不变。启动时若 alias 不存在就建 `_g1` 并建 alias；若配置名恰好被一个物理集合占用（本服务引入 alias 之前的布局），启动直接失败并提示清空项目开发卷——这是刻意不写迁移逻辑的决策（开发基线优先）。切换能力由 `rag.AliasedVectorStore` 暴露（`PrepareGeneration`/`SwitchAlias`/`PhysicalCollection`），`SwitchAlias` 是单次 `UpdateAliases`（删旧指向 + 建新指向），切换前校验目标、切换后读回确认；两个语料各自持有独立 alias，一次切换只影响自己。memory 与 pgvector 没有 alias 概念。重建编排（填数据、校验、保留上一代）仍属 P3.5。
+**语料的集合名是 alias，不是物理集合**：`QdrantConfig.Collection` 是每个语料稳定使用的 alias，物理集合为 `<alias>_<generation>`（首个世代 `_g1`），因此换世代只改 alias 指向，调用方与 storage domain 都不变。启动时若 alias 不存在就建 `_g1` 并建 alias；若配置名恰好被一个物理集合占用（本服务引入 alias 之前的布局），启动直接失败并提示清空项目开发卷——这是刻意不写迁移逻辑的决策（开发基线优先）。切换能力由 `rag.AliasedVectorStore` 暴露（`PrepareGeneration`/`SwitchAlias`/`RestoreAlias`/`PhysicalCollection`），`SwitchAlias` 用官方批量 `UpdateAliases`（删旧指向 + 建新指向）在一次调用里发出，切换前校验目标必须是**本 alias 的** `<alias>_<标签>`、切换后读回确认；实测确认 Qdrant 的批次只保证"对并发观察者原子可见"、**失败不回滚**，因此失败路径由应用显式补偿（`RestoreAlias` 兼作失败恢复与运维恢复入口，见 [ADR-014](../adr/014-per-corpus-control-plane-isolation.md) 与 `docs/reports/evidence/phase3/p33-chat-corpus-container_20260919.md`）。两个语料各自持有独立 alias，一次切换只影响自己。memory 与 pgvector 没有 alias 概念。重建编排（填数据、校验、保留上一代）仍属 P3.5。
 
 ## 5. 依赖方向
 

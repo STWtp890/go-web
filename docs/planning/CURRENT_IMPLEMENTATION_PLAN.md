@@ -247,7 +247,7 @@ P3.3a 已于 2026-09-17 完成，决策记录为 [ADR-014](../adr/014-per-corpus
 - 撤回、归档与索引移除的传播路径有明确契约和测试；
 - 满足 [ADR-014](../adr/014-per-corpus-control-plane-isolation.md) 的最低验收条件：聊天 generation 变化不触发文档快照重新加载（以控制存储 `Generation`/`Load` 计数断言）、聊天索引重建不切换文档 alias、文档授权撤销不等待聊天投影收敛、聊天语料规模增长不增加文档控制快照大小、任一语料故障不污染另一语料的生命周期状态。
 
-> 验收现状（2026-09-19 收口）：第 1、3、4、5 条有可执行证据（`internal/chat/isolation_test.go`），其中第 1、4 条另有容器与真实 PostgreSQL 证据，并已进入整栈门禁的自动断言；第 2 条自"第八片"起由**真实的 alias 机制与直接映射断言**保证（切换前后记录映射、聊天切到空世代后检索为空、文档 alias 不变、切回恢复），不再是"集合名独立"的弱形式。audience 按语料划分已于"第七片"落地。**五项全部有证据，P3.3 于 2026-09-19 收口**；残留的是容量上限的**数值**与账本窗口的启用（机制、数据与候选组合都已就位，属 P3.6 接入前的前置拍板项，见下"P3.6 前置待办"），以及 P3.5 的蓝绿重建编排（本包只交付 alias 机制与切换）。
+> 验收现状（2026-09-19 收口）：第 1、3、4、5 条有可执行证据（`internal/chat/isolation_test.go`），其中第 1、4 条另有容器与真实 PostgreSQL 证据，并已进入整栈门禁的自动断言；第 2 条自"第八片"起由**真实的 alias 机制与直接映射断言**保证（切换前后记录映射、聊天切到空世代后检索为空、文档 alias 不变、切回恢复），不再是"集合名独立"的弱形式。audience 按语料划分已于"第七片"落地。**五项全部有证据，P3.3 于 2026-09-19 收口**；容量上限数值与账本窗口也已拍板并写入根 Compose 验证生效（A 档，见下"P3.6 前置待办"中的定性）。仍未完成的是 P3.5 的蓝绿重建编排（本包只交付 alias 机制与切换）。
 
 ### 进展
 
@@ -354,12 +354,18 @@ Docker Desktop 恢复运行后，P3.3 缺失的那一项终于有了容器内证
 **容量档位已拍板并写入部署配置（A 档，2026-09-19）**
 
 ```text
-maxMessages         = 30,000
-maxSnapshotBytes    = 24 MiB (25,165,824)
-operationRetention  = 7 days (168h)
+maxMessages         = 30,000        # 绝对的"保险丝"，不是容量承诺（见下）
+maxSnapshotBytes    = 24 MiB        # 当前的主要约束
+operationRetention  = 7 days
 operationMaxEntries = 30,000        （不采用 100,000）
-CAS p95 target      ≤ 1 second      （30k 直接实测 p95 = 750.9 ms）
+metadataEntries     = 8
+metadataKeyBytes    = 32
+metadataValueBytes  = 64
+metadataTotalBytes  = 64
+CAS p95 target      ≤ 1 second      （30k 直接实测 750.9 ms；23.55 MiB 真实形态实测 848.3 ms）
 ```
+
+**系统不承诺一定容纳 30,000 条消息**：有效容量由消息数量上限与序列化快照字节上限中**先到达者**决定；在当前代表性画像下，无 metadata 约 29.5k、32 B metadata 约 27k、64 B metadata 约 26k。因此 `maxMessages` 的定性是**防止异常状态无限增长的第二道保险，不是产品容量指标**，主要约束是字节上限。（2026-09-19 复核确认：不下调到 26,000——那会造成"保证能存 26k"的错觉，而 26k+64 B 距 24 MiB 只剩约 2% 余量，后续归档/授权变更/撤回与标识符波动都可能提前触顶；`min()` 语义更诚实也更高安全。）
 
 语义：`有效容量 = min(30,000 条消息, 24 MiB 快照)`、`账本保留 = min(7 天, 30,000 条记录)`。四个参数与 metadata 预算已写入根 Compose（`MIXIN_SEARCH_CHAT_MAX_*` 可覆盖）；`rag-server` 的运行期默认仍为 0（不限）——保护由部署配置给出。**注意：根 Compose 是"系统级本地开发与集成验收基线"，不是生产部署基线**（它使用 debug 配置、本地凭据与回环发布端口）；仓库目前没有可直接称为生产基线的配置，因此这里的容量受控结论**只覆盖该本地基线**，生产部署必须显式传入这些参数并自行验证。
 
@@ -370,13 +376,13 @@ CAS p95 target      ≤ 1 second      （30k 直接实测 p95 = 750.9 ms）
 - **消息长度不进入控制快照**（只存 `content_sha256`；20 → 4,000 字节内容，快照恒为 782,128 字节），它影响的是向量集合；
 - **"7 天窗口至多保留一份语料副本"只对本次画像模型成立**：在"一轮完整索引、每批 50 条"的假设下，7 天约保留一份语料对应的 receipt；**实际占用取决于操作速率、批大小与操作类型**（反复归档、授权变更或撤回会在窗口内产生多份 receipt），并受 30,000 条账本上限与 24 MiB 总快照上限共同约束。
 
-**幂等账本保留窗口（ADR-015，2026-09-19：决策已定，机制已落地、默认不清理）**：账本只进不出，是快照里唯一没有回收路径的部分，因此"重放保证的有效窗口"必须先写成契约再实现。已接受 [ADR-015](../adr/015-control-plane-idempotency-ledger-retention.md)：窗口内重放返回首次响应、改绑被拒；窗口外不承诺响应复现与改绑检测，但**不重复写入**由状态本身保证（向量键含 `operation_id`、消息内容不可变、修订号幂等）；清理按年龄为主（建议 7 天）并以条数上限兜底（建议 100,000 条），走既有机会式维护路径，不新增后台任务。机制已实现并配置化（`-chat-operation-retention`、`-chat-operation-max-entries`，默认 0 = 不清理，行为与今天一致；账本条目新增 `recorded_at_unix_milli`，无时间戳的旧条目按"年龄未知"处理：不被年龄清理、在条数上限下最先被丢弃）。实现时发现并修正了 ADR 的一处措辞：窗口外**第一次**以不同载荷到达时改绑无从检测（接受），但该 id 被重新接受后会重新记录、保护恢复——测试 `TestOperationLedgerRebindingOutsideTheWindowIsAccepted` 与 `TestOperationLedgerRetentionKeepsTheWindowAndForgetsBeyondIt` 分别固定这两种情形，另有条数上限最旧优先、默认不清理、清理后快照变小三条测试。启用（填数值）与容量上限一并落地，避免两次契约变更。
+**幂等账本保留窗口（ADR-015，2026-09-19：决策已定、机制已落地并已启用）**：账本只进不出，是快照里唯一没有回收路径的部分，因此"重放保证的有效窗口"必须先写成契约再实现。已接受 [ADR-015](../adr/015-control-plane-idempotency-ledger-retention.md)：窗口内重放返回首次响应、改绑被拒；窗口外不承诺响应复现与改绑检测，但**不重复写入**由状态本身保证（向量键含 `operation_id`、消息内容不可变、修订号幂等）；清理按年龄为主（**拍板 7 天**）并以条数上限兜底（**拍板 30,000 条**；ADR 初稿建议的 100,000 条已被实测推翻——一条 receipt 携带该批每条消息的状态，30k 消息 + 100k 条 receipt 实测 63.8 MiB，与 24 MiB 预算互不相容，故条数上限改为按字节预算推导），走既有机会式维护路径，不新增后台任务。机制已实现并配置化（`-chat-operation-retention`、`-chat-operation-max-entries`，运行期默认 0 = 不清理；账本条目新增 `recorded_at_unix_milli`，无时间戳的旧条目按"年龄未知"处理：不被年龄清理、在条数上限下最先被丢弃）。实现时发现并修正了 ADR 的一处措辞：窗口外**第一次**以不同载荷到达时改绑无从检测（接受），但该 id 被重新接受后会重新记录、保护恢复——测试 `TestOperationLedgerRebindingOutsideTheWindowIsAccepted` 与 `TestOperationLedgerRetentionKeepsTheWindowAndForgetsBeyondIt` 分别固定这两种情形，另有条数上限最旧优先、默认不清理、清理后快照变小三条测试。启用数值（7 天 / 30,000 条）与容量上限已一并写入根 Compose，避免两次契约变更。
 
-**可配置容量硬限制机制（默认未启用；数值属 P3.6 前置）**
+**可配置容量硬限制机制（已启用：A 档写入根 Compose）**
 
-> **口径**：P3.3 交付的是**机制**，不是"容量问题已解决"。当前 Compose 默认值为 0（不限），因此部署的真实状态仍是"限制与清理代码就位、但未启用，无限增长风险依然存在"。
+> **口径**：P3.3 交付的是**机制**，且本片已把 A 档数值写入根 Compose 并验证生效。但"启用"不等于"容量问题已解决"：`maxMessages` 是**防止异常状态无限增长的第二道保险，不是产品容量指标**，有效容量由 `min(条数, 字节)` 中先到达者决定；**任何文档都不得把 30,000 写成保证容量**。运行期默认值仍为 0（不限），因此在非根 Compose 的部署里限制与清理代码就位但未启用，无限增长风险依然存在。
 
-机制细节：`-chat-max-messages` 与 `-chat-max-snapshot-bytes` 两个配置项（默认 0 = 不限）已落地，超限写入返回 `ErrCapacityExceeded` → gRPC `FAILED_PRECONDITION`；消息数为精确检查；快照字节数按**已持久化的快照**判定（Postgres 适配器在 `Load` 时记录真实 payload 长度，因此别的实例写入的更大快照也会被看见），最多滞后一次写入——刻意取舍，避免把候选快照再编码一遍（50k 时约多花 550 ms/次）。达到快照上限后**所有**写入路径（索引/归档/访问/撤回/删除）都被拒绝，读取不受影响；只在索引路径设限不会真正约束快照，因为其余四种写入同样会新增账本记录。**超限不产生部分提交**已由测试断言：被拒后 generation 不变、会话/消息/pending 状态逐字段相等、向量计数不变（`TestSnapshotCeilingRefusesEveryMutationNotJustIndexing`）。测试清单：`TestCapacityGuardRefusesWritesPastTheMessageLimit`、`TestCapacityGuardRefusesOnceTheSnapshotLimitIsReached`、`TestSnapshotCeilingRefusesEveryMutationNotJustIndexing`、`TestSnapshotCeilingSeesASnapshotAnotherInstanceGrew`、`TestZeroCapacityLimitsDoNotRestrictWrites`、`TestNegativeCapacityLimitsAreRejected`，以及适配器的错误码映射用例；真实 PostgreSQL 上另有三条集成子测试（消息上限、快照上限、账本清理）。
+机制细节：`-chat-max-messages` 与 `-chat-max-snapshot-bytes` 两个配置项（运行期默认 0 = 不限）已落地，超限写入返回 `ErrCapacityExceeded` → gRPC `RESOURCE_EXHAUSTED`；metadata 预算违约走 `ErrInvalidInput` → `INVALID_ARGUMENT`（校验先于任何状态与向量写入）。消息数为精确检查；快照字节数按**已持久化的快照**判定（Postgres 适配器在 `Load` 时记录真实 payload 长度，因此别的实例写入的更大快照也会被看见），最多滞后一次写入——刻意取舍，避免把候选快照再编码一遍（50k 时约多花 550 ms/次）。达到快照上限后**所有**写入路径（索引/归档/访问/撤回/删除）都被拒绝，读取不受影响；只在索引路径设限不会真正约束快照，因为其余四种写入同样会新增账本记录。**超限不产生部分提交**已由测试断言：被拒后 generation 不变、会话/消息/pending 状态逐字段相等、向量计数不变（`TestSnapshotCeilingRefusesEveryMutationNotJustIndexing`）。测试清单：`TestCapacityGuardRefusesWritesPastTheMessageLimit`、`TestCapacityGuardRefusesOnceTheSnapshotLimitIsReached`、`TestSnapshotCeilingRefusesEveryMutationNotJustIndexing`、`TestSnapshotCeilingSeesASnapshotAnotherInstanceGrew`、`TestZeroCapacityLimitsDoNotRestrictWrites`、`TestNegativeCapacityLimitsAreRejected`，以及适配器的错误码映射用例；真实 PostgreSQL 上另有三条集成子测试（消息上限、快照上限、账本清理）。
 
 **启用状态（2026-09-19 更新）**：四个参数已写入根 Compose，因此**根 Compose 部署的容量是受控的**；不在 Compose 中部署的用法（测试、嵌入式）保持 0 = 不限。P3.6 开工前仍需复核第 ⑤ 步（超限无部分提交、PostgreSQL 集成、整栈门禁在启用后的组合下全绿）——本片已随参数写入复跑。**在任何非根 Compose 的部署里，容量仍不受控，必须显式传入这四个参数。**
 
@@ -392,7 +398,7 @@ docker compose -p p33cap -f docker-compose.yaml down -v
 
 **P3.6 前置待办（不阻塞 P3.3 收口，但必须在 `py-agent` 正式接入前完成）**
 
-- **容量上限数值与账本窗口的启用（唯一需要拍板的一项）**：测量数据、候选组合与机制都已在上面给出，两个候选是 A（30k 消息 / 24 MiB / p95 ≤ 1 s，推荐）与 B（50k 消息 / 48 MiB / p95 ≤ 1.5 s）；账本建议保留 7 天 + 100,000 条上限并与容量同批启用。选定后只需填默认值与 Compose，并复跑整栈门禁；
+- **容量上限数值与账本窗口（已拍板并已启用，不再是待办）**：A 档已写入根 Compose 并验证生效——30,000 条消息 / 24 MiB 快照 / 7 天 / 30,000 条账本，metadata 预算 8 项、key ≤ 32 B、value ≤ 64 B、keys+values ≤ 64 B。**2026-09-19 复核确认不下调 `maxMessages` 为 26,000**：有效容量本就是 `min(条数, 字节)`，下调只会制造"保证能存 26k"的错觉（26k + 64 B metadata 距 24 MiB 仅约 2% 余量）；`maxMessages` 的定性是第二道保险，不是产品容量指标，契约与运维文档均不得把它写成保证容量。真实 ID 形态下字节上限约在 29.5k（无 metadata）/ 27k（32 B）/ 26k（64 B）先触发，证据见 `docs/reports/evidence/phase3/p33-chat-capacity-profile_20260919.md`；P3.6 的接入约定需据此限制每消息 metadata 规模；
 - **分片/行级 CAS 的触发**：命中任一硬限制或持续 p95 超 SLO 时，启动独立 ADR 讨论迁移；本包不做；
 - **聊天侧 PostgreSQL 适配器已补上集成测试**（`internal/chat/capacity_postgres_test.go`，`CHAT_CONTROL_STORE_INTEGRATION=1` + `CONTROL_DATABASE_DSN`，覆盖消息上限、快照上限与账本清理三条真实路径）；
 - **纯加固两项**（判定为既有行为或不必需，不构成错误状态）：适配器把包装后的内部错误文本回给调用方（文档与聊天同样如此，改动会变更客户端可见文本）；聊天索引写入没有按意图租约设 deadline（只影响写锁持有时长）。
@@ -462,7 +468,7 @@ docker compose -p p33cap -f docker-compose.yaml down -v
 
 ### 前置（由 P3.3 结转）
 
-- **容量上限数值与账本保留窗口必须在此实施包开工前拍板并启用**：两个候选组合与全部实测数据见 §7.1 的"P3.6 前置待办"；未启用时聊天语料以"默认不限"运行，高基数写入下快照会持续增长（机制已在，只是数值为空）。
+- **容量上限数值与账本保留窗口（已由 P3.3 结清）**：A 档（30,000 条 / 24 MiB / 7 天 / 30,000 条账本）已写入根 Compose 并验证生效，实测数据见 §7.1 的"P3.6 前置待办"与容量画像证据文件。**本包开工前的剩余事项是接入约定而非数值**：把每消息 metadata 规模限制（8 项 / key 32 B / value 64 B / keys+values 64 B）写进接入文档，并明确根 Compose 之外的生产部署必须显式传入这些参数、自行验证（运行期默认 0 = 不限）。
 
 ### 任务
 
