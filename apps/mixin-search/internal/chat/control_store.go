@@ -18,6 +18,22 @@ type ControlStore interface {
 	StorageDomain() string
 }
 
+// SizingControlStore is a ControlStore that reports how large the snapshot it
+// last wrote was.
+//
+// The write path is a whole-snapshot rewrite, so a corpus can only be kept
+// bounded if something measures the snapshot. Measuring it here is free: the
+// persistent adapter already serialized the payload to write it, and the memory
+// adapter serializes it for the same reason. The admission guard reads this value
+// instead of encoding the candidate state a second time, which at 50k messages
+// would add roughly 340 ms to every write.
+type SizingControlStore interface {
+	ControlStore
+	// LastSnapshotBytes reports the encoded size of the last successfully
+	// persisted snapshot, or 0 before the first write.
+	LastSnapshotBytes() int64
+}
+
 // ControlState is the chat corpus's transport-independent persistence model.
 type ControlState struct {
 	Generation     uint64                         `json:"-"`

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync/atomic"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -33,6 +34,9 @@ type PostgresControlStoreConfig struct {
 type PostgresControlStore struct {
 	pool      *pgxpool.Pool
 	namespace string
+	// lastSnapshotBytes carries the size of the last written payload to the
+	// admission guard without re-encoding the state.
+	lastSnapshotBytes atomic.Int64
 }
 
 // NewPostgresControlStore opens the chat control store and verifies that its
@@ -170,7 +174,17 @@ RETURNING generation`, payload, s.namespace, int64(expectedGeneration)).Scan(&ne
 	if nextGeneration != int64(expectedGeneration)+1 {
 		return 0, fmt.Errorf("save chat control state: next generation=%d expected=%d", nextGeneration, expectedGeneration+1)
 	}
+	s.lastSnapshotBytes.Store(int64(len(payload)))
 	return uint64(nextGeneration), nil
+}
+
+// LastSnapshotBytes reports the encoded size of the last persisted snapshot. The
+// payload is serialized to be written, so reporting its length costs nothing.
+func (s *PostgresControlStore) LastSnapshotBytes() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.lastSnapshotBytes.Load()
 }
 
 // Close releases the connection pool.

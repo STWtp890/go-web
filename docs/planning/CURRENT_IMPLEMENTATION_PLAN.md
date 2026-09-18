@@ -356,6 +356,8 @@ Docker Desktop 恢复运行后，P3.3 缺失的那一项终于有了容器内证
 - 迁移触发（改成分区/行级 CAS 的判据，任一命中即启动独立 ADR）：消息数 ≥ 50k、快照 ≥ 24 MiB、或持续观测到 p95 写入 > 1 s；
 - 100k / 200k 的外推（**未实测**，仅用于说明为何要在 50k 处触发迁移）：约 42 MiB / 1.5 s、约 85 MiB / 3.0 s 每次写入。
 
+**拒绝机制已就位（数值待确认）**：`-chat-max-messages` 与 `-chat-max-snapshot-bytes` 两个配置项（默认 0 = 不限）已落地，超限写入返回 `ErrCapacityExceeded` → gRPC `FAILED_PRECONDITION`；消息数为精确检查，快照字节数按上一次持久化的快照判定（最多滞后一次写入，避免把候选快照再编码一遍——50k 时那会多花约 340 ms/次）。`SizingControlStore` 让持久化适配器与内存适配器都把刚写入的负载大小报给守卫，零额外编码。测试：`TestCapacityGuardRefusesWritesPastTheMessageLimit`、`TestCapacityGuardRefusesOnceTheSnapshotLimitIsReached`、`TestZeroCapacityLimitsDoNotRestrictWrites`、`TestNegativeCapacityLimitsAreRejected`，以及适配器的错误码映射用例。确认上限后只需把数值填进配置与 Compose（并写进契约 §7 的默认值）。
+
 复跑方式（真实 CAS 需要控制 PostgreSQL 可达）：
 
 ```powershell
@@ -369,7 +371,7 @@ docker compose -p p33cap -f docker-compose.yaml down -v
 **尚未落地**
 
 - **alias 机制已落地，蓝绿重建编排仍属 P3.5**：两个语料各有独立 alias（配置名即为 alias），物理集合为 `_gN` 世代，切换为原子操作并有直接映射断言（见"第八片"）。尚未实现的是重建编排本身——把数据填进新世代、完整性校验、保留上一代用于回退，这些属于计划中 P3.5 的任务；
-- **聊天控制快照的容量天花板尚未定义（容量治理，接入前必须定）**：P3.2 消除的是**读**路径的全局排他锁与每次全量加载；**写**路径仍是"一个全局 `writeMu` + 一份完整 `ControlState`"——每次变更复制整份快照、序列化整份快照、再做一次 CAS（`internal/chat/service.go`、`internal/chat/snapshot.go`），且幂等 operation ledger 没有清理策略。对聊天这种高基数、持续增长的语料，这比文档索引更容易触顶。这不影响当前正确性验收，但 `py-agent` 正式接入前必须定下四项：单 corpus 的最大消息数或快照字节数、operation ledger 的保留期限、单次 CAS 序列化的延迟阈值、迁移到分区存储或行级 CAS 的触发指标；
+- **聊天控制快照的容量上限数值待确认（机制已就位）**：P3.2 消除的是**读**路径的全局排他锁与每次全量加载；**写**路径仍是"一个全局 `writeMu` + 一份完整 `ControlState`"——每次变更复制整份快照、序列化整份快照、再做一次 CAS（`internal/chat/service.go`、`internal/chat/snapshot.go`），且幂等 operation ledger 没有清理策略。对聊天这种高基数、持续增长的语料，这比文档索引更容易触顶。这不影响当前正确性验收，但 `py-agent` 正式接入前必须定下四项：单 corpus 的最大消息数或快照字节数、operation ledger 的保留期限、单次 CAS 序列化的延迟阈值、迁移到分区存储或行级 CAS 的触发指标；
 - **聊天侧 PostgreSQL 适配器仍没有集成测试**：文档语料有环境变量门控的 `internal/rag/control_store_integration_test.go`（`CONTROL_STORE_INTEGRATION=1` + `CONTROL_DATABASE_DSN`）。聊天侧本轮补的是两项**不依赖数据库**的替代证据，而不是一份无法执行的集成测试：
   - `internal/chat/control_schema_test.go`：断言聊天 schema 只创建自己的 `chat_control_states`，不触碰文档的 `control_states`（复制文档 schema 却漏改表名这类错误对 PostgreSQL 是合法的，只会在容器门禁里暴露）；
   - `internal/chat/control_store_encoding_test.go`：把真实控制状态走一遍持久化编码边界（`json.Marshal` → `Unmarshal` → `normalize` → `validate`），再断言恢复后的语料检索结果、对账视图、幂等账本与墓碑围栏与原来一致；该断言经一次刻意的反向改动确认有效（去掉 generation 列还原即失败）。

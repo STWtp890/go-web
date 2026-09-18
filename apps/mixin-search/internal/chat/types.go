@@ -44,6 +44,10 @@ var (
 	// ErrProjectionUnavailable reports that the derived chat index could not be
 	// converged, so retrieval cannot serve the snapshot it was asked about.
 	ErrProjectionUnavailable = errors.New("chat index projection unavailable")
+	// ErrCapacityExceeded reports that accepting a write would push this corpus
+	// past one of its configured hard limits. It is a refusal, not a degradation:
+	// the corpus keeps serving the state it has instead of growing without bound.
+	ErrCapacityExceeded = errors.New("chat corpus capacity limit exceeded")
 )
 
 // IndexStatus is the conversation-level retrievability decision. It deliberately

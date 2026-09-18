@@ -292,7 +292,8 @@ func mapChatServiceError(err error) error {
 		errors.Is(err, chat.ErrStaleLifecycle),
 		errors.Is(err, chat.ErrStaleArchive),
 		errors.Is(err, chat.ErrStaleAccess),
-		errors.Is(err, chat.ErrStaleRetract):
+		errors.Is(err, chat.ErrStaleRetract),
+		errors.Is(err, chat.ErrCapacityExceeded):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())

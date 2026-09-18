@@ -1,0 +1,127 @@
+package chat
+
+import (
+	"context"
+	"errors"
+	"testing"
+)
+
+// TestCapacityGuardRefusesWritesPastTheMessageLimit covers the hard limit the
+// capacity measurement exists to justify: past it the corpus refuses new messages
+// instead of growing until every writer times out.
+func TestCapacityGuardRefusesWritesPastTheMessageLimit(t *testing.T) {
+	ctx := context.Background()
+	h := newLimitedHarness(t, IndexServiceConfig{MaxMessages: 2})
+
+	h.index(t, "op-capacity-1", "room-limit", "scope-limit", 1, "first", "second")
+
+	// The batch that would cross the limit is refused outright, and nothing of it
+	// is written.
+	if _, err := h.service.IndexMessages(ctx, IndexMessagesRequest{
+		OperationID: "op-capacity-2", ConversationID: "room-limit", OwnerScopeID: "scope-limit",
+		LifecycleRevision: 1,
+		Messages: []MessageInput{{
+			MessageID: "third", SenderID: "sender", SentAtUnixMs: 1_700_000_000_002, Content: "third",
+		}},
+	}); !errors.Is(err, ErrCapacityExceeded) {
+		t.Fatalf("write past the message limit error = %v, want ErrCapacityExceeded", err)
+	}
+	if h.indexer.indexedCount() != 2 {
+		t.Fatalf("indexed vectors = %d, want 2: a refused batch must not be written", h.indexer.indexedCount())
+	}
+
+	// The corpus keeps serving what it has: a refused write is not an outage.
+	h.archive(t, "op-capacity-archive", "room-limit", 1, 1)
+	if hits := h.search(t, "first", []string{"scope-limit"}, nil).Hits; len(hits) != 1 {
+		t.Fatalf("hits after a refused write = %d, want 1", len(hits))
+	}
+
+	// Replaying the accepted operation adds nothing, so it still succeeds.
+	if _, err := h.service.IndexMessages(ctx, IndexMessagesRequest{
+		OperationID: "op-capacity-1", ConversationID: "room-limit", OwnerScopeID: "scope-limit",
+		LifecycleRevision: 1,
+		Messages: []MessageInput{
+			{MessageID: "first", SenderID: "sender", SentAtUnixMs: 1_700_000_000_000, Content: "first"},
+			{MessageID: "second", SenderID: "sender", SentAtUnixMs: 1_700_000_000_001, Content: "second"},
+		},
+	}); err != nil {
+		t.Fatalf("replay at the limit: %v", err)
+	}
+}
+
+// TestCapacityGuardRefusesOnceTheSnapshotLimitIsReached covers the second hard
+// limit. It is checked against the last persisted snapshot, which is why the
+// guard can lag by one write - stated here so nobody reads it as exact.
+func TestCapacityGuardRefusesOnceTheSnapshotLimitIsReached(t *testing.T) {
+	ctx := context.Background()
+	h := newLimitedHarness(t, IndexServiceConfig{MaxSnapshotBytes: 200})
+
+	h.index(t, "op-snapshot-1", "room-snapshot", "scope-snapshot", 1, "first")
+	if got := h.store.LastSnapshotBytes(); got <= 200 {
+		t.Fatalf("persisted snapshot = %d bytes, expected the guard's threshold to be crossed", got)
+	}
+	if _, err := h.service.IndexMessages(ctx, IndexMessagesRequest{
+		OperationID: "op-snapshot-2", ConversationID: "room-snapshot", OwnerScopeID: "scope-snapshot",
+		LifecycleRevision: 1,
+		Messages: []MessageInput{{
+			MessageID: "second", SenderID: "sender", SentAtUnixMs: 1_700_000_000_001, Content: "second",
+		}},
+	}); !errors.Is(err, ErrCapacityExceeded) {
+		t.Fatalf("write past the snapshot limit error = %v, want ErrCapacityExceeded", err)
+	}
+}
+
+// TestZeroCapacityLimitsDoNotRestrictWrites keeps the default honest: until the
+// measured limits are confirmed and configured, behaviour is unchanged.
+func TestZeroCapacityLimitsDoNotRestrictWrites(t *testing.T) {
+	h := newLimitedHarness(t, IndexServiceConfig{})
+	h.index(t, "op-unlimited-1", "room-unlimited", "scope-unlimited", 1, "first")
+	h.index(t, "op-unlimited-2", "room-unlimited", "scope-unlimited", 1, "second", "third")
+	if h.indexer.indexedCount() != 3 {
+		t.Fatalf("indexed vectors = %d, want 3", h.indexer.indexedCount())
+	}
+}
+
+// TestNegativeCapacityLimitsAreRejected stops a typo in configuration from
+// silently disabling the guard it was meant to enable.
+func TestNegativeCapacityLimitsAreRejected(t *testing.T) {
+	indexer := newFakeIndexer()
+	for name, limits := range map[string]IndexServiceConfig{
+		"negative messages": {MaxMessages: -1},
+		"negative bytes":    {MaxSnapshotBytes: -1},
+	} {
+		limits := limits
+		t.Run(name, func(t *testing.T) {
+			service, err := NewIndexService(context.Background(), IndexServiceConfig{
+				ControlStore:     NewMemoryControlStore(),
+				Indexer:          indexer,
+				Projection:       indexer,
+				Searcher:         &fakeSearcher{indexer: indexer},
+				MaxMessages:      limits.MaxMessages,
+				MaxSnapshotBytes: limits.MaxSnapshotBytes,
+			})
+			if err == nil {
+				t.Fatal("a negative capacity limit was accepted")
+			}
+			if service != nil {
+				t.Fatal("a service was returned alongside the error")
+			}
+		})
+	}
+}
+
+func newLimitedHarness(t *testing.T, config IndexServiceConfig) *harness {
+	t.Helper()
+	indexer := newFakeIndexer()
+	searcher := &fakeSearcher{indexer: indexer}
+	store := NewMemoryControlStore()
+	config.ControlStore = store
+	config.Indexer = indexer
+	config.Projection = indexer
+	config.Searcher = searcher
+	service, err := NewIndexService(context.Background(), config)
+	if err != nil {
+		t.Fatalf("new chat index service with limits: %v", err)
+	}
+	return &harness{service: service, indexer: indexer, searcher: searcher, store: store}
+}

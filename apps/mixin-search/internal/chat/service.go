@@ -49,6 +49,13 @@ type IndexService struct {
 	// not constant, so a deployment or test can shorten the window in which a
 	// published change can stay unconverged.
 	projectionInterval time.Duration
+	// maxMessages and maxSnapshotBytes are the corpus's hard capacity limits; zero
+	// means unbounded.
+	maxMessages      int
+	maxSnapshotBytes int64
+	// lastSnapshotBytes is the encoded size of the last snapshot this instance
+	// persisted, used by the snapshot-bytes guard.
+	lastSnapshotBytes int64
 }
 
 // IndexServiceConfig configures the chat control plane.
@@ -70,6 +77,15 @@ type IndexServiceConfig struct {
 	// built with: the collection filters candidates on it, so a mismatch would
 	// silently hide everything.
 	StorageDomain string
+	// MaxMessages is this corpus's hard limit on indexed messages. A write that
+	// would cross it is refused. Zero disables the limit, which is the current
+	// state until the measured limit is confirmed.
+	MaxMessages int
+	// MaxSnapshotBytes is this corpus's hard limit on the encoded control
+	// snapshot. It is checked against the last persisted snapshot, so enforcement
+	// can lag by one write; that keeps the guard free instead of encoding the
+	// candidate state twice. Zero disables the limit.
+	MaxSnapshotBytes int64
 }
 
 // NewIndexService restores the chat control plane before returning a usable
@@ -104,16 +120,25 @@ func NewIndexService(ctx context.Context, config IndexServiceConfig) (*IndexServ
 	if projectionInterval <= 0 {
 		projectionInterval = defaultProjectionInterval
 	}
-	return &IndexService{
+	if config.MaxMessages < 0 || config.MaxSnapshotBytes < 0 {
+		return nil, errors.New("chat capacity limits cannot be negative")
+	}
+	service := &IndexService{
 		store:              config.ControlStore,
 		indexer:            config.Indexer,
 		projectionStore:    config.Projection,
 		searcher:           config.Searcher,
 		storageDomain:      storageDomain,
 		projectionInterval: projectionInterval,
+		maxMessages:        config.MaxMessages,
+		maxSnapshotBytes:   config.MaxSnapshotBytes,
 		state:              controlplane.NewState(restored, restored.generation),
 		projection:         controlplane.NewProjection(),
-	}, nil
+	}
+	if sizing, ok := config.ControlStore.(SizingControlStore); ok {
+		service.lastSnapshotBytes = sizing.LastSnapshotBytes()
+	}
+	return service, nil
 }
 
 // StorageDomain reports the projection domain of this corpus. It is the chat
@@ -198,6 +223,13 @@ func (s *IndexService) IndexMessages(ctx context.Context, request IndexMessagesR
 	// died between the intent commit and the published state exists only as a
 	// pending intent, so rebinding has to be checked there too.
 	if err := next.pendingOperationConflict(request.OperationID, fingerprint); err != nil {
+		return nil, err
+	}
+	// Capacity is checked before any state is claimed: the write path is a
+	// whole-snapshot rewrite, so the honest answer past the limit is a refusal
+	// that leaves the corpus serving what it has, not a corpus that grows until
+	// every writer times out.
+	if err := s.checkCapacity(next, request.ConversationID, normalized); err != nil {
 		return nil, err
 	}
 	// Phase one: bind an unfinished write intent for every message that is not
@@ -821,6 +853,11 @@ func (s *IndexService) commit(ctx context.Context, previous, next *snapshot) err
 		return fmt.Errorf("%w: persist chat control state: %w", ErrControlStoreUnavailable, err)
 	}
 	next.generation = generation
+	if sizing, ok := s.store.(SizingControlStore); ok {
+		// The adapter just encoded this snapshot, so this is free; it is what the
+		// capacity guard reads on the next write.
+		s.lastSnapshotBytes = sizing.LastSnapshotBytes()
+	}
 	s.publish(next)
 	return nil
 }
@@ -920,6 +957,39 @@ func (s *IndexService) ensureProjection(ctx context.Context, current *snapshot) 
 func (s *IndexService) syncProjection(ctx context.Context, current *snapshot) error {
 	if err := s.projectionStore.SyncChatControls(ctx, current.vectorControls(s.storageDomain)); err != nil {
 		return fmt.Errorf("%w: %w", ErrProjectionUnavailable, err)
+	}
+	return nil
+}
+
+// checkCapacity refuses a batch that would push this corpus past a configured
+// hard limit.
+//
+// The message limit is exact: it counts the messages the batch would add to the
+// snapshot. The snapshot limit is checked against the last persisted snapshot
+// rather than an encoding of the candidate state, which would roughly double the
+// cost of every write; enforcement can therefore lag by one write, and the error
+// says which limit was hit so an operator can act on it.
+func (s *IndexService) checkCapacity(current *snapshot, conversationID string, batch []MessageInput) error {
+	if s.maxMessages > 0 {
+		additional := 0
+		for _, message := range batch {
+			if _, indexed := current.messages[messageKey(conversationID, message.MessageID)]; indexed {
+				continue
+			}
+			additional++
+		}
+		if len(current.messages)+additional > s.maxMessages {
+			return fmt.Errorf(
+				"%w: %d indexed messages plus %d new would exceed the limit of %d",
+				ErrCapacityExceeded, len(current.messages), additional, s.maxMessages,
+			)
+		}
+	}
+	if s.maxSnapshotBytes > 0 && s.lastSnapshotBytes >= s.maxSnapshotBytes {
+		return fmt.Errorf(
+			"%w: the persisted control snapshot is %d bytes, at or above the limit of %d",
+			ErrCapacityExceeded, s.lastSnapshotBytes, s.maxSnapshotBytes,
+		)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sync"
@@ -14,6 +15,9 @@ type MemoryControlStore struct {
 	mu     sync.RWMutex
 	state  ControlState
 	domain string
+	// lastSnapshotBytes mirrors what the persistent adapter reports, so the
+	// capacity guard behaves the same in tests.
+	lastSnapshotBytes int64
 }
 
 var memoryControlStoreSequence atomic.Uint64
@@ -53,6 +57,12 @@ func (s *MemoryControlStore) Save(_ context.Context, expectedGeneration uint64, 
 	if err != nil {
 		return 0, err
 	}
+	// The memory store has no payload to write, so it encodes one: the admission
+	// guard must see the same size the persistent adapter would report.
+	encoded, err := json.Marshal(clone)
+	if err != nil {
+		return 0, fmt.Errorf("encode chat control state: %w", err)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -61,5 +71,14 @@ func (s *MemoryControlStore) Save(_ context.Context, expectedGeneration uint64, 
 	}
 	clone.Generation = expectedGeneration + 1
 	s.state = clone
+	s.lastSnapshotBytes = int64(len(encoded))
 	return clone.Generation, nil
+}
+
+// LastSnapshotBytes reports the encoded size of the last snapshot this store
+// accepted.
+func (s *MemoryControlStore) LastSnapshotBytes() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastSnapshotBytes
 }

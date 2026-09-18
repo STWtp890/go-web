@@ -28,6 +28,11 @@ type Config struct {
 	// StorageDomain overrides the projection domain. It defaults to the control
 	// store's domain, which is already corpus-specific.
 	StorageDomain string
+	// MaxMessages and MaxSnapshotBytes are this corpus's hard capacity limits.
+	// Zero leaves them disabled; the measured values live in the deployment
+	// configuration rather than in the code.
+	MaxMessages      int
+	MaxSnapshotBytes int64
 }
 
 // Corpus is the chat corpus's composition: its own collection wrapper, its own
@@ -70,7 +75,9 @@ func New(ctx context.Context, config Config) (*Corpus, error) {
 		// One domain for both the collection and the control plane: the store
 		// filters on it, so a different value on either side would hide every
 		// candidate.
-		StorageDomain: domain,
+		StorageDomain:    domain,
+		MaxMessages:      config.MaxMessages,
+		MaxSnapshotBytes: config.MaxSnapshotBytes,
 	})
 	if err != nil {
 		_ = core.Close()

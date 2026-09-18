@@ -73,3 +73,14 @@
 - 角色策略由 `internal/transport/grpc/auth.go` 的方法表强制：聊天方法只接受 `chat-index-writer` / `chat-searcher` / `chat-ops`，未登记的方法一律拒绝；`internal/transport/grpc` 的测试断言两个语料的角色集合不相交且每个 RPC 都有策略；
 - 控制面在 `internal/chat`，与文档语料不共享快照、generation、持久化表或 reconciler；跨语料隔离由 `internal/chat/isolation_test.go` 与 `internal/architecture/dependencies_test.go` 的可执行断言保证；
 - 服务端、独立集合与不中断重建的验收条件见 [ADR-014](../adr/014-per-corpus-control-plane-isolation.md) 的"验证"一节；本契约不重复排期。
+
+## 7. 容量
+
+聊天控制快照是"整份复制 + 整份序列化 + 单行 CAS"的写入模型，因此容量上限属于契约语义：超过上限的写入是**明确拒绝**（`FAILED_PRECONDITION`），不是静默降级。两条硬限制：
+
+- 单 corpus 已索引消息数（`-chat-max-messages`）；
+- 单 corpus 控制快照编码字节数（`-chat-max-snapshot-bytes`）。
+
+两条限量都由部署配置给出（0 表示不限），检查发生在写入之前：消息数是精确检查，快照字节数按**上一次成功持久化的快照**判定，因此最多滞后一次写入——这是刻意的取舍，避免为了精确判定把整份候选快照再编码一遍（50k 消息时约多花 340 ms/次）。
+
+实测数据与建议值见 [实施计划 §7.1](../planning/CURRENT_IMPLEMENTATION_PLAN.md) 的"容量测量与上限建议"；在建议值被确认前，默认配置不启用上限，行为与今天一致。幂等账本的保留期限属于独立 ADR，不在本条内定义。

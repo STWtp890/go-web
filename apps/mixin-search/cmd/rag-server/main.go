@@ -96,6 +96,20 @@ func main() {
 		envOrDefault("MIXIN_SEARCH_CHAT_CONTROL_NAMESPACE", "chat-v1"),
 		"chat control namespace in the chat control table",
 	)
+	// Capacity limits are configuration, not constants: the write path rewrites
+	// the whole snapshot, so the limit depends on the deployment. Both default to
+	// 0 (disabled) until the measured limits are confirmed; the measurements and
+	// the proposed values are in docs/planning/CURRENT_IMPLEMENTATION_PLAN.md.
+	chatMaxMessages := flag.Int(
+		"chat-max-messages",
+		envIntOrDefault("MIXIN_SEARCH_CHAT_MAX_MESSAGES", 0),
+		"hard limit on indexed chat messages per corpus; 0 disables the limit",
+	)
+	chatMaxSnapshotBytes := flag.Int64(
+		"chat-max-snapshot-bytes",
+		envInt64OrDefault("MIXIN_SEARCH_CHAT_MAX_SNAPSHOT_BYTES", 0),
+		"hard limit on the encoded chat control snapshot in bytes; 0 disables the limit",
+	)
 	flag.Parse()
 
 	if *maxReceiveBytes <= 0 {
@@ -197,9 +211,11 @@ func main() {
 		defer closeChatControlStore()
 
 		corpus, err := chatindex.New(ctx, chatindex.Config{
-			VectorStore:   chatStore,
-			ControlStore:  chatControlStore,
-			StorageDomain: *chatCollection,
+			VectorStore:      chatStore,
+			ControlStore:     chatControlStore,
+			StorageDomain:    *chatCollection,
+			MaxMessages:      *chatMaxMessages,
+			MaxSnapshotBytes: *chatMaxSnapshotBytes,
 		})
 		if err != nil {
 			_ = chatStore.Close()
@@ -539,6 +555,18 @@ func envIntOrDefault(name string, fallback int) int {
 		return fallback
 	}
 	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		log.Fatalf("%s must be an integer: %v", name, err)
+	}
+	return parsed
+}
+
+func envInt64OrDefault(name string, fallback int64) int64 {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
 	if err != nil {
 		log.Fatalf("%s must be an integer: %v", name, err)
 	}
