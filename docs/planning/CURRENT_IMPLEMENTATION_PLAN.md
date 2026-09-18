@@ -305,7 +305,9 @@ P3.3 尚未完成。已落地的部分：
 
 **容器级验收（第六片）**
 
-Docker Desktop 恢复运行后，P3.3 缺失的那一项终于有了容器内证据：
+Docker Desktop 恢复运行后，P3.3 缺失的那一项终于有了容器内证据，并已按证据目录约定归档为
+[phase3/p33-chat-corpus-container_20260919.md](../reports/evidence/phase3/p33-chat-corpus-container_20260919.md)
+（同一次运行的三个通用报告族见该目录 README 的 P3.3 行）：
 
 - 用根 Compose 只起 `mixin-search` 及其依赖（独立 project），容器日志为 `store=qdrant control_store=postgres chat=true chat_collection=go_web_chat_v1`，服务健康；
 - PostgreSQL 侧：`mixin_search_control.chat_control_states` 出现 bootstrap 建立的 `chat-v1` 行，`mixin_search_control.control_states` 里只有 `go-web-shadow-v1`；一轮聊天写入把聊天 namespace 推到 generation 4，而文档 namespace 仍是 generation 0——**ADR-014 的"聊天 generation 变化不刷新文档控制面"与"聊天规模不增加文档快照"两条在容器与真实数据库上成立**（进程内测试之外的第二份证据）；
