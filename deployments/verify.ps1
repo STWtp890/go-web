@@ -14,6 +14,10 @@ $composePrefix = @('compose', '-p', $projectName, '-f', $composeFile)
 $previousGoCache = $env:GOCACHE
 $previousDocumentDSN = $env:DOCUMENT_REPOSITORY_TEST_DSN
 $verificationGoCache = Join-Path ([System.IO.Path]::GetTempPath()) 'go-web-build-verify-cache'
+# The host port of gin-backend is configurable because Windows may reserve 8080 for
+# itself (netsh int ipv4 show excludedportrange protocol=tcp); the container port stays
+# 8080. Every host-side check below must use this value rather than the literal.
+$backendBaseURL = 'http://127.0.0.1:' + $(if ($env:GIN_BACKEND_PORT) { $env:GIN_BACKEND_PORT } else { '8080' })
 $started = $false
 
 function Assert-JWTKeysPresent {
@@ -256,7 +260,7 @@ try {
         $runID = 'p15_' + (Get-Date -Format 'yyyyMMdd_HHmmss')
         $reportDir = Join-Path $repositoryRoot 'deployments/test-results'
         Invoke-CheckedCommand 'Run deployed auth, document, manager, proxy, and disabled-Chat API verification' {
-            go run ./cmd/tools/runtimeapitest -run-id $runID -bootstrap-manager p15_admin -bootstrap-password P1_5AdminPass234 -report-dir $reportDir
+            go run ./cmd/tools/runtimeapitest -run-id $runID -bootstrap-manager p15_admin -bootstrap-password P1_5AdminPass234 -base-url $backendBaseURL -report-dir $reportDir
         }
     }
     finally {
@@ -315,7 +319,7 @@ try {
         $shadowBeforeOutage = Get-ShadowSearchStatus
         docker @composePrefix stop mixin-search
         if ($LASTEXITCODE -ne 0) { return }
-        $ready = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8080/readyz' -TimeoutSec 10
+        $ready = Invoke-WebRequest -UseBasicParsing -Uri "$backendBaseURL/readyz" -TimeoutSec 10
         if ($ready.StatusCode -ne 200) {
             throw "gin-backend readiness changed during mixin-search outage: HTTP $($ready.StatusCode)"
         }
@@ -323,7 +327,7 @@ try {
         try {
             $outageRunID = 'p24_outage_' + (Get-Date -Format 'yyyyMMdd_HHmmss')
             go run ./cmd/tools/runtimeapitest -run-id $outageRunID -bootstrap-manager p15_admin `
-                -bootstrap-password P1_5AdminPass234 -report-dir $reportDir
+                -bootstrap-password P1_5AdminPass234 -base-url $backendBaseURL -report-dir $reportDir
         }
         finally {
             Pop-Location

@@ -130,7 +130,10 @@ services:
         GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
     image: gin-backend:local
     ports:
-      - "8080:8080"
+      # 宿主端口可配置：Windows 的 WSL/Hyper-V 动态保留会把 8080 划进排除区间
+      # （netsh int ipv4 show excludedportrange protocol=tcp），此时绑定会被系统拒绝。
+      # 容器内端口固定 8080，只有宿主侧可改。
+      - "${GIN_BACKEND_PORT:-8080}:8080"
     volumes:
       - ./apps/gin-backend/configs/config.docker.yaml:/app/configs/config.yaml:ro
       # JWT 密钥对不进镜像（见根 .dockerignore 的 **/*.pem），改为只读挂载。

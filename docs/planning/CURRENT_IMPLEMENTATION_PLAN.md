@@ -311,7 +311,7 @@ Docker Desktop 恢复运行后，P3.3 缺失的那一项终于有了容器内证
 - PostgreSQL 侧：`mixin_search_control.chat_control_states` 出现 bootstrap 建立的 `chat-v1` 行，`mixin_search_control.control_states` 里只有 `go-web-shadow-v1`；一轮聊天写入把聊天 namespace 推到 generation 4，而文档 namespace 仍是 generation 0——**ADR-014 的"聊天 generation 变化不刷新文档控制面"与"聊天规模不增加文档快照"两条在容器与真实数据库上成立**（进程内测试之外的第二份证据）；
 - 新增 `cmd/rag-server/chat_container_test.go`（门控 `CHAT_CONTAINER_INTEGRATION=1` + `CHAT_CONTAINER_ADDRESS` + `CHAT_CONTAINER_CAPABILITY_KEY_FILE`）：对着**部署中的 gRPC 端点**跑通两个语料的健康检查、索引→不可检索、归档→可检索、撤回→不可检索但仍计数、文档凭证不能调用聊天 RPC、文档检索看不到聊天消息、以及用已持久化的幂等账本重放同一 operation_id。该测试在本机栈上通过，覆盖的正是此前只有进程内证据的两项真实依赖（PostgreSQL 控制表、Qdrant collection）；
 - `deployments/verify.ps1` 增加两步门禁：运行上述容器验收测试，以及用 psql 断言两个语料各自的控制 namespace 互不出现（聊天表必须有 `chat-v1`，文档表必须没有）。
-- **整栈门禁仍未能跑完**：`verify.ps1` 在 `docker compose up` 阶段失败于 `exposing port TCP 0.0.0.0:8080 -> 127.0.0.1:0: bind: An attempt was made to access a socket in a way forbidden by its access permissions`。原因是宿主 Windows 保留了 TCP 8070–8169（`netsh int ipv4 show excludedportrange protocol=tcp`，WSL/Hyper-V 动态保留），而 Compose 的 gin-backend 发布 `8080:8080`。这是宿主端口保留问题，不是代码或装配问题；放行该端口（管理员权限重启 WinNAT）或把发布端口参数化后即可重跑整栈门禁，因此文档语料在容器内的回归证据仍然待补。
+- **整栈门禁已跑通**：宿主把 gin-backend 的发布端口参数化后（`GIN_BACKEND_PORT`，容器内仍是 8080；Windows 保留 8070–8169 时改用一个未保留的宿主端口，本次用 18080），`deployments/verify.ps1` 以 0 退出，末尾三项全部 PASS：`P1.5_BUILD_TEST_DEPLOYMENT=PASS`、`P2.4_SHADOW_INDEX=PASS`、`P2.5_SHADOW_QUERY_EVALUATION=PASS`；其中包含本轮新增的两步——`Run chat corpus container acceptance` 中 `TestChatCorpusAgainstADeployedStack` PASS，以及 `PASS control namespace isolation: chat=[chat-v1] documents=[go-web-shadow-v1]`。这次运行同时是**文档语料在容器内的回归证据**：控制面迁移到 `internal/controlplane` 之后，影子索引投递、对账排水、mixin-search 停机期间的可用性与恢复、以及 P2.5 评估门禁全部照旧通过。
 
 **尚未落地**
 
