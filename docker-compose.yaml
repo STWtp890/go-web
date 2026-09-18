@@ -59,6 +59,10 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.19.1
+    ports:
+      # 只绑定回环，供容器门禁直接断言 alias 映射（qdrant 镜像内没有 curl，
+      # 端口默认不发布；服务本身通过容器网络访问 6334）。
+      - "127.0.0.1:${QDRANT_GRPC_PORT:-16334}:6334"
     volumes:
       - qdrant-data:/qdrant/storage
     healthcheck:

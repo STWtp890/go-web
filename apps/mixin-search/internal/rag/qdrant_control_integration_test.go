@@ -35,9 +35,7 @@ func TestQdrantDocumentControlIntegration(t *testing.T) {
 	defer func() {
 		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
-		if err := store.client.DeleteCollection(cleanupContext, collection); err != nil {
-			t.Errorf("delete qdrant test collection: %v", err)
-		}
+		deleteAliasAndPhysical(t, cleanupContext, store)
 		if err := core.Close(); err != nil {
 			t.Errorf("close qdrant store: %v", err)
 		}
@@ -151,9 +149,7 @@ func TestQdrantStorageDomainIsolationIntegration(t *testing.T) {
 	defer func() {
 		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
-		if err := store.client.DeleteCollection(cleanupContext, collection); err != nil {
-			t.Errorf("delete qdrant test collection: %v", err)
-		}
+		deleteAliasAndPhysical(t, cleanupContext, store)
 		if err := store.Close(); err != nil {
 			t.Errorf("close qdrant store: %v", err)
 		}
@@ -270,7 +266,7 @@ func assertQdrantControlPayload(
 	t.Helper()
 	limit := uint32(10)
 	points, err := store.client.Scroll(ctx, &qdrant.ScrollPoints{
-		CollectionName: store.collection,
+		CollectionName: store.alias,
 		Filter: &qdrant.Filter{Must: []*qdrant.Condition{
 			qdrant.NewMatchKeyword(qdrantPayloadDocumentID, documentID),
 			qdrant.NewMatchKeyword(qdrantPayloadVersionID, versionID),

@@ -145,6 +145,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	logStoreAlias(ctx, "document", store)
 	service, err := rag.NewServiceWithStore(ctx, store)
 	if err != nil {
 		_ = store.Close()
@@ -185,6 +186,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("open chat vector store: %v", err)
 		}
+		logStoreAlias(ctx, "chat", chatStore)
 		chatControlStore, closeChatControlStore, err := openChatControlStore(
 			ctx, *controlBackend, *controlDSN, *chatControlNamespace, *controlBootstrap,
 		)
@@ -333,6 +335,7 @@ func openStore(
 			APIKey:     os.Getenv("QDRANT_API_KEY"),
 			UseTLS:     qdrantTLS,
 			Collection: qdrantCollection,
+			Generation: rag.DefaultQdrantGeneration,
 			Dimensions: localEmbeddingDimensions,
 		})
 	case "pgvector":
@@ -411,7 +414,40 @@ func validateCorpusIsolation(documentCollection, chatCollection string, chatEnab
 	if chatEnabled && documentCollection == chatCollection {
 		return fmt.Errorf("chat and document corpora must not share the collection %q", chatCollection)
 	}
+	if chatEnabled {
+		// The configured names are aliases, and each alias is created over
+		// <name>_<generation>. An alias that equals the other corpus's physical
+		// collection would make startup fail on a name clash at best, and could
+		// point one corpus at the other's data at worst.
+		documentPhysical := documentCollection + "_" + rag.DefaultQdrantGeneration
+		chatPhysical := chatCollection + "_" + rag.DefaultQdrantGeneration
+		if chatCollection == documentPhysical || documentCollection == chatPhysical {
+			return fmt.Errorf(
+				"the two corpora must not use each other's physical collection as an alias (%q, %q)",
+				documentCollection, chatCollection,
+			)
+		}
+	}
 	return nil
+}
+
+// logStoreAlias records which physical collection a corpus's alias resolved to.
+//
+// The alias is what every caller uses; the physical name is the only place a
+// generation is visible, and the container gate asserts the mapping directly, so
+// startup states it once instead of leaving it to be inferred.
+func logStoreAlias(ctx context.Context, corpus string, store rag.VectorStore) {
+	aliased, ok := store.(rag.AliasedVectorStore)
+	if !ok {
+		log.Printf("%s corpus uses store %T (no alias support)", corpus, store)
+		return
+	}
+	physical, err := aliased.PhysicalCollection(ctx)
+	if err != nil {
+		log.Printf("%s corpus alias %q could not be resolved: %v", corpus, aliased.Alias(), err)
+		return
+	}
+	log.Printf("%s corpus alias %q -> physical collection %q", corpus, aliased.Alias(), physical)
 }
 
 // validateCapabilityAudiences refuses a configuration in which both corpora

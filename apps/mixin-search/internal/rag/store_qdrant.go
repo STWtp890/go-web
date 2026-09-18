@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"sort"
+	"strings"
 
 	"github.com/qdrant/go-client/qdrant"
 )
@@ -31,22 +32,40 @@ const (
 )
 
 type QdrantConfig struct {
-	Host       string
-	Port       int
-	APIKey     string
-	UseTLS     bool
+	Host   string
+	Port   int
+	APIKey string
+	UseTLS bool
+	// Collection is the stable name every read and write addresses. It is an
+	// alias over physical collections, not a physical collection itself: a
+	// rebuild fills a new <Collection>_<Generation> and points this name at it,
+	// so callers never learn which generation answered.
 	Collection string
+	// Generation labels the physical collection that is created when the alias
+	// does not exist yet, as <Collection>_<Generation>. It defaults to g1.
+	Generation string
 	Dimensions uint64
 }
 
+// DefaultQdrantGeneration is the first physical generation of a corpus.
+const DefaultQdrantGeneration = "g1"
+
 type QdrantStore struct {
-	client     *qdrant.Client
-	collection string
+	client *qdrant.Client
+	// alias is the stable name every operation uses. Qdrant resolves it, which is
+	// what makes a switch atomic for readers and writers alike.
+	alias string
+	// physical records the collection the alias resolved to at startup. It is for
+	// diagnostics only; operations deliberately go through the alias.
+	physical string
 }
 
 func NewQdrantStore(ctx context.Context, config QdrantConfig) (*QdrantStore, error) {
-	if config.Collection == "" {
+	if strings.TrimSpace(config.Collection) == "" {
 		config.Collection = "rag_chunks"
+	}
+	if strings.TrimSpace(config.Generation) == "" {
+		config.Generation = DefaultQdrantGeneration
 	}
 	if config.Dimensions == 0 {
 		config.Dimensions = localEmbeddingDimensions
@@ -62,41 +81,200 @@ func NewQdrantStore(ctx context.Context, config QdrantConfig) (*QdrantStore, err
 	if err != nil {
 		return nil, fmt.Errorf("connect qdrant: %w", err)
 	}
-	store := &QdrantStore{client: client, collection: config.Collection}
-	if err := store.ensureCollection(ctx, config.Dimensions); err != nil {
+	store := &QdrantStore{client: client, alias: strings.TrimSpace(config.Collection)}
+	if err := store.ensureAlias(ctx, config.Generation, config.Dimensions); err != nil {
 		_ = client.Close()
 		return nil, err
 	}
 	return store, nil
 }
 
-func (s *QdrantStore) ensureCollection(ctx context.Context, dimensions uint64) error {
-	exists, err := s.client.CollectionExists(ctx, s.collection)
+// ensureAlias makes the configured name a working alias: it resolves the alias
+// when it exists, and otherwise creates the configured generation behind it.
+//
+// A physical collection already sitting on the alias name is refused rather than
+// adopted. That layout is what this service used before aliases existed, and
+// guessing at it - is this collection the corpus, or a stale generation? - is how
+// a stack ends up serving two names for one corpus. The agreed baseline is a
+// fresh development volume, so the failure says exactly that.
+func (s *QdrantStore) ensureAlias(ctx context.Context, generation string, dimensions uint64) error {
+	target, exists, err := s.aliasedCollection(ctx)
 	if err != nil {
-		return fmt.Errorf("check qdrant collection: %w", err)
+		return err
 	}
 	if !exists {
-		modifier := qdrant.Modifier_Idf
-		if err := s.client.CreateCollection(ctx, &qdrant.CreateCollection{
-			CollectionName: s.collection,
-			VectorsConfig: qdrant.NewVectorsConfigMap(map[string]*qdrant.VectorParams{
-				qdrantDenseVector: {
-					Size:     dimensions,
-					Distance: qdrant.Distance_Cosine,
-				},
-			}),
-			SparseVectorsConfig: qdrant.NewSparseVectorsConfig(map[string]*qdrant.SparseVectorParams{
-				qdrantSparseVector: {Modifier: &modifier},
-			}),
-		}); err != nil {
-			return fmt.Errorf("create qdrant collection: %w", err)
+		physical := s.physicalName(generation)
+		legacy, err := s.client.CollectionExists(ctx, s.alias)
+		if err != nil {
+			return fmt.Errorf("check qdrant collection %q: %w", s.alias, err)
 		}
+		if legacy {
+			return fmt.Errorf(
+				"qdrant collection %q exists as a physical collection while this corpus requires it to be an alias; "+
+					"there is no legacy migration: remove the project volumes and rebuild the stack",
+				s.alias,
+			)
+		}
+		physicalExists, err := s.client.CollectionExists(ctx, physical)
+		if err != nil {
+			return fmt.Errorf("check qdrant collection %q: %w", physical, err)
+		}
+		if !physicalExists {
+			if err := s.createPhysicalCollection(ctx, physical, dimensions); err != nil {
+				return err
+			}
+		}
+		if err := s.client.CreateAlias(ctx, s.alias, physical); err != nil {
+			return fmt.Errorf("create qdrant alias %q -> %q: %w", s.alias, physical, err)
+		}
+		target = physical
 	}
-	return s.ensureControlPayloadIndexes(ctx)
+	if err := s.ensureControlPayloadIndexes(ctx, target); err != nil {
+		return err
+	}
+	s.physical = target
+	return nil
 }
 
-func (s *QdrantStore) ensureControlPayloadIndexes(ctx context.Context) error {
-	info, err := s.client.GetCollectionInfo(ctx, s.collection)
+// aliasedCollection resolves this corpus's alias to its physical collection.
+func (s *QdrantStore) aliasedCollection(ctx context.Context) (string, bool, error) {
+	aliases, err := s.client.ListAliases(ctx)
+	if err != nil {
+		return "", false, fmt.Errorf("list qdrant aliases: %w", err)
+	}
+	for _, description := range aliases {
+		if description.GetAliasName() == s.alias {
+			return description.GetCollectionName(), true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func (s *QdrantStore) physicalName(generation string) string {
+	return s.alias + "_" + strings.TrimSpace(generation)
+}
+
+// Alias reports the stable name this store addresses.
+func (s *QdrantStore) Alias() string { return s.alias }
+
+// PhysicalCollection resolves the collection the alias currently points at.
+func (s *QdrantStore) PhysicalCollection(ctx context.Context) (string, error) {
+	target, exists, err := s.aliasedCollection(ctx)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return "", fmt.Errorf("qdrant alias %q does not exist", s.alias)
+	}
+	return target, nil
+}
+
+// PrepareGeneration creates the physical collection of a new generation without
+// pointing the alias at it, so a rebuild can fill and verify it first. An
+// existing collection of that name is adopted, which makes a retried rebuild
+// idempotent.
+func (s *QdrantStore) PrepareGeneration(ctx context.Context, generation string, dimensions uint64) (string, error) {
+	generation = strings.TrimSpace(generation)
+	if generation == "" {
+		return "", errors.New("qdrant generation label is required")
+	}
+	if dimensions == 0 {
+		dimensions = localEmbeddingDimensions
+	}
+	physical := s.physicalName(generation)
+	exists, err := s.client.CollectionExists(ctx, physical)
+	if err != nil {
+		return "", fmt.Errorf("check qdrant collection %q: %w", physical, err)
+	}
+	if !exists {
+		if err := s.createPhysicalCollection(ctx, physical, dimensions); err != nil {
+			return "", err
+		}
+	}
+	if err := s.ensureControlPayloadIndexes(ctx, physical); err != nil {
+		return "", err
+	}
+	return physical, nil
+}
+
+// SwitchAlias points this corpus's alias at another physical collection in one
+// call, so a reader sees either the old collection or the new one and never
+// neither.
+//
+// The target is validated before anything moves: it must exist and carry the
+// payload indexes candidate filtering needs. A typo therefore fails the switch
+// instead of taking the corpus offline, and it fails closed - the alias keeps
+// pointing at the generation that was serving.
+func (s *QdrantStore) SwitchAlias(ctx context.Context, target string) error {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return errors.New("qdrant alias target is required")
+	}
+	if target == s.alias {
+		return fmt.Errorf("qdrant alias %q cannot point at itself", s.alias)
+	}
+	exists, err := s.client.CollectionExists(ctx, target)
+	if err != nil {
+		return fmt.Errorf("check qdrant alias target %q: %w", target, err)
+	}
+	if !exists {
+		return fmt.Errorf("qdrant alias target %q does not exist", target)
+	}
+	if err := s.ensureControlPayloadIndexes(ctx, target); err != nil {
+		return err
+	}
+	current, aliased, err := s.aliasedCollection(ctx)
+	if err != nil {
+		return err
+	}
+	if !aliased {
+		return fmt.Errorf("qdrant alias %q does not exist, so it cannot be switched", s.alias)
+	}
+	if current != target {
+		actions := []*qdrant.AliasOperations{
+			{Action: &qdrant.AliasOperations_DeleteAlias{DeleteAlias: &qdrant.DeleteAlias{AliasName: s.alias}}},
+			{Action: &qdrant.AliasOperations_CreateAlias{CreateAlias: &qdrant.CreateAlias{
+				AliasName:      s.alias,
+				CollectionName: target,
+			}}},
+		}
+		if err := s.client.UpdateAliases(ctx, actions); err != nil {
+			return fmt.Errorf("switch qdrant alias %q to %q: %w", s.alias, target, err)
+		}
+	}
+	// Read the mapping back: the switch is only done when the alias says so.
+	switched, exists, err := s.aliasedCollection(ctx)
+	if err != nil {
+		return err
+	}
+	if !exists || switched != target {
+		return fmt.Errorf("qdrant alias %q points at %q after switching, want %q", s.alias, switched, target)
+	}
+	s.physical = switched
+	return nil
+}
+
+func (s *QdrantStore) createPhysicalCollection(ctx context.Context, physical string, dimensions uint64) error {
+	modifier := qdrant.Modifier_Idf
+	if err := s.client.CreateCollection(ctx, &qdrant.CreateCollection{
+		CollectionName: physical,
+		VectorsConfig: qdrant.NewVectorsConfigMap(map[string]*qdrant.VectorParams{
+			qdrantDenseVector: {
+				Size:     dimensions,
+				Distance: qdrant.Distance_Cosine,
+			},
+		}),
+		SparseVectorsConfig: qdrant.NewSparseVectorsConfig(map[string]*qdrant.SparseVectorParams{
+			qdrantSparseVector: {Modifier: &modifier},
+		}),
+	}); err != nil {
+		return fmt.Errorf("create qdrant collection %q: %w", physical, err)
+	}
+	return nil
+}
+
+func (s *QdrantStore) ensureControlPayloadIndexes(ctx context.Context, physical string) error {
+	info, err := s.client.GetCollectionInfo(ctx, physical)
 	if err != nil {
 		return fmt.Errorf("inspect qdrant payload indexes: %w", err)
 	}
@@ -118,12 +296,12 @@ func (s *QdrantStore) ensureControlPayloadIndexes(ctx context.Context) error {
 		}
 		fieldType := fieldType
 		if _, err := s.client.CreateFieldIndex(ctx, &qdrant.CreateFieldIndexCollection{
-			CollectionName: s.collection,
+			CollectionName: physical,
 			Wait:           &wait,
 			FieldName:      field,
 			FieldType:      &fieldType,
 		}); err != nil {
-			refreshed, inspectErr := s.client.GetCollectionInfo(ctx, s.collection)
+			refreshed, inspectErr := s.client.GetCollectionInfo(ctx, physical)
 			if inspectErr != nil {
 				return fmt.Errorf("create qdrant payload index %q: %w", field, errors.Join(err, inspectErr))
 			}
@@ -138,7 +316,7 @@ func (s *QdrantStore) ensureControlPayloadIndexes(ctx context.Context) error {
 func (s *QdrantStore) ReplaceDocument(ctx context.Context, documentID string, chunks []IndexedChunk) error {
 	wait := true
 	_, err := s.client.Delete(ctx, &qdrant.DeletePoints{
-		CollectionName: s.collection,
+		CollectionName: s.alias,
 		Wait:           &wait,
 		Points: qdrant.NewPointsSelectorFilter(&qdrant.Filter{
 			Must: []*qdrant.Condition{qdrant.NewMatchKeyword(qdrantPayloadStorageID, documentID)},
@@ -189,7 +367,7 @@ func (s *QdrantStore) ReplaceDocument(ctx context.Context, documentID string, ch
 		})
 	}
 	if _, err := s.client.Upsert(ctx, &qdrant.UpsertPoints{
-		CollectionName: s.collection,
+		CollectionName: s.alias,
 		Wait:           &wait,
 		Points:         points,
 	}); err != nil {
@@ -222,7 +400,7 @@ func (s *QdrantStore) SyncDocumentControls(ctx context.Context, controls []Vecto
 			return fmt.Errorf("build qdrant control payload for %q: %w", control.StorageID, err)
 		}
 		_, err = s.client.SetPayload(ctx, &qdrant.SetPayloadPoints{
-			CollectionName: s.collection,
+			CollectionName: s.alias,
 			Wait:           &wait,
 			Payload:        payload,
 			PointsSelector: qdrant.NewPointsSelectorFilter(&qdrant.Filter{
@@ -290,7 +468,7 @@ func (s *QdrantStore) query(
 	}
 	queryLimit := uint64(limit)
 	points, err := s.client.Query(ctx, &qdrant.QueryPoints{
-		CollectionName: s.collection,
+		CollectionName: s.alias,
 		Query:          query,
 		Using:          qdrant.PtrOf(vectorName),
 		Limit:          &queryLimit,

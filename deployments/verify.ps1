@@ -288,6 +288,29 @@ try {
         Write-Host "PASS control generation isolation: chat $chatGenerationBefore -> $chatGenerationAfter, document unchanged at $documentGenerationAfter"
     }
 
+    # ADR-014 decision 4: each corpus owns its alias, and moving one must not move
+    # the other. The move happens while the service is running, so this also proves
+    # a switch needs no restart.
+    Push-Location 'apps/mixin-search'
+    try {
+        $mixinSearchPort = if ($env:MIXIN_SEARCH_GRPC_PORT) { $env:MIXIN_SEARCH_GRPC_PORT } else { '19090' }
+        $qdrantPort = if ($env:QDRANT_GRPC_PORT) { $env:QDRANT_GRPC_PORT } else { '16334' }
+        $env:ALIAS_CONTAINER_INTEGRATION = '1'
+        $env:ALIAS_CONTAINER_GRPC_ADDRESS = "127.0.0.1:$mixinSearchPort"
+        $env:ALIAS_CONTAINER_QDRANT_ADDRESS = "127.0.0.1:$qdrantPort"
+        $env:ALIAS_CONTAINER_CAPABILITY_KEY_FILE = Join-Path $repositoryRoot 'deployments/secrets/mixin_search_capability.key'
+        Invoke-CheckedCommand 'Verify the chat alias switches without moving the document alias' {
+            go test ./cmd/rag-server -run TestChatAliasSwitchAgainstADeployedStack -count=1 -v
+        }
+    }
+    finally {
+        Remove-Item Env:ALIAS_CONTAINER_INTEGRATION -ErrorAction SilentlyContinue
+        Remove-Item Env:ALIAS_CONTAINER_GRPC_ADDRESS -ErrorAction SilentlyContinue
+        Remove-Item Env:ALIAS_CONTAINER_QDRANT_ADDRESS -ErrorAction SilentlyContinue
+        Remove-Item Env:ALIAS_CONTAINER_CAPABILITY_KEY_FILE -ErrorAction SilentlyContinue
+        Pop-Location
+    }
+
     # ADR-014: the two corpora keep separate persistence state. The chat corpus
     # must own its own table and namespace, and no chat namespace may appear in
     # the document table.

@@ -30,6 +30,26 @@ type VectorStore interface {
 	Close() error
 }
 
+// AliasedVectorStore is a store whose configured name is a stable alias over
+// physical collections.
+//
+// It is what lets a corpus be rebuilt without changing what callers ask for:
+// the rebuild fills a new generation and switches the alias, and reads and
+// writes follow the alias atomically. Each corpus owns its own alias, so a
+// switch in one corpus can never move the other's.
+type AliasedVectorStore interface {
+	VectorStore
+	// Alias reports the stable name this store addresses.
+	Alias() string
+	// PhysicalCollection resolves the collection the alias currently points at.
+	PhysicalCollection(ctx context.Context) (string, error)
+	// PrepareGeneration creates the physical collection of a new generation
+	// without switching to it.
+	PrepareGeneration(ctx context.Context, generation string, dimensions uint64) (string, error)
+	// SwitchAlias points the alias at another existing physical collection.
+	SwitchAlias(ctx context.Context, target string) error
+}
+
 // VectorDocumentControl is the normalized control-plane projection attached to
 // every vector chunk. StorageID is the opaque key used by the core workflow;
 // the remaining fields are the public document contract used for filtering.
