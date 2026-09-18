@@ -2,7 +2,7 @@
 
 > 文档职责：当前唯一阶段排期与实施入口
 > 上位目标：[ECOSYSTEM_EVOLUTION_GUIDE.md](../ECOSYSTEM_EVOLUTION_GUIDE.md)
-> 相关决策：[ADR-001](../adr/001-search-service-boundary.md)、[ADR-002](../adr/002-document-index-ownership.md)、[ADR-004](../adr/004-bm25-migration-strategy.md)、[ADR-005](../adr/005-development-baseline-over-production-migration.md)、[ADR-006](../adr/006-mixin-search-control-state-commit-order.md)、[ADR-007](../adr/007-qdrant-control-projection-and-filtering.md)、[ADR-008](../adr/008-document-index-transactional-outbox.md)、[ADR-009](../adr/009-shadow-index-compose-and-health-boundary.md)、[ADR-010](../adr/010-shadow-query-evaluation-gate.md)、[ADR-011](../adr/011-bounded-cache-runtime-and-revision-fencing.md)、[ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)、[ADR-013](../adr/013-immutable-control-snapshot-and-background-projection.md)、[ADR-014](../adr/014-per-corpus-control-plane-isolation.md)、[ADR-015](../adr/015-control-plane-idempotency-ledger-retention.md)
+> 相关决策：[ADR-001](../adr/001-search-service-boundary.md)、[ADR-002](../adr/002-document-index-ownership.md)、[ADR-004](../adr/004-bm25-migration-strategy.md)、[ADR-005](../adr/005-development-baseline-over-production-migration.md)、[ADR-006](../adr/006-mixin-search-control-state-commit-order.md)、[ADR-007](../adr/007-qdrant-control-projection-and-filtering.md)、[ADR-008](../adr/008-document-index-transactional-outbox.md)、[ADR-009](../adr/009-shadow-index-compose-and-health-boundary.md)、[ADR-010](../adr/010-shadow-query-evaluation-gate.md)、[ADR-011](../adr/011-bounded-cache-runtime-and-revision-fencing.md)、[ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)、[ADR-013](../adr/013-immutable-control-snapshot-and-background-projection.md)、[ADR-014](../adr/014-per-corpus-control-plane-isolation.md)、[ADR-015](../adr/015-control-plane-idempotency-ledger-retention.md)、[ADR-016](../adr/016-qq-identity-and-knowledge-space-mapping.md)（草案，待评审）
 > 当前状态：生态阶段二已收口（P2.0-P2.5 全部通过）；阶段三实施基线已建立，P3.0、P3.0a、P3.1、P3.2、P3.3a 已完成；**P3.3 已完成并归档**——正式验收点 `32f4648`（tag `p3.3-accepted`），功能树最后变更 `49be7c5`；多语料契约、授权、控制面、存储与 alias 切换机制已完成，容量 A 档（30,000/24 MiB/7 天/30,000 条）已启用且口径冻结。证据见 `docs/reports/evidence/phase3/`。**下一实施包是 P3.4（QQ 身份与知识空间映射，§8）**；P3.3 移交给 P3.5/P3.6 的待办（完整蓝绿重建编排属 P3.5，接入约定属 P3.6）见 §7.1 结尾的两张表，须按 `P3.3 → P3.4 → P3.5 → P3.6` 的顺序执行
 > 更新日期：2026-09-19
 
@@ -67,7 +67,7 @@
 | P3.2 | 在线检索并发模型 | P3.0 | 已完成 |
 | P3.3a | 多语料控制面隔离决策 | P3.2 | 已完成 |
 | P3.3 | 多语料契约与索引隔离 | P3.0、P3.3a | 已完成并归档（验收点 `32f4648` / tag `p3.3-accepted`）；剩余事项归属 P3.5 与 P3.6，见 §7.1 结尾的两张待办表 |
-| P3.4 | QQ 身份与知识空间映射 | P3.1、P3.3 | 待推进 |
+| P3.4 | QQ 身份与知识空间映射 | P3.1、P3.3 | 待推进（前置：ADR-016 草案评审） |
 | P3.5 | 在线可靠性门禁 | P3.1、P3.2、P3.4 | 待推进 |
 | P3.6 | py-agent 文档知识闭环 | P3.5 | 待推进 |
 | B 线 | BM25 正式交接 | P3.2、P3.5、真实语义评测 | 可并行，后置 |
@@ -440,6 +440,14 @@ P3.3 已归档，**结构性问题不再回头讨论**。等到 P3.5 / P3.6 开�
 **环境记录**：远程 CI 仍无本次提交的运行证据（仓库领先 `origin/main`），本文档只声明本地门禁与容器验收的结果。
 
 ## 8. P3.4：QQ 身份与知识空间映射
+
+### 前置决策（2026-09-19 已拍板三条，ADR-016 草案待评审）
+
+1. **绑定关系落在 `go-web`**，`py-agent` 通过服务边界读写；QQ 侧不持有资源权限的事实源；
+2. **QQ 群 ↔ 团队空间为 1 : 1 且可改绑**：改绑 = 撤销旧绑定 + 新增活动绑定，保留审计；群标识不进入空间主键；
+3. **capability 换取入口推迟到 P3.6**：P3.4 只交付绑定模型、团队空间与成员能力、以及确定性范围解析 `ResolveSpaceAccess`，不实现换取端点。已知后果：P3.6 落地前 `py-agent` 无法取得范围化 capability，P3.4 的范围解析只能由 go-web 内部与测试驱动验证。
+
+决策全文见 [ADR-016](../adr/016-qq-identity-and-knowledge-space-mapping.md)（**草案，评审通过后才据其编码**）。同一草案还固定了两条不变量：**群成员变化不自动成为空间成员**（资源权限必须显式授予，否则入群即可扩大文档访问范围），以及**撤销的生效路径是查询时求交，不是索引操作**（不得用删除索引表达撤销）。
 
 ### 目标
 
