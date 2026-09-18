@@ -384,7 +384,7 @@ CAS p95 target      ≤ 1 second      （30k 直接实测 750.9 ms；23.55 MiB �
 
 机制细节：`-chat-max-messages` 与 `-chat-max-snapshot-bytes` 两个配置项（运行期默认 0 = 不限）已落地，超限写入返回 `ErrCapacityExceeded` → gRPC `RESOURCE_EXHAUSTED`；metadata 预算违约走 `ErrInvalidInput` → `INVALID_ARGUMENT`（校验先于任何状态与向量写入）。消息数为精确检查；快照字节数按**已持久化的快照**判定（Postgres 适配器在 `Load` 时记录真实 payload 长度，因此别的实例写入的更大快照也会被看见），最多滞后一次写入——刻意取舍，避免把候选快照再编码一遍（50k 时约多花 550 ms/次）。达到快照上限后**所有**写入路径（索引/归档/访问/撤回/删除）都被拒绝，读取不受影响；只在索引路径设限不会真正约束快照，因为其余四种写入同样会新增账本记录。**超限不产生部分提交**已由测试断言：被拒后 generation 不变、会话/消息/pending 状态逐字段相等、向量计数不变（`TestSnapshotCeilingRefusesEveryMutationNotJustIndexing`）。测试清单：`TestCapacityGuardRefusesWritesPastTheMessageLimit`、`TestCapacityGuardRefusesOnceTheSnapshotLimitIsReached`、`TestSnapshotCeilingRefusesEveryMutationNotJustIndexing`、`TestSnapshotCeilingSeesASnapshotAnotherInstanceGrew`、`TestZeroCapacityLimitsDoNotRestrictWrites`、`TestNegativeCapacityLimitsAreRejected`，以及适配器的错误码映射用例；真实 PostgreSQL 上另有三条集成子测试（消息上限、快照上限、账本清理）。
 
-**启用状态（2026-09-19 更新）**：四个参数已写入根 Compose，因此**根 Compose 部署的容量是受控的**；不在 Compose 中部署的用法（测试、嵌入式）保持 0 = 不限。P3.6 开工前仍需复核第 ⑤ 步（超限无部分提交、PostgreSQL 集成、整栈门禁在启用后的组合下全绿）——本片已随参数写入复跑。**在任何非根 Compose 的部署里，容量仍不受控，必须显式传入这四个参数。**
+**启用状态（2026-09-19 更新）**：四个参数已写入根 Compose，因此**根 Compose 部署的容量是受控的**；不在 Compose 中部署的用法（测试、嵌入式）保持 0 = 不限。启用前的三个复核项（超限无部分提交、PostgreSQL 集成、整栈门禁在启用后的组合下全绿）已随参数写入同批复跑通过，见容量画像证据文件的"启用验证"一节。**在任何非根 Compose 的部署里，容量仍不受控，必须显式传入这四个参数。**
 
 复跑方式（真实 CAS 需要控制 PostgreSQL 可达）：
 
