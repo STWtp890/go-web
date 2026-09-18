@@ -73,6 +73,34 @@ function Invoke-NativeCommand {
     }
 }
 
+function Get-ControlGeneration {
+    param(
+        [Parameter(Mandatory)][ValidateSet('document', 'chat')][string]$Corpus
+    )
+
+    # ADR-014 condition 1 is a comparison between the two corpora's generations, so
+    # the gate has to read both. The table is chosen from a fixed set rather than
+    # interpolated, and the namespace is a constant that matches the compose flags.
+    if ($Corpus -eq 'document') {
+        $table = 'control_states'
+        $namespace = 'go-web-shadow-v1'
+    }
+    else {
+        $table = 'chat_control_states'
+        $namespace = 'chat-v1'
+    }
+    $value = docker @composePrefix exec -T control-postgres psql -X -A -t -U mixin_control -d mixin_control `
+        -c "select generation from mixin_search_control.$table where namespace = '$namespace'"
+    if ($LASTEXITCODE -ne 0) {
+        throw "reading the $Corpus control generation failed with exit code $LASTEXITCODE"
+    }
+    $first = $value | Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($first)) {
+        throw "the $Corpus control namespace '$namespace' has no row in mixin_search_control.$table"
+    }
+    return [int64]$first
+}
+
 function Invoke-CheckedCommand {
     param(
         [Parameter(Mandatory)][string]$Label,
@@ -217,6 +245,16 @@ try {
         }
     }
 
+    # ADR-014 condition 1: chat activity must not advance the document control
+    # generation. The chat acceptance test below is the stimulus, so both
+    # generations are sampled on either side of it. The stack is fresh and no
+    # document is created until the runtime API verification later in this run,
+    # which is what makes "the document generation did not move" an assertion
+    # rather than a coincidence.
+    $documentGenerationBefore = Get-ControlGeneration -Corpus 'document'
+    $chatGenerationBefore = Get-ControlGeneration -Corpus 'chat'
+    Write-Host "`n==> Sample control generations before chat activity: document=$documentGenerationBefore chat=$chatGenerationBefore"
+
     Push-Location 'apps/mixin-search'
     try {
         $mixinSearchPort = if ($env:MIXIN_SEARCH_GRPC_PORT) { $env:MIXIN_SEARCH_GRPC_PORT } else { '19090' }
@@ -236,6 +274,18 @@ try {
         Remove-Item Env:CHAT_CONTAINER_ADDRESS -ErrorAction SilentlyContinue
         Remove-Item Env:CHAT_CONTAINER_CAPABILITY_KEY_FILE -ErrorAction SilentlyContinue
         Pop-Location
+    }
+
+    Invoke-CheckedCommand 'Verify chat activity did not advance the document generation' {
+        $documentGenerationAfter = Get-ControlGeneration -Corpus 'document'
+        $chatGenerationAfter = Get-ControlGeneration -Corpus 'chat'
+        if ($chatGenerationAfter -le $chatGenerationBefore) {
+            throw "the chat acceptance run did not advance the chat generation (before=$chatGenerationBefore after=$chatGenerationAfter), so the isolation comparison proves nothing"
+        }
+        if ($documentGenerationAfter -ne $documentGenerationBefore) {
+            throw "chat activity advanced the document control generation: before=$documentGenerationBefore after=$documentGenerationAfter"
+        }
+        Write-Host "PASS control generation isolation: chat $chatGenerationBefore -> $chatGenerationAfter, document unchanged at $documentGenerationAfter"
     }
 
     # ADR-014: the two corpora keep separate persistence state. The chat corpus

@@ -133,6 +133,8 @@ apps/mixin-search/
 
 `internal/chatindex` 是唯一让两者相遇的地方：它把聊天控制面接到一个专属向量集合上（实现 `chat.MessageIndexer`/`ProjectionStore`/`Searcher`），由组合根注入。它的存储包装**故意不实现** `rag.ControlledVectorStore`——那个接口说的是文档 payload；聊天在 `SyncChatControls` 收到的投影上过滤候选（未归档、已撤回、已墓碑或非本存储域的块一律丢弃），并在过滤掉候选时按上限扩召回。聊天消息走自己的平面切分管线，不复用 Markdown/DOCX 解析。
 
+**注意"控制存储 namespace"与"storage domain"不是同一个字段**，两者命名规则也不同：文档语料的向量 storage domain 取控制存储适配器的域名（PostgreSQL 适配器为 `postgres:<namespace>`，部署值为 `postgres:go-web-shadow-v1`）；聊天语料的组合根则显式把 `StorageDomain` 覆盖为**聊天 collection 名**（`go_web_chat_v1`），`chat-postgres:<namespace>` 只是聊天 PostgreSQL 适配器在没有显式覆盖时会给出的默认值。前者写进向量记录、用于候选过滤，后者只是控制状态的持久化行标识；两者都与另一语料隔离，但比较隔离性时应各看各的字段，不要把它们当成同一种命名。
+
 gRPC 层自 P3.1 起先认证调用方、再映射协议：`internal/transport/grpc/auth.go` 的一元拦截器校验 capability 的签名、audience、有效期与角色，并对 `SearchDocuments` 执行“请求范围 ⊆ 已授予范围”的包含校验，未通过时不进入业务路径。索引写入（`index-writer`）、检索（`searcher`）与只读运维（`ops`）是三个独立角色，`internal/rag` 保持不感知身份。凭据格式与校验规则见 [SERVICE_CALL_CAPABILITY.md](../contracts/SERVICE_CALL_CAPABILITY.md)，背景决策见 [ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md) 决策 4。
 
 控制面并发已在 P3.2 改造完成：读路径不再全量加载控制状态、不取全局排他锁、不执行投影同步。控制状态仍是单行快照，“整个控制面必须装进内存”的天花板与按文档行存储（行级 CAS）属于后续独立事项。

@@ -66,7 +66,7 @@
 | P3.1 | mixin-search 调用身份与授权边界 | P3.0 | 已完成 |
 | P3.2 | 在线检索并发模型 | P3.0 | 已完成 |
 | P3.3a | 多语料控制面隔离决策 | P3.2 | 已完成 |
-| P3.3 | 多语料契约与索引隔离 | P3.0、P3.3a | 当前实施包 |
+| P3.3 | 多语料契约与索引隔离 | P3.0、P3.3a | 进行中（主体已落地并通过本地与容器验收，未完成项见 §7.1） |
 | P3.4 | QQ 身份与知识空间映射 | P3.1、P3.3 | 待推进 |
 | P3.5 | 在线可靠性门禁 | P3.1、P3.2、P3.4 | 待推进 |
 | P3.6 | py-agent 文档知识闭环 | P3.5 | 待推进 |
@@ -247,9 +247,13 @@ P3.3a 已于 2026-09-17 完成，决策记录为 [ADR-014](../adr/014-per-corpus
 - 撤回、归档与索引移除的传播路径有明确契约和测试；
 - 满足 [ADR-014](../adr/014-per-corpus-control-plane-isolation.md) 的最低验收条件：聊天 generation 变化不触发文档快照重新加载（以控制存储 `Generation`/`Load` 计数断言）、聊天索引重建不切换文档 alias、文档授权撤销不等待聊天投影收敛、聊天语料规模增长不增加文档控制快照大小、任一语料故障不污染另一语料的生命周期状态。
 
+> 验收现状（2026-09-19 核查后更新）：第 1、3、4、5 条有可执行证据（`internal/chat/isolation_test.go`），其中第 1、4 条另有容器与真实 PostgreSQL 证据，并已进入整栈门禁的自动断言；第 2 条**目前只以较弱形式成立**——两侧都还没有 alias 机制，"聊天重建不切换文档 alias"是由"集合名独立 + 聊天重建只操作自己的集合"保证的，`TestChatRebuildDoesNotTouchTheDocumentCorpus` 证明的是后者，**不能**当作 alias 切换流程的证据。alias 与按语料 audience 落地后，本实施包才能关闭。
+
 ### 进展
 
-P3.3 尚未完成。已落地的部分：
+P3.3 **仍在进行中，不能定性为"全部完成"**：主体功能与独立语料链路已落地并通过本地单元/架构门禁、进程内端到端与容器内验收（见下"容器级验收"），但 ADR-014 的三项要求尚未落地——Qdrant alias 的蓝绿原子切换（决策 1、4）、capability audience 按语料划分（决策 5）、以及聊天控制快照的容量上限与迁移触发条件（见"尚未落地"）。因此 P3.3 的验收只能算"主体验收通过"，不是"实施包关闭"。
+
+已落地的部分：
 
 **契约层（第一片）**
 
@@ -312,20 +316,22 @@ Docker Desktop 恢复运行后，P3.3 缺失的那一项终于有了容器内证
 - 用根 Compose 只起 `mixin-search` 及其依赖（独立 project），容器日志为 `store=qdrant control_store=postgres chat=true chat_collection=go_web_chat_v1`，服务健康；
 - PostgreSQL 侧：`mixin_search_control.chat_control_states` 出现 bootstrap 建立的 `chat-v1` 行，`mixin_search_control.control_states` 里只有 `go-web-shadow-v1`；一轮聊天写入把聊天 namespace 推到 generation 4，而文档 namespace 仍是 generation 0——**ADR-014 的"聊天 generation 变化不刷新文档控制面"与"聊天规模不增加文档快照"两条在容器与真实数据库上成立**（进程内测试之外的第二份证据）；
 - 新增 `cmd/rag-server/chat_container_test.go`（门控 `CHAT_CONTAINER_INTEGRATION=1` + `CHAT_CONTAINER_ADDRESS` + `CHAT_CONTAINER_CAPABILITY_KEY_FILE`）：对着**部署中的 gRPC 端点**跑通两个语料的健康检查、索引→不可检索、归档→可检索、撤回→不可检索但仍计数、文档凭证不能调用聊天 RPC、文档检索看不到聊天消息、以及用已持久化的幂等账本重放同一 operation_id。该测试在本机栈上通过，覆盖的正是此前只有进程内证据的两项真实依赖（PostgreSQL 控制表、Qdrant collection）；
-- `deployments/verify.ps1` 增加两步门禁：运行上述容器验收测试，以及用 psql 断言两个语料各自的控制 namespace 互不出现（聊天表必须有 `chat-v1`，文档表必须没有）。
+- `deployments/verify.ps1` 增加两步门禁：运行上述容器验收测试，以及用 psql 断言两个语料各自的控制 namespace 互不出现（聊天表必须有 `chat-v1`，文档表必须没有）。**本轮核查后升级为三步**：容器验收测试作为"聊天活动"的刺激，其前后各采样一次两个语料的 generation，断言聊天 generation 必须前进、文档 generation 必须不动——把 ADR-014 第 1 条从"本次专项取证"变成每次整栈门禁都会重复执行的断言；
 - **整栈门禁已跑通**：宿主把 gin-backend 的发布端口参数化后（`GIN_BACKEND_PORT`，容器内仍是 8080；Windows 保留 8070–8169 时改用一个未保留的宿主端口，本次用 18080），`deployments/verify.ps1` 以 0 退出，末尾三项全部 PASS：`P1.5_BUILD_TEST_DEPLOYMENT=PASS`、`P2.4_SHADOW_INDEX=PASS`、`P2.5_SHADOW_QUERY_EVALUATION=PASS`；其中包含本轮新增的两步——`Run chat corpus container acceptance` 中 `TestChatCorpusAgainstADeployedStack` PASS，以及 `PASS control namespace isolation: chat=[chat-v1] documents=[go-web-shadow-v1]`。这次运行同时是**文档语料在容器内的回归证据**：控制面迁移到 `internal/controlplane` 之后，影子索引投递、对账排水、mixin-search 停机期间的可用性与恢复、以及 P2.5 评估门禁全部照旧通过。
 
 **尚未落地**
 
-- **alias 机制两侧都还没有**：两个语料直接用各自的 collection 名检索，Qdrant alias 与其原子切换尚未引入（蓝绿重建见 P3.5）。因此验收条件"聊天索引重建不切换文档 alias"目前是由"集合名独立 + 聊天重建只操作自己的集合"保证的（`internal/chatindex/corpus_test.go`），不是由 alias 保证的；alias 落地后需要补一条真正的切换断言。同理，`deployments/verify-qdrant-control.ps1` 这类脚本也不能代替容器内的 alias 检查；
+- **alias 蓝绿切换未实现（P3.3 未完成项）**：ADR-014 决策 1、4 要求两个语料各自拥有 alias，且一个语料的重建不得切换另一个语料的 alias。当前代码里**两侧都没有 alias 机制**，两个语料直接用各自的 collection 名检索。因此"聊天索引重建不切换文档 alias"只以较弱形式成立：`TestChatRebuildDoesNotTouchTheDocumentCorpus` 断言的是"聊天重建只操作自己的集合、不改动文档块的增删与检索"，它**不能**证明 alias 切换流程；alias 落地后必须补一条真正的切换断言。P3.5 的蓝绿重建会用到 alias，但这条要求本身来自 ADR-014，计入 P3.3 未完成项；`deployments/verify-qdrant-control.ps1` 这类脚本也不能代替容器内的 alias 检查；
+- **capability audience 尚未按语料划分（P3.3 未完成项）**：ADR-014 决策 5 要求 audience 与角色都按服务/语料划分。当前两侧共用一个 audience（`mixin-search`），跨语料调用只靠角色集合不相交挡住（`TestChatAndDocumentCapabilitiesAreNotInterchangeable` 证明的是角色那一半）。落地需要为两个服务各定义 audience、在拦截器里按服务选择校验器，并同步改 `cmd/rag-token`、`cmd/rag-server` 与 Compose；
+- **聊天控制快照的容量天花板尚未定义（容量治理，接入前必须定）**：P3.2 消除的是**读**路径的全局排他锁与每次全量加载；**写**路径仍是"一个全局 `writeMu` + 一份完整 `ControlState`"——每次变更复制整份快照、序列化整份快照、再做一次 CAS（`internal/chat/service.go`、`internal/chat/snapshot.go`），且幂等 operation ledger 没有清理策略。对聊天这种高基数、持续增长的语料，这比文档索引更容易触顶。这不影响当前正确性验收，但 `py-agent` 正式接入前必须定下四项：单 corpus 的最大消息数或快照字节数、operation ledger 的保留期限、单次 CAS 序列化的延迟阈值、迁移到分区存储或行级 CAS 的触发指标；
 - **聊天侧 PostgreSQL 适配器仍没有集成测试**：文档语料有环境变量门控的 `internal/rag/control_store_integration_test.go`（`CONTROL_STORE_INTEGRATION=1` + `CONTROL_DATABASE_DSN`）。聊天侧本轮补的是两项**不依赖数据库**的替代证据，而不是一份无法执行的集成测试：
   - `internal/chat/control_schema_test.go`：断言聊天 schema 只创建自己的 `chat_control_states`，不触碰文档的 `control_states`（复制文档 schema 却漏改表名这类错误对 PostgreSQL 是合法的，只会在容器门禁里暴露）；
   - `internal/chat/control_store_encoding_test.go`：把真实控制状态走一遍持久化编码边界（`json.Marshal` → `Unmarshal` → `normalize` → `validate`），再断言恢复后的语料检索结果、对账视图、幂等账本与墓碑围栏与原来一致；该断言经一次刻意的反向改动确认有效（去掉 generation 列还原即失败）。
   两项都不覆盖 SQL 本身（DDL 执行、CAS `UPDATE ... RETURNING`、连接池行为），后者仍只能在容器门禁里验证。
-- **复审记录在案、本轮未改的三项遗留**（都不构成当前越权或错误状态）：
-  - capability 的 **audience 尚未按语料划分**（ADR-014 决策 5 的目标）：两侧共用一个 audience，跨语料调用目前只靠角色集合不相交挡住。落地需要为两个服务各定义 audience、在拦截器里按服务选择校验器，并同步改 `cmd/rag-token` 与 Compose，属于独立提交；
+- **复审记录在案、判定为"既有行为或纯加固"的两项**（不构成越权或错误状态，也不计入 P3.3 未完成项）：
   - 适配器把包装后的内部错误文本回给调用方（`codes.Internal`、`Unavailable` 分支），文档与聊天适配器同样如此，是既有行为而非本轮引入；
   - 聊天索引写入没有按意图租约设置 deadline（文档语料有），只影响写锁持有时长，不会产生错误状态（复审逐一推演过交错执行）。
+- **远程 CI 尚无本次提交的运行证据**：`.github/workflows/verify.yml` 存在且覆盖两个契约，本地门禁（含整栈 `verify.ps1`）已通过，但仓库领先 `origin/main` 38 个提交，因此只能声明"workflow 已创建、本地门禁通过"，不能声明"远程 CI 已通过"。
 
 ## 8. P3.4：QQ 身份与知识空间映射
 
