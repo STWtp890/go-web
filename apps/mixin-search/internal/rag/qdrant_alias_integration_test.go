@@ -39,6 +39,7 @@ func TestQdrantAliasSwitchIsPerCorpus(t *testing.T) {
 	originalChatTarget := assertAliasMapping(t, ctx, chat, chatAlias+"_"+DefaultQdrantGeneration)
 
 	restored := true
+	createdGeneration := ""
 	t.Cleanup(func() {
 		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
@@ -51,6 +52,14 @@ func TestQdrantAliasSwitchIsPerCorpus(t *testing.T) {
 		// one rather than assuming the restore worked.
 		if target, err := chat.PhysicalCollection(cleanupContext); err != nil || target != originalChatTarget {
 			t.Errorf("chat alias %q ended at %q (err=%v), want %q", chatAlias, target, err, originalChatTarget)
+		}
+		// Delete what this test added: the alias and both generations it owns. The
+		// generation the alias pointed at is removed by deleteAliasAndPhysical, the
+		// extra one only here.
+		if createdGeneration != "" {
+			if err := chat.client.DeleteCollection(cleanupContext, createdGeneration); err != nil {
+				t.Errorf("delete test generation %q: %v", createdGeneration, err)
+			}
 		}
 		deleteAliasAndPhysical(t, cleanupContext, chat)
 		deleteAliasAndPhysical(t, cleanupContext, documents)
@@ -71,6 +80,7 @@ func TestQdrantAliasSwitchIsPerCorpus(t *testing.T) {
 	if _, err := chat.PrepareGeneration(ctx, "g2", localEmbeddingDimensions); err != nil {
 		t.Fatalf("prepare generation g2: %v", err)
 	}
+	createdGeneration = next
 	if err := chat.SwitchAlias(ctx, next); err != nil {
 		t.Fatalf("switch chat alias to %q: %v", next, err)
 	}
@@ -97,6 +107,26 @@ func TestQdrantAliasSwitchIsPerCorpus(t *testing.T) {
 		t.Fatal("switching an alias onto itself was accepted")
 	}
 	assertAliasMapping(t, ctx, chat, originalChatTarget)
+}
+
+// TestAliasSwitchStaysInsideItsOwnCorpus pins the guard that keeps a switch from
+// reaching another corpus's collection. It needs no Qdrant because validation
+// happens before the first client call.
+func TestAliasSwitchStaysInsideItsOwnCorpus(t *testing.T) {
+	store := &QdrantStore{alias: "go_web_chat_v1"}
+	for _, target := range []string{
+		"go_web_shadow_v1_g1", // the document corpus's generation
+		"go_web_chat_v1",      // the alias itself
+		"go_web_chat_v1x",     // a lookalike without the separator
+		"",
+	} {
+		if err := store.SwitchAlias(context.Background(), target); err == nil {
+			t.Fatalf("switching alias %q to %q was accepted", store.alias, target)
+		}
+	}
+	if err := store.validateAliasTarget("go_web_chat_v1_g2"); err != nil {
+		t.Fatalf("a generation of this corpus was rejected: %v", err)
+	}
 }
 
 func newAliasIntegrationStore(t *testing.T, ctx context.Context, alias string) *QdrantStore {

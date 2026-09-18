@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"mixin-search/internal/controlplane"
@@ -59,9 +60,10 @@ type IndexService struct {
 	// each, which is the default until the confirmed limits land.
 	operationRetention  time.Duration
 	maxOperationEntries int
-	// lastSnapshotBytes is the encoded size of the last snapshot this instance
-	// persisted, used by the snapshot-bytes guard.
-	lastSnapshotBytes int64
+	// lastSnapshotBytes is the encoded size of the persisted snapshot, used by the
+	// snapshot-bytes guard. It is atomic because the opportunistic maintenance pass
+	// can commit (and refresh it) from a read path while a writer reads it.
+	lastSnapshotBytes atomic.Int64
 }
 
 // IndexServiceConfig configures the chat control plane.
@@ -136,6 +138,12 @@ func NewIndexService(ctx context.Context, config IndexServiceConfig) (*IndexServ
 		config.OperationRetention < 0 || config.MaxOperationEntries < 0 {
 		return nil, errors.New("chat capacity limits cannot be negative")
 	}
+	// A retention shorter than a millisecond would truncate to zero in the age
+	// comparison, so the setting would look enabled while pruning nothing. Refuse
+	// it instead of silently disabling what an operator asked for.
+	if config.OperationRetention > 0 && config.OperationRetention < time.Millisecond {
+		return nil, errors.New("chat operation retention must be at least 1ms, or 0 to keep every entry")
+	}
 	service := &IndexService{
 		store:               config.ControlStore,
 		indexer:             config.Indexer,
@@ -150,10 +158,19 @@ func NewIndexService(ctx context.Context, config IndexServiceConfig) (*IndexServ
 		state:               controlplane.NewState(restored, restored.generation),
 		projection:          controlplane.NewProjection(),
 	}
-	if sizing, ok := config.ControlStore.(SizingControlStore); ok {
-		service.lastSnapshotBytes = sizing.LastSnapshotBytes()
-	}
+	service.refreshSnapshotBytes()
 	return service, nil
+}
+
+// refreshSnapshotBytes records how large the persisted snapshot currently is, so
+// the capacity guard compares against the row a reload just read and not against
+// whatever this instance last wrote. On a shared namespace another instance may
+// have grown the snapshot since, and that is exactly the case the limit exists to
+// catch.
+func (s *IndexService) refreshSnapshotBytes() {
+	if sizing, ok := s.store.(SizingControlStore); ok {
+		s.lastSnapshotBytes.Store(sizing.LastSnapshotBytes())
+	}
 }
 
 // StorageDomain reports the projection domain of this corpus. It is the chat
@@ -397,6 +414,11 @@ func (s *IndexService) ArchiveConversation(ctx context.Context, request ArchiveC
 	} else if ok {
 		return replay.(ArchiveResult), nil
 	}
+	// A replay above is answered from the ledger; anything that reaches this point
+	// would grow the snapshot, so the ceiling applies to it too.
+	if err := s.checkSnapshotBudget(); err != nil {
+		return ArchiveResult{}, err
+	}
 	conversation := next.lookup(request.ConversationID)
 	if conversation == nil || conversation.ownerScopeID == "" {
 		return ArchiveResult{}, fmt.Errorf("%w: conversation", ErrNotFound)
@@ -452,6 +474,9 @@ func (s *IndexService) UpdateConversationAccess(ctx context.Context, request Upd
 	} else if ok {
 		return cloneAccessState(replay.(AccessState)), nil
 	}
+	if err := s.checkSnapshotBudget(); err != nil {
+		return AccessState{}, err
+	}
 	conversation := next.lookup(request.ConversationID)
 	if conversation == nil || conversation.ownerScopeID == "" {
 		return AccessState{}, fmt.Errorf("%w: conversation", ErrNotFound)
@@ -506,6 +531,9 @@ func (s *IndexService) RetractMessage(ctx context.Context, request RetractMessag
 	} else if ok {
 		return replay.(RetractResult), nil
 	}
+	if err := s.checkSnapshotBudget(); err != nil {
+		return RetractResult{}, err
+	}
 	conversation := next.conversations[request.ConversationID]
 	if conversation == nil {
 		return RetractResult{}, fmt.Errorf("%w: conversation", ErrNotFound)
@@ -557,6 +585,11 @@ func (s *IndexService) DeleteConversation(ctx context.Context, request DeleteCon
 		return DeleteResult{}, err
 	} else if ok {
 		return replay.(DeleteResult), nil
+	}
+	// A delete shrinks the indexed messages but still records a ledger entry, so it
+	// passes the same ceiling as every other mutation.
+	if err := s.checkSnapshotBudget(); err != nil {
+		return DeleteResult{}, err
 	}
 	conversation := next.conversation(request.ConversationID)
 	// The staleness fence runs before the cached result on purpose. A cached
@@ -847,6 +880,9 @@ func (s *IndexService) reload(ctx context.Context, current *snapshot) (*snapshot
 		return nil, fmt.Errorf("%w: load chat control state: %w", ErrControlStoreUnavailable, err)
 	}
 	s.publish(loaded)
+	// The snapshot just read is the one the guard must compare against: another
+	// instance may have grown it since this one last wrote.
+	s.refreshSnapshotBytes()
 	if err := s.fenceExpiredWrites(ctx, loaded); err != nil {
 		return nil, err
 	}
@@ -854,8 +890,13 @@ func (s *IndexService) reload(ctx context.Context, current *snapshot) (*snapshot
 		return nil, err
 	}
 	// Retention runs on this same opportunistic pass (ADR-015): the ledger is the
-	// one part of the snapshot with no other reclamation path, and the pass is
-	// already inside the writer lock.
+	// one part of the snapshot with no other reclamation path.
+	//
+	// This pass can also run from a read path, which holds reloadMu but not the
+	// writer lock, so the prune's compare-and-swap can lose to a concurrent writer.
+	// Losing is harmless - the winner's snapshot is newer and the next pass will
+	// see the same expired entries - so a conflict is swallowed rather than turned
+	// into a failed read. That is why this comment does not claim the writer lock.
 	if err := s.pruneOperationLedger(ctx, s.state.Load()); err != nil {
 		return nil, err
 	}
@@ -881,6 +922,13 @@ func (s *IndexService) pruneOperationLedger(ctx context.Context, current *snapsh
 		delete(next.operations, operationID)
 	}
 	if err := s.commit(ctx, current, next); err != nil {
+		// Opportunistic maintenance may run from a read path, where a concurrent
+		// writer can win the compare-and-swap. The winner persisted a newer
+		// snapshot and the next pass will prune the same entries, so a lost race is
+		// not a failure of the request that happened to trigger the pass.
+		if errors.Is(err, ErrControlStoreConflict) {
+			return nil
+		}
 		return fmt.Errorf("prune chat operation ledger: %w", err)
 	}
 	return nil
@@ -898,11 +946,7 @@ func (s *IndexService) commit(ctx context.Context, previous, next *snapshot) err
 		return fmt.Errorf("%w: persist chat control state: %w", ErrControlStoreUnavailable, err)
 	}
 	next.generation = generation
-	if sizing, ok := s.store.(SizingControlStore); ok {
-		// The adapter just encoded this snapshot, so this is free; it is what the
-		// capacity guard reads on the next write.
-		s.lastSnapshotBytes = sizing.LastSnapshotBytes()
-	}
+	s.refreshSnapshotBytes()
 	s.publish(next)
 	return nil
 }
@@ -1006,14 +1050,35 @@ func (s *IndexService) syncProjection(ctx context.Context, current *snapshot) er
 	return nil
 }
 
+// checkSnapshotBudget refuses a mutation once the persisted snapshot is at or
+// above the configured ceiling.
+//
+// Every mutating path calls this, not only indexing: archive, access, retraction
+// and deletion each add a ledger entry, so a limit enforced on indexing alone
+// would not bound the snapshot at all. The rule an operator gets is therefore
+// simple and worth stating: at the ceiling the corpus refuses writes and keeps
+// serving reads.
+func (s *IndexService) checkSnapshotBudget() error {
+	if s.maxSnapshotBytes <= 0 {
+		return nil
+	}
+	if size := s.lastSnapshotBytes.Load(); size >= s.maxSnapshotBytes {
+		return fmt.Errorf(
+			"%w: the persisted control snapshot is %d bytes, at or above the limit of %d",
+			ErrCapacityExceeded, size, s.maxSnapshotBytes,
+		)
+	}
+	return nil
+}
+
 // checkCapacity refuses a batch that would push this corpus past a configured
 // hard limit.
 //
 // The message limit is exact: it counts the messages the batch would add to the
-// snapshot. The snapshot limit is checked against the last persisted snapshot
-// rather than an encoding of the candidate state, which would roughly double the
-// cost of every write; enforcement can therefore lag by one write, and the error
-// says which limit was hit so an operator can act on it.
+// snapshot. The snapshot limit is checked against the persisted snapshot rather
+// than an encoding of the candidate state, which would roughly double the cost of
+// every write; enforcement can therefore lag by one write, and the error says
+// which limit was hit so an operator can act on it.
 func (s *IndexService) checkCapacity(current *snapshot, conversationID string, batch []MessageInput) error {
 	if s.maxMessages > 0 {
 		additional := 0
@@ -1030,13 +1095,7 @@ func (s *IndexService) checkCapacity(current *snapshot, conversationID string, b
 			)
 		}
 	}
-	if s.maxSnapshotBytes > 0 && s.lastSnapshotBytes >= s.maxSnapshotBytes {
-		return fmt.Errorf(
-			"%w: the persisted control snapshot is %d bytes, at or above the limit of %d",
-			ErrCapacityExceeded, s.lastSnapshotBytes, s.maxSnapshotBytes,
-		)
-	}
-	return nil
+	return s.checkSnapshotBudget()
 }
 
 func validateLifecycle(conversation *conversationState, revision uint64) error {

@@ -114,6 +114,37 @@ function Invoke-CheckedCommand {
     }
 }
 
+function Invoke-CheckedGoTest {
+    param(
+        [Parameter(Mandatory)][string]$Label,
+        [Parameter(Mandatory)][string]$Package,
+        [Parameter(Mandatory)][string]$TestName
+    )
+
+    # Checked command plus a "did it actually run" assertion: `go test -run` with a
+    # name that no longer matches exits 0 against a package that still builds, and a
+    # t.Skip also exits 0, so $LASTEXITCODE alone would let a renamed or guarded test
+    # print PASS while measuring nothing. The anchored name plus the PASS line makes
+    # the step report only what it observed.
+    Write-Host "`n==> $Label"
+    $previousErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & go test $Package -run "$TestName$" -count=1 -v 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+    $output | ForEach-Object { Write-Host $_ }
+    if ($exitCode -ne 0) {
+        throw "$Label failed with exit code $exitCode"
+    }
+    if (-not ($output -match "--- PASS: $([regex]::Escape($TestName))")) {
+        throw "$Label did not run $TestName (a renamed, skipped or filtered-out test must not report PASS)"
+    }
+}
+
 function Get-IndexDeliveryStatus {
     $raw = Invoke-NativeCommand {
         docker @composePrefix exec -T document-index-worker `
@@ -265,9 +296,7 @@ try {
         # in-process test proves the wiring; this one proves the two dependencies
         # it cannot stand in for - the chat control table in PostgreSQL and the
         # chat collection in Qdrant - by driving the deployed gRPC endpoint.
-        Invoke-CheckedCommand 'Run chat corpus container acceptance' {
-            go test ./cmd/rag-server -run TestChatCorpusAgainstADeployedStack -count=1 -v
-        }
+        Invoke-CheckedGoTest 'Run chat corpus container acceptance' './cmd/rag-server' 'TestChatCorpusAgainstADeployedStack'
     }
     finally {
         Remove-Item Env:CHAT_CONTAINER_INTEGRATION -ErrorAction SilentlyContinue
@@ -299,9 +328,7 @@ try {
         $env:ALIAS_CONTAINER_GRPC_ADDRESS = "127.0.0.1:$mixinSearchPort"
         $env:ALIAS_CONTAINER_QDRANT_ADDRESS = "127.0.0.1:$qdrantPort"
         $env:ALIAS_CONTAINER_CAPABILITY_KEY_FILE = Join-Path $repositoryRoot 'deployments/secrets/mixin_search_capability.key'
-        Invoke-CheckedCommand 'Verify the chat alias switches without moving the document alias' {
-            go test ./cmd/rag-server -run TestChatAliasSwitchAgainstADeployedStack -count=1 -v
-        }
+        Invoke-CheckedGoTest 'Verify the chat alias switches without moving the document alias' './cmd/rag-server' 'TestChatAliasSwitchAgainstADeployedStack'
     }
     finally {
         Remove-Item Env:ALIAS_CONTAINER_INTEGRATION -ErrorAction SilentlyContinue

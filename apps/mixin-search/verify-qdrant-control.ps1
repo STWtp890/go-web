@@ -58,6 +58,12 @@ try {
     Invoke-CheckedCommand 'Run Qdrant storage and document-control integration tests' {
         go test ./internal/rag -run 'TestQdrant.*Integration' -count=1 -v
     }
+    # The alias suite is named differently from the TestQdrant*Integration family,
+    # so it needs its own selection: without this the store-level alias evidence
+    # cited by the plan would never run in any scripted gate.
+    Invoke-CheckedCommand 'Run the stable-alias integration tests' {
+        go test ./internal/rag -run 'TestQdrantAliasSwitchIsPerCorpus|TestAliasSwitchStaysInsideItsOwnCorpus' -count=1 -v
+    }
 
     Write-Host ""
     Write-Host 'P2.2_QDRANT_CONTROL=PASS'

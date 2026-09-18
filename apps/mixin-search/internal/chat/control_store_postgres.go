@@ -121,6 +121,10 @@ WHERE namespace = $1`, s.namespace).Scan(&generation, &payload); err != nil {
 	if err := validateControlState(state); err != nil {
 		return ControlState{}, err
 	}
+	// Record what was actually in the row. The capacity guard compares against this
+	// size, and on a namespace shared with another instance the row may be larger
+	// than anything this instance ever wrote.
+	s.lastSnapshotBytes.Store(int64(len(payload)))
 	return cloneControlState(state)
 }
 

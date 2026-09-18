@@ -197,31 +197,35 @@ func (s *QdrantStore) PrepareGeneration(ctx context.Context, generation string, 
 	return physical, nil
 }
 
-// SwitchAlias points this corpus's alias at another physical collection in one
-// call, so a reader sees either the old collection or the new one and never
-// neither.
+// SwitchAlias points this corpus's alias at another physical collection, so a
+// reader sees either the old collection or the new one and never neither.
 //
-// The target is validated before anything moves: it must exist and carry the
-// payload indexes candidate filtering needs. A typo therefore fails the switch
-// instead of taking the corpus offline, and it fails closed - the alias keeps
-// pointing at the generation that was serving.
+// The re-point is a *single* create-alias action, deliberately not a
+// delete-then-create batch: Qdrant applies the actions of one UpdateAliases call
+// in order and without rollback (qdrant v1.19.1, `update_aliases` in
+// `collection_meta_ops.rs` deletes first and then fails the create with `?`), so
+// a batch would delete the alias and leave it deleted whenever the create fails.
+// Creating an alias that already exists replaces the mapping in one persisted
+// step, which is what makes a failed switch non-destructive.
+//
+// The target must be one of this corpus's own generations, and it is validated
+// before anything moves: it must exist and carry the payload indexes candidate
+// filtering needs. A typo therefore fails the switch instead of taking the corpus
+// offline, and it fails closed - the alias keeps pointing at the generation that
+// was serving.
 func (s *QdrantStore) SwitchAlias(ctx context.Context, target string) error {
 	target = strings.TrimSpace(target)
-	if target == "" {
-		return errors.New("qdrant alias target is required")
-	}
-	if target == s.alias {
-		return fmt.Errorf("qdrant alias %q cannot point at itself", s.alias)
+	if err := s.validateAliasTarget(target); err != nil {
+		return err
 	}
 	exists, err := s.client.CollectionExists(ctx, target)
 	if err != nil {
 		return fmt.Errorf("check qdrant alias target %q: %w", target, err)
 	}
 	if !exists {
+		// CollectionExists resolves aliases, so this also catches a target that is
+		// another corpus's alias name rather than a collection.
 		return fmt.Errorf("qdrant alias target %q does not exist", target)
-	}
-	if err := s.ensureControlPayloadIndexes(ctx, target); err != nil {
-		return err
 	}
 	current, aliased, err := s.aliasedCollection(ctx)
 	if err != nil {
@@ -230,27 +234,50 @@ func (s *QdrantStore) SwitchAlias(ctx context.Context, target string) error {
 	if !aliased {
 		return fmt.Errorf("qdrant alias %q does not exist, so it cannot be switched", s.alias)
 	}
-	if current != target {
-		actions := []*qdrant.AliasOperations{
-			{Action: &qdrant.AliasOperations_DeleteAlias{DeleteAlias: &qdrant.DeleteAlias{AliasName: s.alias}}},
-			{Action: &qdrant.AliasOperations_CreateAlias{CreateAlias: &qdrant.CreateAlias{
-				AliasName:      s.alias,
-				CollectionName: target,
-			}}},
-		}
-		if err := s.client.UpdateAliases(ctx, actions); err != nil {
-			return fmt.Errorf("switch qdrant alias %q to %q: %w", s.alias, target, err)
-		}
+	if current == target {
+		s.physical = current
+		return nil
 	}
-	// Read the mapping back: the switch is only done when the alias says so.
+	// Only a switch that is actually going to happen prepares the target: index
+	// creation is a write, and a failing call should not have written anything.
+	if err := s.ensureControlPayloadIndexes(ctx, target); err != nil {
+		return err
+	}
+	if err := s.client.CreateAlias(ctx, s.alias, target); err != nil {
+		return fmt.Errorf("switch qdrant alias %q to %q: %w", s.alias, target, err)
+	}
+	// Read the mapping back: the switch is only done when the alias says so, and a
+	// mapping that cannot be read back is reported rather than assumed.
 	switched, exists, err := s.aliasedCollection(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("verify qdrant alias %q after switching to %q: %w", s.alias, target, err)
 	}
 	if !exists || switched != target {
 		return fmt.Errorf("qdrant alias %q points at %q after switching, want %q", s.alias, switched, target)
 	}
 	s.physical = switched
+	return nil
+}
+
+// validateAliasTarget refuses a target that is not one of this corpus's own
+// generations.
+//
+// Generations are named <alias>_<label>, so requiring that prefix is what keeps a
+// switch inside one corpus: the other corpus's collections cannot match, and
+// neither can an arbitrary collection an operator names by mistake. Without this
+// the store would happily point the chat alias at the document corpus's
+// collection, which is the one pairing the startup guard exists to prevent - and
+// the startup guard cannot see a switch performed while the service is running.
+func (s *QdrantStore) validateAliasTarget(target string) error {
+	if target == "" {
+		return errors.New("qdrant alias target is required")
+	}
+	if target == s.alias || !strings.HasPrefix(target, s.alias+"_") {
+		return fmt.Errorf(
+			"qdrant alias %q can only switch to one of its own generations (%s_<label>), not to %q",
+			s.alias, s.alias, target,
+		)
+	}
 	return nil
 }
 

@@ -67,6 +67,33 @@ func TestCapacityGuardAgainstPostgres(t *testing.T) {
 			t.Fatalf("write past the snapshot limit error = %v, want ErrCapacityExceeded", err)
 		}
 	})
+
+	// Ledger retention has to prune through the same compare-and-swap the real
+	// writes use, so the persistent store is the only place that proves it.
+	t.Run("ledger retention", func(t *testing.T) {
+		clock := time.Unix(1_760_000_000, 0).UTC()
+		restoreClock := setClock(t, &clock)
+		defer restoreClock()
+
+		h := newPostgresHarness(t, ctx, dsn, IndexServiceConfig{OperationRetention: time.Hour})
+		h.index(t, "op-pg-retention", "room-pg-retention", "scope-pg-retention", 1, "one")
+		before := h.postgres.LastSnapshotBytes()
+
+		clock = clock.Add(2 * time.Hour)
+		if err := h.service.pruneOperationLedger(ctx, h.service.state.Load()); err != nil {
+			t.Fatalf("prune ledger: %v", err)
+		}
+		state, err := h.postgres.Load(ctx)
+		if err != nil {
+			t.Fatalf("load control state: %v", err)
+		}
+		if _, stillThere := state.Operations["op-pg-retention"]; stillThere {
+			t.Fatalf("expired operation survived the retention window in PostgreSQL: %+v", state.Operations)
+		}
+		if after := h.postgres.LastSnapshotBytes(); after >= before {
+			t.Fatalf("snapshot did not shrink after pruning: %d -> %d", before, after)
+		}
+	})
 }
 
 // postgresHarness is the in-process harness backed by the persistent store: the

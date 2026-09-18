@@ -128,8 +128,11 @@ func TestChatCorpusAgainstADeployedStack(t *testing.T) {
 
 	// Corpus isolation through the real transport: neither a document capability
 	// nor a chat role minted with the document audience may reach the chat
-	// service, and the chat collection's content is not visible to the document
-	// corpus either.
+	// service. (The document-side check below is only a smoke test here: at this
+	// point in the gate the document corpus is still empty, so it shows that a
+	// chat-only needle does not surface through SearchDocuments, not that documents
+	// are unaffected. The alias mapping assertions above and the document steps
+	// later in the gate are what carry that weight.)
 	for name, token := range map[string]string{"document capability": documentToken, "mixed corpus credential": mixedToken} {
 		if _, err := chat.SearchChatMessages(withToken(ctx, token), &mixinsearchchatv1.SearchChatMessagesRequest{
 			Query: needle, AllowedScopeIds: []string{scopeID},
@@ -169,14 +172,20 @@ func TestChatCorpusAgainstADeployedStack(t *testing.T) {
 		t.Fatalf("conversation state = %+v, want one indexed and retracted message", state)
 	}
 
-	// Idempotency through the deployed control plane: replaying the index returns
-	// the same state instead of writing a second time.
+	// Idempotency through the deployed control plane. The assertion is what
+	// distinguishes a ledger replay from the "already indexed" shortcut: the ledger
+	// returns the *first* response, which still says the message was not retracted,
+	// while recomputing from current state would report the retraction. So this
+	// fails if the ledger entry is missing or ignored.
 	replayed, err := chat.IndexConversationMessages(withToken(ctx, writerToken), indexRequest)
 	if err != nil {
 		t.Fatalf("replay index: %v", err)
 	}
 	if len(replayed.GetStates()) != 1 || replayed.GetStates()[0].GetRef().GetMessageId() != "m-1" {
 		t.Fatalf("replayed index = %+v", replayed.GetStates())
+	}
+	if replayed.GetStates()[0].GetRetracted() {
+		t.Fatalf("replay returned the current retracted state instead of the recorded first response: %+v", replayed.GetStates()[0])
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // TestCapacityGuardRefusesWritesPastTheMessageLimit covers the hard limit the
@@ -87,18 +88,25 @@ func TestZeroCapacityLimitsDoNotRestrictWrites(t *testing.T) {
 func TestNegativeCapacityLimitsAreRejected(t *testing.T) {
 	indexer := newFakeIndexer()
 	for name, limits := range map[string]IndexServiceConfig{
-		"negative messages": {MaxMessages: -1},
-		"negative bytes":    {MaxSnapshotBytes: -1},
+		"negative messages":  {MaxMessages: -1},
+		"negative bytes":     {MaxSnapshotBytes: -1},
+		"negative retention": {OperationRetention: -time.Second},
+		"negative ceiling":   {MaxOperationEntries: -1},
+		// A sub-millisecond window truncates to zero in the age comparison, which
+		// would look enabled while pruning nothing.
+		"sub-millisecond retention": {OperationRetention: time.Microsecond},
 	} {
 		limits := limits
 		t.Run(name, func(t *testing.T) {
 			service, err := NewIndexService(context.Background(), IndexServiceConfig{
-				ControlStore:     NewMemoryControlStore(),
-				Indexer:          indexer,
-				Projection:       indexer,
-				Searcher:         &fakeSearcher{indexer: indexer},
-				MaxMessages:      limits.MaxMessages,
-				MaxSnapshotBytes: limits.MaxSnapshotBytes,
+				ControlStore:        NewMemoryControlStore(),
+				Indexer:             indexer,
+				Projection:          indexer,
+				Searcher:            &fakeSearcher{indexer: indexer},
+				MaxMessages:         limits.MaxMessages,
+				MaxSnapshotBytes:    limits.MaxSnapshotBytes,
+				OperationRetention:  limits.OperationRetention,
+				MaxOperationEntries: limits.MaxOperationEntries,
 			})
 			if err == nil {
 				t.Fatal("a negative capacity limit was accepted")
@@ -107,6 +115,89 @@ func TestNegativeCapacityLimitsAreRejected(t *testing.T) {
 				t.Fatal("a service was returned alongside the error")
 			}
 		})
+	}
+}
+
+// TestSnapshotCeilingRefusesEveryMutationNotJustIndexing pins the rule an
+// operator gets: at the ceiling the corpus refuses writes and keeps serving
+// reads. Enforcing the ceiling on indexing alone would not bound the snapshot at
+// all, because archive, access, retraction and deletion each add a ledger entry.
+func TestSnapshotCeilingRefusesEveryMutationNotJustIndexing(t *testing.T) {
+	ctx := context.Background()
+	h := newLimitedHarness(t, IndexServiceConfig{MaxSnapshotBytes: 400})
+	h.index(t, "op-ceiling-index", "room-ceiling-all", "scope-ceiling-all", 1, "first")
+
+	if _, err := h.service.ArchiveConversation(ctx, ArchiveConversationRequest{
+		OperationID: "op-ceiling-archive", ConversationID: "room-ceiling-all",
+		ArchiveRevision: 1, LifecycleRevision: 1,
+	}); !errors.Is(err, ErrCapacityExceeded) {
+		t.Fatalf("archive at the ceiling error = %v, want ErrCapacityExceeded", err)
+	}
+	if _, err := h.service.UpdateConversationAccess(ctx, UpdateConversationAccessRequest{
+		OperationID: "op-ceiling-access", ConversationID: "room-ceiling-all",
+		AccessRevision: 1, LifecycleRevision: 1, GrantedScopeIDs: []string{"scope-ceiling-all"},
+	}); !errors.Is(err, ErrCapacityExceeded) {
+		t.Fatalf("access at the ceiling error = %v, want ErrCapacityExceeded", err)
+	}
+	if _, err := h.service.RetractMessage(ctx, RetractMessageRequest{
+		OperationID: "op-ceiling-retract", ConversationID: "room-ceiling-all", MessageID: "first",
+		RetractRevision: 1, LifecycleRevision: 1,
+	}); !errors.Is(err, ErrCapacityExceeded) {
+		t.Fatalf("retract at the ceiling error = %v, want ErrCapacityExceeded", err)
+	}
+	if _, err := h.service.DeleteConversation(ctx, DeleteConversationRequest{
+		OperationID: "op-ceiling-delete", ConversationID: "room-ceiling-all", LifecycleRevision: 2,
+	}); !errors.Is(err, ErrCapacityExceeded) {
+		t.Fatalf("delete at the ceiling error = %v, want ErrCapacityExceeded", err)
+	}
+
+	// Refusing mutations must not refuse answers: the recorded operation is still
+	// replayed from the ledger, and reads keep working.
+	if _, err := h.service.IndexMessages(ctx, IndexMessagesRequest{
+		OperationID: "op-ceiling-index", ConversationID: "room-ceiling-all", OwnerScopeID: "scope-ceiling-all",
+		LifecycleRevision: 1,
+		Messages: []MessageInput{{
+			MessageID: "first", SenderID: "sender", SentAtUnixMs: 1_700_000_000_000, Content: "first",
+		}},
+	}); err != nil {
+		t.Fatalf("replay at the ceiling: %v", err)
+	}
+	if _, err := h.service.GetConversationIndexState(ctx, GetConversationIndexStateRequest{
+		ConversationID: "room-ceiling-all",
+	}); err != nil {
+		t.Fatalf("read at the ceiling: %v", err)
+	}
+}
+
+// TestSnapshotCeilingSeesASnapshotAnotherInstanceGrew covers the case a
+// per-instance counter misses: the row is grown by another instance while this
+// one only remembers its own last write. The guard must compare against the
+// persisted snapshot, which the reload refreshes.
+func TestSnapshotCeilingSeesASnapshotAnotherInstanceGrew(t *testing.T) {
+	ctx := context.Background()
+	h := newLimitedHarness(t, IndexServiceConfig{MaxSnapshotBytes: 300})
+	h.index(t, "op-foreign-index", "room-foreign", "scope-foreign", 1, "first")
+
+	// Stand in for another instance: grow the stored snapshot directly, which also
+	// updates the size the store reports.
+	current, err := h.store.Load(ctx)
+	if err != nil {
+		t.Fatalf("load control state: %v", err)
+	}
+	grown := buildCapacityState(200, 50)
+	grown.Generation = current.Generation
+	if _, err := h.store.Save(ctx, current.Generation, grown); err != nil {
+		t.Fatalf("grow the stored snapshot: %v", err)
+	}
+
+	if _, err := h.service.IndexMessages(ctx, IndexMessagesRequest{
+		OperationID: "op-foreign-index-2", ConversationID: "room-foreign", OwnerScopeID: "scope-foreign",
+		LifecycleRevision: 1,
+		Messages: []MessageInput{{
+			MessageID: "second", SenderID: "sender", SentAtUnixMs: 1_700_000_000_001, Content: "second",
+		}},
+	}); !errors.Is(err, ErrCapacityExceeded) {
+		t.Fatalf("write after another instance grew the snapshot error = %v, want ErrCapacityExceeded", err)
 	}
 }
 

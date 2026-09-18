@@ -75,26 +75,54 @@ func TestChatAliasSwitchAgainstADeployedStack(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = chatStore.Close() })
 
-	restored := true
 	createdGeneration := ""
 	t.Cleanup(func() {
 		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cleanupCancel()
-		if !restored {
+
+		// Both mappings are restored, not just the chat one: the failure this step
+		// exists to detect is the chat switch moving the *document* alias, and
+		// restoring only chat would leave the stack broken in exactly that case.
+		restoredAll := true
+		if current, err := deployedAliasTarget(cleanupContext, client, chatAlias); err != nil {
+			t.Errorf("resolve chat alias %q during cleanup: %v", chatAlias, err)
+			restoredAll = false
+		} else if current != originalChatTarget {
 			if err := chatStore.SwitchAlias(cleanupContext, originalChatTarget); err != nil {
 				t.Errorf("restore chat alias %q to %q: %v", chatAlias, originalChatTarget, err)
+				restoredAll = false
 			}
 		}
-		if createdGeneration != "" {
+		if current, err := deployedAliasTarget(cleanupContext, client, documentAlias); err != nil {
+			t.Errorf("resolve document alias %q during cleanup: %v", documentAlias, err)
+			restoredAll = false
+		} else if current != originalDocumentTarget {
+			// The document corpus has no store handle here, so the same single
+			// create-alias action is issued through the client.
+			if err := client.CreateAlias(cleanupContext, documentAlias, originalDocumentTarget); err != nil {
+				t.Errorf("restore document alias %q to %q: %v", documentAlias, originalDocumentTarget, err)
+				restoredAll = false
+			}
+		}
+
+		// Delete only what this test created, and only once nothing resolves to it:
+		// deleting the collection an alias still points at would leave the corpus
+		// pointing at something that no longer exists.
+		if createdGeneration != "" && restoredAll {
 			if err := client.DeleteCollection(cleanupContext, createdGeneration); err != nil {
 				t.Errorf("delete generation %q: %v", createdGeneration, err)
 			}
+		} else if createdGeneration != "" {
+			t.Logf(
+				"leaving generation %q in place: a mapping could not be restored, and deleting it would break the corpus",
+				createdGeneration,
+			)
 		}
-		current, err := deployedAliasTarget(cleanupContext, client, chatAlias)
-		if err != nil {
-			t.Errorf("resolve chat alias %q after the test: %v", chatAlias, err)
-		} else if current != originalChatTarget {
-			t.Errorf("chat alias %q ended at %q, want %q", chatAlias, current, originalChatTarget)
+
+		for alias, want := range map[string]string{chatAlias: originalChatTarget, documentAlias: originalDocumentTarget} {
+			if current, err := deployedAliasTarget(cleanupContext, client, alias); err != nil || current != want {
+				t.Errorf("alias %q ended at %q (err=%v), want %q", alias, current, err, want)
+			}
 		}
 	})
 
@@ -136,6 +164,14 @@ func TestChatAliasSwitchAgainstADeployedStack(t *testing.T) {
 	}
 
 	// Move the chat corpus to an empty generation while the service keeps running.
+	// A pre-existing generation of that name is refused rather than adopted: this
+	// test must never delete a collection it did not create.
+	next := chatAlias + "_g2"
+	if exists, err := client.CollectionExists(ctx, next); err != nil {
+		t.Fatalf("check generation %q: %v", next, err)
+	} else if exists {
+		t.Fatalf("generation %q already exists; refusing to adopt and later delete a collection this test did not create", next)
+	}
 	generation, err := chatStore.PrepareGeneration(ctx, "g2", localEmbeddingDimensions)
 	if err != nil {
 		t.Fatalf("prepare chat generation g2: %v", err)
@@ -144,7 +180,6 @@ func TestChatAliasSwitchAgainstADeployedStack(t *testing.T) {
 	if err := chatStore.SwitchAlias(ctx, generation); err != nil {
 		t.Fatalf("switch chat alias to %q: %v", generation, err)
 	}
-	restored = false
 
 	// The three assertions the decision asks for, made against the deployed state.
 	if target, err := deployedAliasTarget(ctx, client, chatAlias); err != nil || target != generation {
@@ -161,7 +196,6 @@ func TestChatAliasSwitchAgainstADeployedStack(t *testing.T) {
 	if err := chatStore.SwitchAlias(ctx, originalChatTarget); err != nil {
 		t.Fatalf("switch chat alias back to %q: %v", originalChatTarget, err)
 	}
-	restored = true
 	if hits := searchContainerChat(t, chat, ctx, searcherToken, needle, scopeID); len(hits) != 1 {
 		t.Fatalf("chat hits after switching back = %d, want 1", len(hits))
 	}
@@ -175,9 +209,11 @@ func TestChatAliasSwitchAgainstADeployedStack(t *testing.T) {
 	}
 }
 
-// assertDeployedAlias requires the configured corpus name to be an alias and
-// returns the collection it points at. A physical collection carrying the name
-// is the pre-alias layout, which fails here instead of being silently adopted.
+// assertDeployedAlias requires the configured corpus name to be an alias over
+// exactly its first generation and returns the collection it points at. The
+// comparison is exact on purpose: accepting any name ending in _g1 would also
+// accept the *other* corpus's generation, which is the one state this step must
+// never call healthy.
 func assertDeployedAlias(t *testing.T, ctx context.Context, client *qdrant.Client, alias string) string {
 	t.Helper()
 	target, err := deployedAliasTarget(ctx, client, alias)
@@ -194,9 +230,9 @@ func assertDeployedAlias(t *testing.T, ctx context.Context, client *qdrant.Clien
 		}
 		t.Fatalf("alias %q does not exist", alias)
 	}
-	suffix := "_" + rag.DefaultQdrantGeneration
-	if !strings.HasSuffix(target, suffix) {
-		t.Fatalf("alias %q points at %q, want a %s generation", alias, target, suffix)
+	want := alias + "_" + rag.DefaultQdrantGeneration
+	if target != want {
+		t.Fatalf("alias %q points at %q, want %q", alias, target, want)
 	}
 	return target
 }
