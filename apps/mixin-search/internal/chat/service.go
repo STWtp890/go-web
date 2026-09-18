@@ -53,6 +53,12 @@ type IndexService struct {
 	// means unbounded.
 	maxMessages      int
 	maxSnapshotBytes int64
+	// operationRetention and maxOperationEntries bound the idempotency ledger
+	// (ADR-015): entries older than the retention window, or the oldest entries
+	// beyond the count ceiling, are dropped by the maintenance pass. Zero disables
+	// each, which is the default until the confirmed limits land.
+	operationRetention  time.Duration
+	maxOperationEntries int
 	// lastSnapshotBytes is the encoded size of the last snapshot this instance
 	// persisted, used by the snapshot-bytes guard.
 	lastSnapshotBytes int64
@@ -86,6 +92,12 @@ type IndexServiceConfig struct {
 	// can lag by one write; that keeps the guard free instead of encoding the
 	// candidate state twice. Zero disables the limit.
 	MaxSnapshotBytes int64
+	// OperationRetention is how long the idempotency ledger keeps an operation
+	// (ADR-015). Zero keeps every entry forever.
+	OperationRetention time.Duration
+	// MaxOperationEntries is the ceiling on ledger entries, applied after the
+	// retention window and oldest-first. Zero means no ceiling.
+	MaxOperationEntries int
 }
 
 // NewIndexService restores the chat control plane before returning a usable
@@ -120,20 +132,23 @@ func NewIndexService(ctx context.Context, config IndexServiceConfig) (*IndexServ
 	if projectionInterval <= 0 {
 		projectionInterval = defaultProjectionInterval
 	}
-	if config.MaxMessages < 0 || config.MaxSnapshotBytes < 0 {
+	if config.MaxMessages < 0 || config.MaxSnapshotBytes < 0 ||
+		config.OperationRetention < 0 || config.MaxOperationEntries < 0 {
 		return nil, errors.New("chat capacity limits cannot be negative")
 	}
 	service := &IndexService{
-		store:              config.ControlStore,
-		indexer:            config.Indexer,
-		projectionStore:    config.Projection,
-		searcher:           config.Searcher,
-		storageDomain:      storageDomain,
-		projectionInterval: projectionInterval,
-		maxMessages:        config.MaxMessages,
-		maxSnapshotBytes:   config.MaxSnapshotBytes,
-		state:              controlplane.NewState(restored, restored.generation),
-		projection:         controlplane.NewProjection(),
+		store:               config.ControlStore,
+		indexer:             config.Indexer,
+		projectionStore:     config.Projection,
+		searcher:            config.Searcher,
+		storageDomain:       storageDomain,
+		projectionInterval:  projectionInterval,
+		maxMessages:         config.MaxMessages,
+		maxSnapshotBytes:    config.MaxSnapshotBytes,
+		operationRetention:  config.OperationRetention,
+		maxOperationEntries: config.MaxOperationEntries,
+		state:               controlplane.NewState(restored, restored.generation),
+		projection:          controlplane.NewProjection(),
 	}
 	if sizing, ok := config.ControlStore.(SizingControlStore); ok {
 		service.lastSnapshotBytes = sizing.LastSnapshotBytes()
@@ -838,7 +853,37 @@ func (s *IndexService) reload(ctx context.Context, current *snapshot) (*snapshot
 	if err := s.cleanupPendingDeletes(ctx, s.state.Load()); err != nil {
 		return nil, err
 	}
+	// Retention runs on this same opportunistic pass (ADR-015): the ledger is the
+	// one part of the snapshot with no other reclamation path, and the pass is
+	// already inside the writer lock.
+	if err := s.pruneOperationLedger(ctx, s.state.Load()); err != nil {
+		return nil, err
+	}
 	return s.state.Load(), nil
+}
+
+// pruneOperationLedger drops ledger entries outside the retention window, then
+// whatever the count ceiling still requires, in one compare-and-swap commit.
+//
+// Nothing happens when retention is disabled or nothing is eligible, so the pass
+// costs one scan of the ledger and no write. Entries without a timestamp are kept
+// by age and dropped first by the ceiling (ADR-015).
+func (s *IndexService) pruneOperationLedger(ctx context.Context, current *snapshot) error {
+	if s.operationRetention <= 0 && s.maxOperationEntries <= 0 {
+		return nil
+	}
+	victims := current.pruneOperationLedger(now().UnixMilli(), s.operationRetention.Milliseconds(), s.maxOperationEntries)
+	if len(victims) == 0 {
+		return nil
+	}
+	next := current.clone()
+	for _, operationID := range victims {
+		delete(next.operations, operationID)
+	}
+	if err := s.commit(ctx, current, next); err != nil {
+		return fmt.Errorf("prune chat operation ledger: %w", err)
+	}
+	return nil
 }
 
 // commit persists a writer-private snapshot with compare-and-swap and publishes

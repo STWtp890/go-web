@@ -101,10 +101,15 @@ type ControlOperationResult struct {
 }
 
 // ControlOperation is one idempotency ledger entry.
+//
+// RecordedAtUnixMilli is when the operation was accepted. It exists so the
+// ledger can be pruned by age (ADR-015): an entry without a timestamp predates
+// that field and is kept until the entry-count ceiling decides otherwise.
 type ControlOperation struct {
-	Kind        string                 `json:"kind"`
-	Fingerprint string                 `json:"fingerprint"`
-	Result      ControlOperationResult `json:"result"`
+	Kind                string                 `json:"kind"`
+	Fingerprint         string                 `json:"fingerprint"`
+	RecordedAtUnixMilli int64                  `json:"recorded_at_unix_milli,omitempty"`
+	Result              ControlOperationResult `json:"result"`
 }
 
 const (

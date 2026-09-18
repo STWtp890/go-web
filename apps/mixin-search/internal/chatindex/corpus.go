@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"mixin-search/internal/chat"
 	"mixin-search/internal/rag"
@@ -33,6 +34,11 @@ type Config struct {
 	// configuration rather than in the code.
 	MaxMessages      int
 	MaxSnapshotBytes int64
+	// OperationRetention and MaxOperationEntries bound the idempotency ledger
+	// (ADR-015). Zero keeps every ledger entry forever, which is the default until
+	// the confirmed limits land.
+	OperationRetention  time.Duration
+	MaxOperationEntries int
 }
 
 // Corpus is the chat corpus's composition: its own collection wrapper, its own
@@ -75,9 +81,11 @@ func New(ctx context.Context, config Config) (*Corpus, error) {
 		// One domain for both the collection and the control plane: the store
 		// filters on it, so a different value on either side would hide every
 		// candidate.
-		StorageDomain:    domain,
-		MaxMessages:      config.MaxMessages,
-		MaxSnapshotBytes: config.MaxSnapshotBytes,
+		StorageDomain:       domain,
+		MaxMessages:         config.MaxMessages,
+		MaxSnapshotBytes:    config.MaxSnapshotBytes,
+		OperationRetention:  config.OperationRetention,
+		MaxOperationEntries: config.MaxOperationEntries,
 	})
 	if err != nil {
 		_ = core.Close()

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"sort"
 )
 
 // snapshot is the chat corpus's immutable in-memory control state. The service
@@ -51,6 +52,9 @@ type operationRecord struct {
 	kind        string
 	fingerprint string
 	result      any
+	// recordedAtUnixMilli is when this operation was accepted, used by the ledger
+	// retention pass (ADR-015). Zero means the entry predates the field.
+	recordedAtUnixMilli int64
 }
 
 func newSnapshot() *snapshot {
@@ -156,10 +160,75 @@ func (s *snapshot) replayOperation(operationID, kind, fingerprint string) (any, 
 
 func (s *snapshot) recordOperation(operationID, kind, fingerprint string, result any) {
 	s.operations[operationID] = operationRecord{
-		kind:        kind,
-		fingerprint: fingerprint,
-		result:      cloneOperationResult(result),
+		kind:                kind,
+		fingerprint:         fingerprint,
+		result:              cloneOperationResult(result),
+		recordedAtUnixMilli: now().UnixMilli(),
 	}
+}
+
+// pruneOperationLedger returns the operation ids whose ledger entries are outside
+// the retention window, and whatever the count ceiling still requires dropping
+// (oldest first). It is pure: the caller applies the result to a writer-private
+// copy.
+//
+// Entries without a timestamp are never expired by age - they predate the field,
+// so their age is unknown - but they are dropped first when the count ceiling
+// demands it, because an entry of unknown age is the safest one to forget.
+func (s *snapshot) pruneOperationLedger(nowUnixMilli, retentionMillis int64, maxEntries int) []string {
+	if retentionMillis <= 0 && maxEntries <= 0 {
+		return nil
+	}
+	expired := make(map[string]struct{})
+	if retentionMillis > 0 {
+		for operationID, record := range s.operations {
+			if record.recordedAtUnixMilli > 0 && nowUnixMilli-record.recordedAtUnixMilli >= retentionMillis {
+				expired[operationID] = struct{}{}
+			}
+		}
+	}
+	remaining := len(s.operations) - len(expired)
+	if maxEntries > 0 && remaining > maxEntries {
+		candidates := make([]string, 0, remaining)
+		for operationID, record := range s.operations {
+			if _, pruned := expired[operationID]; pruned || record.recordedAtUnixMilli > 0 {
+				continue
+			}
+			candidates = append(candidates, operationID)
+		}
+		sort.Strings(candidates)
+		aged := make([]string, 0, remaining-len(candidates))
+		for operationID, record := range s.operations {
+			if _, pruned := expired[operationID]; pruned || record.recordedAtUnixMilli <= 0 {
+				continue
+			}
+			aged = append(aged, operationID)
+		}
+		sort.Slice(aged, func(i, j int) bool {
+			left, right := s.operations[aged[i]], s.operations[aged[j]]
+			if left.recordedAtUnixMilli != right.recordedAtUnixMilli {
+				return left.recordedAtUnixMilli < right.recordedAtUnixMilli
+			}
+			return aged[i] < aged[j]
+		})
+		candidates = append(candidates, aged...)
+		overflow := remaining - maxEntries
+		if overflow > len(candidates) {
+			overflow = len(candidates)
+		}
+		for _, operationID := range candidates[:overflow] {
+			expired[operationID] = struct{}{}
+		}
+	}
+	if len(expired) == 0 {
+		return nil
+	}
+	victims := make([]string, 0, len(expired))
+	for operationID := range expired {
+		victims = append(victims, operationID)
+	}
+	sort.Strings(victims)
+	return victims
 }
 
 // pendingOperationConflict rejects an operation id that an unfinished write has
@@ -324,9 +393,10 @@ func snapshotFromControlState(state ControlState) (*snapshot, error) {
 			return nil, fmt.Errorf("restore chat operation %q: %w", operationID, err)
 		}
 		built.operations[operationID] = operationRecord{
-			kind:        operation.Kind,
-			fingerprint: operation.Fingerprint,
-			result:      result,
+			kind:                operation.Kind,
+			fingerprint:         operation.Fingerprint,
+			result:              result,
+			recordedAtUnixMilli: operation.RecordedAtUnixMilli,
 		}
 	}
 	for storage := range state.PendingDeletes {
@@ -339,7 +409,11 @@ func snapshotFromControlState(state ControlState) (*snapshot, error) {
 }
 
 func controlOperationFromRecord(record operationRecord) (ControlOperation, error) {
-	operation := ControlOperation{Kind: record.kind, Fingerprint: record.fingerprint}
+	operation := ControlOperation{
+		Kind:                record.kind,
+		Fingerprint:         record.fingerprint,
+		RecordedAtUnixMilli: record.recordedAtUnixMilli,
+	}
 	switch result := record.result.(type) {
 	case []MessageState:
 		operation.Result.Messages = append([]MessageState(nil), result...)

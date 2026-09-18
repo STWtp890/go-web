@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"mixin-search/internal/chat"
 	"mixin-search/internal/chatindex"
@@ -109,6 +110,19 @@ func main() {
 		"chat-max-snapshot-bytes",
 		envInt64OrDefault("MIXIN_SEARCH_CHAT_MAX_SNAPSHOT_BYTES", 0),
 		"hard limit on the encoded chat control snapshot in bytes; 0 disables the limit",
+	)
+	// Ledger retention (ADR-015): an operation is remembered for the retention
+	// window, with a count ceiling as a backstop. Both default to 0, which keeps
+	// every entry, until the confirmed limits land.
+	chatOperationRetention := flag.Duration(
+		"chat-operation-retention",
+		envDurationOrDefault("MIXIN_SEARCH_CHAT_OPERATION_RETENTION", 0),
+		"how long the chat idempotency ledger keeps an operation; 0 keeps every entry",
+	)
+	chatOperationMaxEntries := flag.Int(
+		"chat-operation-max-entries",
+		envIntOrDefault("MIXIN_SEARCH_CHAT_OPERATION_MAX_ENTRIES", 0),
+		"ceiling on chat idempotency ledger entries, oldest dropped first; 0 disables the ceiling",
 	)
 	flag.Parse()
 
@@ -211,11 +225,13 @@ func main() {
 		defer closeChatControlStore()
 
 		corpus, err := chatindex.New(ctx, chatindex.Config{
-			VectorStore:      chatStore,
-			ControlStore:     chatControlStore,
-			StorageDomain:    *chatCollection,
-			MaxMessages:      *chatMaxMessages,
-			MaxSnapshotBytes: *chatMaxSnapshotBytes,
+			VectorStore:         chatStore,
+			ControlStore:        chatControlStore,
+			StorageDomain:       *chatCollection,
+			MaxMessages:         *chatMaxMessages,
+			MaxSnapshotBytes:    *chatMaxSnapshotBytes,
+			OperationRetention:  *chatOperationRetention,
+			MaxOperationEntries: *chatOperationMaxEntries,
 		})
 		if err != nil {
 			_ = chatStore.Close()
@@ -557,6 +573,18 @@ func envIntOrDefault(name string, fallback int) int {
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
 		log.Fatalf("%s must be an integer: %v", name, err)
+	}
+	return parsed
+}
+
+func envDurationOrDefault(name string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		log.Fatalf("%s must be a duration such as 168h: %v", name, err)
 	}
 	return parsed
 }

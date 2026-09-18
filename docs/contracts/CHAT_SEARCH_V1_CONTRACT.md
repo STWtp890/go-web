@@ -85,4 +85,4 @@
 
 实测数据与建议值见 [实施计划 §7.1](../planning/CURRENT_IMPLEMENTATION_PLAN.md) 的"容量测量与上限建议"；在建议值被确认前，默认配置不启用上限，行为与今天一致。
 
-幂等账本的清理与"重放保证的有效窗口"由 [ADR-015](../adr/015-control-plane-idempotency-ledger-retention.md) 定义：**窗口内**重放同一 `operation_id` 返回首次响应、改绑被拒；**窗口外**不承诺返回首次响应，也不承诺检测改绑，但**不重复写入**仍由状态本身保证（向量键含 `operation_id`、消息内容不可变、修订号幂等）。窗口与两个配置项在实现时一并落地。
+幂等账本的清理与"重放保证的有效窗口"由 [ADR-015](../adr/015-control-plane-idempotency-ledger-retention.md) 定义：**窗口内**重放同一 `operation_id` 返回首次响应、改绑被拒；**窗口外**不承诺返回首次响应，也不承诺检测改绑，但**不重复写入**仍由状态本身保证（向量键含 `operation_id`、消息内容不可变、修订号幂等）。窗口外的降级是精确的：如果某 `operation_id` 在窗口后的**第一次**到达携带了不同载荷，它会被当作新操作接受；一旦该 id 被重新接受，它会被重新记录，此后改绑检测恢复。清理机制已实现（`-chat-operation-retention` 按年龄、`-chat-operation-max-entries` 按条数上限，默认 0 = 不清理），数值与容量上限一并启用。

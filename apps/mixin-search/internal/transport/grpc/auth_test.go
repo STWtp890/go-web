@@ -72,6 +72,68 @@ func testChatIssuer(t *testing.T) *security.Issuer {
 	return issuer
 }
 
+// TestEveryMethodRoleBelongsToItsCorpusAudience keeps the two locks consistent as
+// the policy table grows: for every method, every role it accepts must belong to
+// the audience that service verifies with. Without this, adding a chat method
+// that lists a document role (or the reverse) would compile, pass the role table,
+// and only fail in production as a confusing Unauthenticated rejection.
+func TestEveryMethodRoleBelongsToItsCorpusAudience(t *testing.T) {
+	t.Parallel()
+
+	corpusAudience := map[string]string{
+		"/" + mixinsearchv1.RAGService_ServiceDesc.ServiceName + "/":           security.AudienceDocuments,
+		"/" + mixinsearchchatv1.ChatIndexService_ServiceDesc.ServiceName + "/": security.AudienceChat,
+	}
+	audienceFor := func(fullMethod string) (string, bool) {
+		for prefix, audience := range corpusAudience {
+			if strings.HasPrefix(fullMethod, prefix) {
+				return audience, true
+			}
+		}
+		return "", false
+	}
+
+	for method, roles := range methodRoles {
+		audience, known := audienceFor(method)
+		if !known {
+			t.Fatalf("method %q belongs to no protected service, so its audience is undefined", method)
+		}
+		if len(roles) == 0 {
+			t.Fatalf("method %q has no role policy", method)
+		}
+		for _, role := range roles {
+			roleAudience, bound := security.RoleAudience(role)
+			if !bound {
+				t.Fatalf("role %q of method %q has no corpus binding", role, method)
+			}
+			if roleAudience != audience {
+				t.Fatalf(
+					"method %q is verified with audience %q but accepts role %q of audience %q",
+					method, audience, role, roleAudience,
+				)
+			}
+		}
+	}
+
+	// Every defined role must be reachable through the policy table, otherwise a
+	// minted credential could never be used and the role is dead weight.
+	for _, role := range []string{
+		security.RoleIndexWriter, security.RoleSearcher, security.RoleOps,
+		security.RoleChatIndexWriter, security.RoleChatSearcher, security.RoleChatOps,
+	} {
+		used := false
+		for _, roles := range methodRoles {
+			if roleAllowed(roles, role) {
+				used = true
+				break
+			}
+		}
+		if !used {
+			t.Fatalf("role %q is defined but no method accepts it", role)
+		}
+	}
+}
+
 func incomingContext(token string) context.Context {
 	if token == "" {
 		return context.Background()
