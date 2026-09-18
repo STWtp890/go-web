@@ -39,6 +39,9 @@ type Config struct {
 	// the confirmed limits land.
 	OperationRetention  time.Duration
 	MaxOperationEntries int
+	// MetadataLimits caps a single message's metadata. The zero value means the
+	// documented defaults, not "unlimited".
+	MetadataLimits chat.MetadataLimits
 }
 
 // Corpus is the chat corpus's composition: its own collection wrapper, its own
@@ -86,6 +89,7 @@ func New(ctx context.Context, config Config) (*Corpus, error) {
 		MaxSnapshotBytes:    config.MaxSnapshotBytes,
 		OperationRetention:  config.OperationRetention,
 		MaxOperationEntries: config.MaxOperationEntries,
+		MetadataLimits:      config.MetadataLimits,
 	})
 	if err != nil {
 		_ = core.Close()

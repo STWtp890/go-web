@@ -174,7 +174,7 @@ func TestChatAdapterMapsDomainErrors(t *testing.T) {
 		{"stale archive", chat.ErrStaleArchive, codes.FailedPrecondition},
 		{"stale access", chat.ErrStaleAccess, codes.FailedPrecondition},
 		{"stale retract", chat.ErrStaleRetract, codes.FailedPrecondition},
-		{"capacity exceeded", chat.ErrCapacityExceeded, codes.FailedPrecondition},
+		{"capacity exceeded", chat.ErrCapacityExceeded, codes.ResourceExhausted},
 		{"control conflict", chat.ErrControlStoreConflict, codes.Aborted},
 		{"control unavailable", chat.ErrControlStoreUnavailable, codes.Unavailable},
 		{"projection unavailable", chat.ErrProjectionUnavailable, codes.Unavailable},

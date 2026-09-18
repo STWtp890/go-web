@@ -124,6 +124,29 @@ func main() {
 		envIntOrDefault("MIXIN_SEARCH_CHAT_OPERATION_MAX_ENTRIES", 0),
 		"ceiling on chat idempotency ledger entries, oldest dropped first; 0 disables the ceiling",
 	)
+	// Metadata is a capacity input, not decoration: it is stored inside the control
+	// snapshot. These four caps are the contract's metadata budget; 0 means the
+	// documented default and never "unlimited".
+	chatMetadataEntries := flag.Int(
+		"chat-max-metadata-entries",
+		envIntOrDefault("MIXIN_SEARCH_CHAT_MAX_METADATA_ENTRIES", 0),
+		"metadata entries per message; 0 uses the documented default",
+	)
+	chatMetadataKeyBytes := flag.Int(
+		"chat-max-metadata-key-bytes",
+		envIntOrDefault("MIXIN_SEARCH_CHAT_MAX_METADATA_KEY_BYTES", 0),
+		"UTF-8 bytes per metadata key; 0 uses the documented default",
+	)
+	chatMetadataValueBytes := flag.Int(
+		"chat-max-metadata-value-bytes",
+		envIntOrDefault("MIXIN_SEARCH_CHAT_MAX_METADATA_VALUE_BYTES", 0),
+		"UTF-8 bytes per metadata value; 0 uses the documented default",
+	)
+	chatMetadataTotalBytes := flag.Int(
+		"chat-max-metadata-total-bytes",
+		envIntOrDefault("MIXIN_SEARCH_CHAT_MAX_METADATA_TOTAL_BYTES", 0),
+		"UTF-8 bytes of all metadata keys and values per message; 0 uses the documented default",
+	)
 	flag.Parse()
 
 	if *maxReceiveBytes <= 0 {
@@ -232,6 +255,12 @@ func main() {
 			MaxSnapshotBytes:    *chatMaxSnapshotBytes,
 			OperationRetention:  *chatOperationRetention,
 			MaxOperationEntries: *chatOperationMaxEntries,
+			MetadataLimits: chat.MetadataLimits{
+				Entries:    *chatMetadataEntries,
+				KeyBytes:   *chatMetadataKeyBytes,
+				ValueBytes: *chatMetadataValueBytes,
+				TotalBytes: *chatMetadataTotalBytes,
+			},
 		})
 		if err != nil {
 			_ = chatStore.Close()
@@ -278,11 +307,15 @@ func main() {
 	// are stated at startup: "0" means unlimited, and an operator must be able to
 	// see that the deployment is (or is not) protected without reading Compose.
 	log.Printf(
-		"chat capacity (effective): max_messages=%d max_snapshot_bytes=%d operation_retention=%s operation_max_entries=%d (0 means unlimited)",
+		"chat capacity (effective): max_messages=%d max_snapshot_bytes=%d operation_retention=%s operation_max_entries=%d metadata_entries=%d metadata_key_bytes=%d metadata_value_bytes=%d metadata_total_bytes=%d (0 means unlimited for capacity, 0 means the documented default for metadata)",
 		*chatMaxMessages,
 		*chatMaxSnapshotBytes,
 		chatOperationRetention.String(),
 		*chatOperationMaxEntries,
+		chatMetadataEntries,
+		chatMetadataKeyBytes,
+		chatMetadataValueBytes,
+		chatMetadataTotalBytes,
 	)
 	if err := server.Serve(listener); err != nil {
 		log.Fatal(err)

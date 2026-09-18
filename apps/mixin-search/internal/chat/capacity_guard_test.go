@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -239,6 +240,93 @@ func TestSnapshotCeilingSeesASnapshotAnotherInstanceGrew(t *testing.T) {
 	}); !errors.Is(err, ErrCapacityExceeded) {
 		t.Fatalf("write after another instance grew the snapshot error = %v, want ErrCapacityExceeded", err)
 	}
+}
+
+// TestMetadataBudgetIsEnforcedBeforeAnyWrite covers the budget the capacity
+// measurements justified: metadata lives inside the snapshot, so an over-budget
+// message is a malformed request (InvalidArgument), and the whole batch must be
+// rejected before any state is claimed or any vector is written.
+func TestMetadataBudgetIsEnforcedBeforeAnyWrite(t *testing.T) {
+	ctx := context.Background()
+	limits := DefaultMetadataLimits()
+	cases := []struct {
+		name     string
+		metadata map[string]string
+	}{
+		{
+			name:     "too many entries",
+			metadata: map[string]string{"a": "1", "b": "2", "c": "3", "d": "4", "e": "5", "f": "6", "g": "7", "h": "8", "i": "9"},
+		},
+		{
+			name:     "key too long",
+			metadata: map[string]string{strings.Repeat("k", limits.KeyBytes+1): "v"},
+		},
+		{
+			name:     "value too long",
+			metadata: map[string]string{"k": strings.Repeat("v", limits.ValueBytes+1)},
+		},
+		{
+			name: "keys and values over the total",
+			metadata: map[string]string{
+				strings.Repeat("k", 24): strings.Repeat("v", 24),
+				strings.Repeat("j", 24): strings.Repeat("w", 24),
+			},
+		},
+	}
+	for _, testCase := range cases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			h := newLimitedHarness(t, IndexServiceConfig{})
+			before, err := h.store.Load(ctx)
+			if err != nil {
+				t.Fatalf("load state before: %v", err)
+			}
+			_, err = h.service.IndexMessages(ctx, IndexMessagesRequest{
+				OperationID: "op-metadata", ConversationID: "room-metadata", OwnerScopeID: "scope-metadata",
+				LifecycleRevision: 1,
+				Messages: []MessageInput{{
+					MessageID: "m1", SenderID: "sender", SentAtUnixMs: 1_700_000_000_000,
+					Content: "first", Metadata: testCase.metadata,
+				}},
+			})
+			if !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("over-budget metadata error = %v, want ErrInvalidInput", err)
+			}
+			// Nothing was claimed and nothing was written: the batch failed
+			// validation, not capacity.
+			if vectors := h.indexer.indexedCount(); vectors != 0 {
+				t.Fatalf("a rejected batch wrote %d vectors", vectors)
+			}
+			after, err := h.store.Load(ctx)
+			if err != nil {
+				t.Fatalf("load state after: %v", err)
+			}
+			if after.Generation != before.Generation ||
+				!reflect.DeepEqual(before.Messages, after.Messages) ||
+				!reflect.DeepEqual(before.PendingWrites, after.PendingWrites) {
+				t.Fatalf("a rejected batch changed the control state: before=%+v after=%+v", before, after)
+			}
+		})
+	}
+
+	// The boundary itself is accepted: a message that fills the budget exactly
+	// passes, so the limit is a limit and not an off-by-one.
+	t.Run("exactly at the budget is accepted", func(t *testing.T) {
+		h := newLimitedHarness(t, IndexServiceConfig{})
+		if _, err := h.service.IndexMessages(ctx, IndexMessagesRequest{
+			OperationID: "op-metadata-ok", ConversationID: "room-metadata", OwnerScopeID: "scope-metadata",
+			LifecycleRevision: 1,
+			Messages: []MessageInput{{
+				MessageID: "m1", SenderID: "sender", SentAtUnixMs: 1_700_000_000_000,
+				Content: "first",
+				Metadata: map[string]string{
+					strings.Repeat("k", limits.KeyBytes): strings.Repeat("v", limits.TotalBytes-limits.KeyBytes),
+				},
+			}},
+		}); err != nil {
+			t.Fatalf("a message exactly at the metadata budget was rejected: %v", err)
+		}
+	})
 }
 
 func newLimitedHarness(t *testing.T, config IndexServiceConfig) *harness {

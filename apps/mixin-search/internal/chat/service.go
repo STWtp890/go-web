@@ -54,6 +54,9 @@ type IndexService struct {
 	// means unbounded.
 	maxMessages      int
 	maxSnapshotBytes int64
+	// metadataLimits is the per-message metadata budget, always populated (the zero
+	// config value means the documented defaults).
+	metadataLimits MetadataLimits
 	// operationRetention and maxOperationEntries bound the idempotency ledger
 	// (ADR-015): entries older than the retention window, or the oldest entries
 	// beyond the count ceiling, are dropped by the maintenance pass. Zero disables
@@ -100,6 +103,54 @@ type IndexServiceConfig struct {
 	// MaxOperationEntries is the ceiling on ledger entries, applied after the
 	// retention window and oldest-first. Zero means no ceiling.
 	MaxOperationEntries int
+	// MetadataLimits caps a single message's metadata. The zero value means the
+	// documented defaults, not "unlimited": metadata is a capacity input, so an
+	// unset value must not silently remove the budget.
+	MetadataLimits MetadataLimits
+}
+
+// MetadataLimits is the per-message metadata budget, in UTF-8 bytes.
+//
+// The defaults are derived from the capacity measurements rather than chosen by
+// taste: at the message ceiling, the "realistic identifiers" shape alone reaches
+// 24.42 MiB, so the budget has to be small enough that a conforming producer still
+// fits in the snapshot ceiling. See checkMetadataBudget.
+type MetadataLimits struct {
+	// Entries is the maximum number of metadata entries per message.
+	Entries int
+	// KeyBytes is the maximum UTF-8 size of one key.
+	KeyBytes int
+	// ValueBytes is the maximum UTF-8 size of one value.
+	ValueBytes int
+	// TotalBytes is the maximum combined UTF-8 size of all keys and values.
+	TotalBytes int
+}
+
+// DefaultMetadataLimits returns the derived budget.
+func DefaultMetadataLimits() MetadataLimits {
+	return MetadataLimits{
+		Entries:    8,
+		KeyBytes:   32,
+		ValueBytes: 64,
+		TotalBytes: 64,
+	}
+}
+
+func (limits MetadataLimits) withDefaults() MetadataLimits {
+	defaults := DefaultMetadataLimits()
+	if limits.Entries <= 0 {
+		limits.Entries = defaults.Entries
+	}
+	if limits.KeyBytes <= 0 {
+		limits.KeyBytes = defaults.KeyBytes
+	}
+	if limits.ValueBytes <= 0 {
+		limits.ValueBytes = defaults.ValueBytes
+	}
+	if limits.TotalBytes <= 0 {
+		limits.TotalBytes = defaults.TotalBytes
+	}
+	return limits
 }
 
 // NewIndexService restores the chat control plane before returning a usable
@@ -153,6 +204,7 @@ func NewIndexService(ctx context.Context, config IndexServiceConfig) (*IndexServ
 		projectionInterval:  projectionInterval,
 		maxMessages:         config.MaxMessages,
 		maxSnapshotBytes:    config.MaxSnapshotBytes,
+		metadataLimits:      config.MetadataLimits.withDefaults(),
 		operationRetention:  config.OperationRetention,
 		maxOperationEntries: config.MaxOperationEntries,
 		state:               controlplane.NewState(restored, restored.generation),
@@ -229,6 +281,12 @@ func (s *IndexService) IndexMessages(ctx context.Context, request IndexMessagesR
 		}
 		message.ContentSHA256 = digest
 		message.Metadata = cloneStringMap(message.Metadata)
+		// Message metadata reaches the control snapshot, so it is part of the
+		// corpus's capacity contract and is validated here - before any state is
+		// claimed or any vector is written.
+		if err := s.checkMetadataBudget(message.MessageID, message.Metadata); err != nil {
+			return nil, err
+		}
 		normalized = append(normalized, message)
 	}
 	fingerprint := operationFingerprint(struct {
@@ -1066,6 +1124,53 @@ func (s *IndexService) checkSnapshotBudget() error {
 		return fmt.Errorf(
 			"%w: the persisted control snapshot is %d bytes, at or above the limit of %d",
 			ErrCapacityExceeded, size, s.maxSnapshotBytes,
+		)
+	}
+	return nil
+}
+
+// checkMetadataBudget enforces the message-metadata budget.
+//
+// Metadata is stored inside the control snapshot, so it is a capacity input rather
+// than decoration: the measurements in
+// docs/reports/evidence/phase3/p33-chat-capacity-profile_20260919.md show each
+// nominal metadata byte costing roughly 1.5-1.9 encoded bytes, and the byte ceiling
+// is the limit that binds first. The budget therefore constrains the entry count,
+// each key, each value and the keys-and-values total, measured in UTF-8 bytes -
+// counting characters or entries alone would let a single long value through.
+//
+// A violation is the caller's error (invalid argument), not a capacity refusal:
+// the corpus is not full, the request is malformed for this contract.
+func (s *IndexService) checkMetadataBudget(messageID string, metadata map[string]string) error {
+	if len(metadata) == 0 {
+		return nil
+	}
+	if len(metadata) > s.metadataLimits.Entries {
+		return fmt.Errorf(
+			"%w: message %q carries %d metadata entries, the limit is %d",
+			ErrInvalidInput, messageID, len(metadata), s.metadataLimits.Entries,
+		)
+	}
+	total := 0
+	for key, value := range metadata {
+		if len(key) > s.metadataLimits.KeyBytes {
+			return fmt.Errorf(
+				"%w: message %q has a metadata key of %d bytes, the limit is %d",
+				ErrInvalidInput, messageID, len(key), s.metadataLimits.KeyBytes,
+			)
+		}
+		if len(value) > s.metadataLimits.ValueBytes {
+			return fmt.Errorf(
+				"%w: message %q has a metadata value of %d bytes, the limit is %d",
+				ErrInvalidInput, messageID, len(value), s.metadataLimits.ValueBytes,
+			)
+		}
+		total += len(key) + len(value)
+	}
+	if total > s.metadataLimits.TotalBytes {
+		return fmt.Errorf(
+			"%w: message %q carries %d bytes of metadata keys and values, the limit is %d",
+			ErrInvalidInput, messageID, total, s.metadataLimits.TotalBytes,
 		)
 	}
 	return nil

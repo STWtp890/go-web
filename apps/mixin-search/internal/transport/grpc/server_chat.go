@@ -292,9 +292,14 @@ func mapChatServiceError(err error) error {
 		errors.Is(err, chat.ErrStaleLifecycle),
 		errors.Is(err, chat.ErrStaleArchive),
 		errors.Is(err, chat.ErrStaleAccess),
-		errors.Is(err, chat.ErrStaleRetract),
-		errors.Is(err, chat.ErrCapacityExceeded):
+		errors.Is(err, chat.ErrStaleRetract):
 		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, chat.ErrCapacityExceeded):
+		// The corpus is out of the capacity it was configured with, which is a
+		// resource condition rather than a malformed request or a stale revision.
+		// It is reported apart from FailedPrecondition so a caller can tell "this
+		// corpus is full" from "your revision is stale".
+		return status.Error(codes.ResourceExhausted, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}

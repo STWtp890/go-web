@@ -110,6 +110,14 @@ services:
       - -chat-max-snapshot-bytes=${MIXIN_SEARCH_CHAT_MAX_SNAPSHOT_BYTES:-25165824}
       - -chat-operation-retention=${MIXIN_SEARCH_CHAT_OPERATION_RETENTION:-168h}
       - -chat-operation-max-entries=${MIXIN_SEARCH_CHAT_OPERATION_MAX_ENTRIES:-30000}
+      # 每条消息的 metadata 预算（UTF-8 字节）。metadata 存在控制快照里，因此它是容量输入：
+      # 实测"真实标识符形态 + 每消息 32 字节 metadata"在 30k 时已达 26.2 MiB，
+      # 而"仅真实标识符、无 metadata"就已 24.42 MiB —— 字节上限先于条数上限触发。
+      # 这四个值由分解画像推导（见 p33-chat-capacity-profile_20260919.md）。
+      - -chat-max-metadata-entries=${MIXIN_SEARCH_CHAT_MAX_METADATA_ENTRIES:-8}
+      - -chat-max-metadata-key-bytes=${MIXIN_SEARCH_CHAT_MAX_METADATA_KEY_BYTES:-32}
+      - -chat-max-metadata-value-bytes=${MIXIN_SEARCH_CHAT_MAX_METADATA_VALUE_BYTES:-64}
+      - -chat-max-metadata-total-bytes=${MIXIN_SEARCH_CHAT_MAX_METADATA_TOTAL_BYTES:-64}
       # 调用方身份：缺少 capability 的调用被拒绝，因此密钥必须挂载。
       - -capability-key-file=/app/secrets/mixin_search_capability.key
       - -capability-issuer=go-web

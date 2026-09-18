@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -176,13 +177,13 @@ func TestChatCapacityRealisticShape(t *testing.T) {
 // a timestamped id has, storage keys built by the production storageID shape, and a
 // small metadata map per message. Content is irrelevant here by construction.
 func buildRealisticCapacityState(messages, batchSize int) ControlState {
-	return buildCapacityStateWithShape(messages, batchSize, realisticShape)
+	return buildCapacityStateWithShape(messages, batchSize, realisticWithMetadata(64))
 }
 
-// buildCapacityStateWithContent is buildRealisticCapacityState with a chosen content
-// length, used to show that length does not reach the snapshot.
+// buildCapacityStateWithContent is the baseline shape with a chosen content length,
+// used to show that length does not reach the snapshot.
 func buildCapacityStateWithContent(messages, batchSize, contentBytes int) ControlState {
-	state := buildCapacityStateWithShape(messages, batchSize, syntheticShape)
+	state := buildCapacityStateWithShape(messages, batchSize, capacityShape{})
 	content := bytes.Repeat([]byte("x"), contentBytes)
 	digest := fmt.Sprintf("%x", sha256.Sum256(content))
 	for key, message := range state.Messages {
@@ -192,12 +193,68 @@ func buildCapacityStateWithContent(messages, batchSize, contentBytes int) Contro
 	return state
 }
 
-const (
-	syntheticShape = iota
-	realisticShape
+// capacityShape describes what a modelled message carries, so the profile can
+// separate the contributions to the snapshot instead of lumping them together:
+// message length does not reach the snapshot at all, while identifiers, storage
+// keys and metadata do.
+type capacityShape struct {
+	// realisticIDs selects QQ-style conversation/sender/message identifiers and the
+	// production storage-key shape (which carries the corpus domain, conversation,
+	// message and operation id).
+	realisticIDs bool
+	// metadataTotalBytes is the total UTF-8 budget the metadata keys and values
+	// should occupy, spread over three keys. Zero means no metadata.
+	metadataTotalBytes int
+}
+
+var (
+	syntheticNoMetadataShape = capacityShape{}
+	realisticNoMetadataShape = capacityShape{realisticIDs: true}
 )
 
-func buildCapacityStateWithShape(messages, batchSize, shape int) ControlState {
+func realisticWithMetadata(totalBytes int) capacityShape {
+	return capacityShape{realisticIDs: true, metadataTotalBytes: totalBytes}
+}
+
+// metadataFor renders a metadata map whose keys and values together occupy
+// approximately totalBytes of UTF-8, so a budget can be read off the snapshot
+// instead of guessed at.
+func metadataFor(shape capacityShape, index, batchSize, conversationsCount int) map[string]string {
+	if shape.metadataTotalBytes <= 0 {
+		if !shape.realisticIDs {
+			return map[string]string{"batch": fmt.Sprintf("%d", index/batchSize)}
+		}
+		return nil
+	}
+	keys := []string{"source", "channel_id", "received_at"}
+	keyBytes := 0
+	for _, key := range keys {
+		keyBytes += len(key)
+	}
+	valueBytes := shape.metadataTotalBytes - keyBytes
+	if valueBytes < len(keys) {
+		valueBytes = len(keys)
+	}
+	perValue := valueBytes / len(keys)
+	values := []string{
+		"qq",
+		fmt.Sprintf("qq-group-%0*d", max(1, perValue-9), index%conversationsCount),
+		fmt.Sprintf("%d", 1_758_260_000_000+int64(index)),
+	}
+	metadata := make(map[string]string, len(keys))
+	for position, key := range keys {
+		value := values[position]
+		if len(value) > perValue {
+			value = value[:perValue]
+		} else if len(value) < perValue {
+			value += strings.Repeat("0", perValue-len(value))
+		}
+		metadata[key] = value
+	}
+	return metadata
+}
+
+func buildCapacityStateWithShape(messages, batchSize int, shape capacityShape) ControlState {
 	state := newControlState()
 	const conversations = 100
 	conversationsCount := conversations
@@ -205,32 +262,22 @@ func buildCapacityStateWithShape(messages, batchSize, shape int) ControlState {
 		conversationsCount = messages
 	}
 	conversationID := func(index int) string {
-		if shape == realisticShape {
+		if shape.realisticIDs {
 			return fmt.Sprintf("qq-group-%010d", index%conversationsCount)
 		}
 		return fmt.Sprintf("conversation-%d", index%conversationsCount)
 	}
 	messageID := func(index int) string {
-		if shape == realisticShape {
+		if shape.realisticIDs {
 			return fmt.Sprintf("10001-%d-%08x", 1_758_260_000_000+int64(index), index)
 		}
 		return fmt.Sprintf("message-%d", index)
 	}
 	senderID := func(index int) string {
-		if shape == realisticShape {
+		if shape.realisticIDs {
 			return fmt.Sprintf("qq-%010d", index%1_000)
 		}
 		return fmt.Sprintf("qq-%d", index%1000)
-	}
-	metadata := func(index int) map[string]string {
-		if shape != realisticShape {
-			return map[string]string{"batch": fmt.Sprintf("%d", index/batchSize)}
-		}
-		return map[string]string{
-			"source":      "qq-group",
-			"channel_id":  fmt.Sprintf("qq-group-%010d", index%conversationsCount),
-			"received_at": fmt.Sprintf("%d", 1_758_260_000_000+int64(index)),
-		}
 	}
 	batch := make([]MessageState, 0, batchSize)
 	flush := func() {
@@ -253,7 +300,7 @@ func buildCapacityStateWithShape(messages, batchSize, shape int) ControlState {
 		sender := senderID(index)
 		operation := fmt.Sprintf("operation-%d", index/batchSize)
 		storage := storageID("go_web_chat_v1", conversation, message, operation)
-		if shape != realisticShape {
+		if !shape.realisticIDs {
 			storage = fmt.Sprintf("chat-postgres:capacity/%s/%s", conversation, message)
 		}
 		state.Conversations[conversation] = ControlConversation{
@@ -274,7 +321,7 @@ func buildCapacityStateWithShape(messages, batchSize, shape int) ControlState {
 			StorageID:         storage,
 			ChunkCount:        1,
 			LifecycleRevision: 1,
-			Metadata:          metadata(index),
+			Metadata:          metadataFor(shape, index, batchSize, conversationsCount),
 		}
 		batch = append(batch, MessageState{
 			ConversationID:    conversation,
@@ -294,6 +341,112 @@ func buildCapacityStateWithShape(messages, batchSize, shape int) ControlState {
 	}
 	flush()
 	return state
+}
+
+// TestChatCapacityMetadataDecomposition splits the snapshot growth into the parts
+// an integration contract can actually constrain: identifiers plus storage keys,
+// and metadata at increasing budgets. The numbers decide the budget; it is not
+// preset here.
+func TestChatCapacityMetadataDecomposition(t *testing.T) {
+	if os.Getenv("CHAT_CAPACITY_PROFILE") != "1" {
+		t.Skip("set CHAT_CAPACITY_PROFILE=1 to measure the control snapshot")
+	}
+	const messages = 30_000
+	budget := 24 * 1024 * 1024
+	cases := []struct {
+		name  string
+		shape capacityShape
+	}{
+		{name: "baseline synthetic ids, one metadata key", shape: capacityShape{metadataTotalBytes: 0}},
+		{name: "A real ids, no metadata", shape: realisticNoMetadataShape},
+		{name: "B real ids, metadata 32 B", shape: realisticWithMetadata(32)},
+		{name: "C real ids, metadata 64 B", shape: realisticWithMetadata(64)},
+		{name: "D real ids, metadata 128 B", shape: realisticWithMetadata(128)},
+		{name: "E real ids, metadata 256 B", shape: realisticWithMetadata(256)},
+	}
+	baselineBytes := 0
+	for _, testCase := range cases {
+		encoded := mustMarshal(t, buildCapacityStateWithShape(messages, 50, testCase.shape))
+		if baselineBytes == 0 {
+			baselineBytes = len(encoded)
+		}
+		verdict := "fits"
+		if len(encoded) > budget {
+			verdict = "EXCEEDS"
+		}
+		t.Logf(
+			"30k %s: payload_bytes=%d payload_mib=%.2f delta_vs_baseline_bytes=%d budget24mib=%s",
+			testCase.name, len(encoded), float64(len(encoded))/(1024*1024), len(encoded)-baselineBytes, verdict,
+		)
+	}
+}
+
+// TestChatCapacityCASAtTheByteBoundary measures the write latency at the byte
+// ceiling itself (not at the smaller synthetic size), because the ceiling is what
+// the deployment actually enforces: a shape near 24 MiB is the worst case a
+// conforming producer can reach.
+func TestChatCapacityCASAtTheByteBoundary(t *testing.T) {
+	if os.Getenv("CHAT_CAPACITY_PROFILE") != "1" {
+		t.Skip("set CHAT_CAPACITY_PROFILE=1 to measure the control snapshot")
+	}
+	dsn := os.Getenv("CAPACITY_CAS_DSN")
+	if dsn == "" {
+		t.Skip("set CAPACITY_CAS_DSN to measure compare-and-swap latency against PostgreSQL")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	// Roughly 23.5 MiB at a realistic shape: 27k messages with a 32-byte metadata
+	// budget, which is the worst case a conforming producer can reach before the
+	// 24 MiB ceiling refuses the write. The exact size is reported, so the evidence
+	// states what was measured.
+	const messages = 27_000
+	state := buildCapacityStateWithShape(messages, 50, realisticWithMetadata(32))
+	payload := mustMarshal(t, state)
+	namespace := fmt.Sprintf("capacity-boundary-%d", time.Now().UnixNano())
+	store, err := NewPostgresControlStore(ctx, PostgresControlStoreConfig{DSN: dsn, Namespace: namespace, Bootstrap: true})
+	if err != nil {
+		t.Fatalf("open chat control store: %v", err)
+	}
+	defer func() {
+		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cleanupCancel()
+		_, _ = store.pool.Exec(cleanupContext, "DELETE FROM mixin_search_control.chat_control_states WHERE namespace = $1", namespace)
+		store.Close()
+	}()
+	if _, err := store.Save(ctx, 0, state); err != nil {
+		t.Fatalf("seed boundary state: %v", err)
+	}
+	stored, err := store.Load(ctx)
+	if err != nil {
+		t.Fatalf("load boundary state: %v", err)
+	}
+	const writes = 20
+	samples := make([]time.Duration, 0, writes)
+	generation := stored.Generation
+	for write := 0; write < writes; write++ {
+		stored.Generation = generation
+		started := time.Now()
+		next, err := store.Save(ctx, generation, stored)
+		samples = append(samples, time.Since(started))
+		if err != nil {
+			t.Fatalf("boundary cas write %d: %v", write, err)
+		}
+		generation = next
+	}
+	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+	var total time.Duration
+	for _, sample := range samples {
+		total += sample
+	}
+	t.Logf(
+		"boundary cas messages=%d payload_bytes=%d payload_mib=%.2f writes=%d mean_ms=%.2f p50_ms=%.2f p95_ms=%.2f worst_ms=%.2f",
+		messages, len(payload), float64(len(payload))/(1024*1024), writes,
+		float64(total.Microseconds())/float64(writes)/1000,
+		millis(percentile(samples, 0.50)),
+		millis(percentile(samples, 0.95)),
+		millis(samples[len(samples)-1]),
+	)
 }
 
 // buildLedgerState builds a state whose ledger holds a chosen number of receipts,
@@ -490,5 +643,5 @@ func mustMarshal(t *testing.T, state ControlState) []byte {
 // comes from: an earlier version of this builder stored a single state per batch
 // and under-measured the ledger by the batch size.
 func buildCapacityState(messages, batchSize int) ControlState {
-	return buildCapacityStateWithShape(messages, batchSize, syntheticShape)
+	return buildCapacityStateWithShape(messages, batchSize, capacityShape{})
 }
