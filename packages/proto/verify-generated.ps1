@@ -3,11 +3,29 @@ param()
 
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
-$protoSource = 'packages/proto/mixin-search/v1/mixin-search.proto'
-$generatedDirectory = Join-Path $repositoryRoot 'packages/gen/mixin-search/v1'
 $tempBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
 $tempRoot = Join-Path $tempBase ('go-web-proto-verify-' + [guid]::NewGuid().ToString('N'))
 $tempGenerated = Join-Path $tempRoot 'generated'
+
+# Every committed contract and the generated files it must produce. The relative
+# path is identical on both sides: --go_opt=module=packages/gen strips the module
+# prefix, so a fresh run writes <out>/<relative>, matching packages/gen/<relative>.
+$targets = @(
+    @{
+        Proto = 'packages/proto/mixin-search/v1/mixin-search.proto'
+        Files = @(
+            'mixin-search/v1/mixin-search.pb.go',
+            'mixin-search/v1/mixin-search_grpc.pb.go'
+        )
+    },
+    @{
+        Proto = 'packages/proto/mixin-search/chat/v1/chat.proto'
+        Files = @(
+            'mixin-search/chat/v1/chat.pb.go',
+            'mixin-search/chat/v1/chat_grpc.pb.go'
+        )
+    }
+)
 
 foreach ($command in @('protoc', 'protoc-gen-go', 'protoc-gen-go-grpc')) {
     if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
@@ -17,43 +35,45 @@ foreach ($command in @('protoc', 'protoc-gen-go', 'protoc-gen-go-grpc')) {
 
 New-Item -ItemType Directory -Path $tempGenerated | Out-Null
 try {
-    Push-Location $repositoryRoot
-    try {
-        $protocArguments = @(
-            '-I', $repositoryRoot,
-            "--go_out=$tempGenerated",
-            '--go_opt=module=packages/gen',
-            "--go-grpc_out=$tempGenerated",
-            '--go-grpc_opt=module=packages/gen',
-            $protoSource
-        )
-        & protoc @protocArguments
-        if ($LASTEXITCODE -ne 0) {
-            throw "protoc failed with exit code $LASTEXITCODE"
+    foreach ($target in $targets) {
+        Push-Location $repositoryRoot
+        try {
+            $protocArguments = @(
+                '-I', $repositoryRoot,
+                "--go_out=$tempGenerated",
+                '--go_opt=module=packages/gen',
+                "--go-grpc_out=$tempGenerated",
+                '--go-grpc_opt=module=packages/gen',
+                $target.Proto
+            )
+            & protoc @protocArguments
+            if ($LASTEXITCODE -ne 0) {
+                throw "protoc failed for $($target.Proto) with exit code $LASTEXITCODE"
+            }
         }
-    }
-    finally {
-        Pop-Location
-    }
-
-    foreach ($fileName in @('mixin-search.pb.go', 'mixin-search_grpc.pb.go')) {
-        $expected = Join-Path $generatedDirectory $fileName
-        $actual = Join-Path $tempGenerated "mixin-search/v1/$fileName"
-        if (-not (Test-Path -LiteralPath $expected)) {
-            throw "generated file is missing: $expected"
-        }
-        if (-not (Test-Path -LiteralPath $actual)) {
-            throw "protoc did not produce the expected file: $actual"
+        finally {
+            Pop-Location
         }
 
-        $expectedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $expected).Hash
-        $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $actual).Hash
-        if ($expectedHash -ne $actualHash) {
-            throw "$fileName is stale; regenerate packages/gen from $protoSource"
-        }
-    }
+        foreach ($relativePath in $target.Files) {
+            $expected = Join-Path (Join-Path $repositoryRoot 'packages/gen') $relativePath
+            $actual = Join-Path $tempGenerated $relativePath
+            if (-not (Test-Path -LiteralPath $expected)) {
+                throw "generated file is missing: $expected"
+            }
+            if (-not (Test-Path -LiteralPath $actual)) {
+                throw "protoc did not produce the expected file for $($target.Proto): $relativePath"
+            }
 
-    Write-Host 'PASS generated mixin-search/v1 Go code matches its proto source.'
+            $expectedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $expected).Hash
+            $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $actual).Hash
+            if ($expectedHash -ne $actualHash) {
+                throw "$relativePath is stale; regenerate packages/gen from $($target.Proto)"
+            }
+        }
+
+        Write-Host "PASS generated Go code matches $($target.Proto)."
+    }
 }
 finally {
     $resolvedTemp = [System.IO.Path]::GetFullPath($tempRoot)

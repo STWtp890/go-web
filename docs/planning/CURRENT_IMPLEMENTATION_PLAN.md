@@ -247,6 +247,17 @@ P3.3a 已于 2026-09-17 完成，决策记录为 [ADR-014](../adr/014-per-corpus
 - 撤回、归档与索引移除的传播路径有明确契约和测试；
 - 满足 [ADR-014](../adr/014-per-corpus-control-plane-isolation.md) 的最低验收条件：聊天 generation 变化不触发文档快照重新加载（以控制存储 `Generation`/`Load` 计数断言）、聊天索引重建不切换文档 alias、文档授权撤销不等待聊天投影收敛、聊天语料规模增长不增加文档控制快照大小、任一语料故障不污染另一语料的生命周期状态。
 
+### 进展
+
+P3.3 尚未完成。已落地的第一片（契约层面）：
+
+- `packages/proto/mixin-search/chat/v1/chat.proto` 定型 `mixin_search.chat.v1.ChatIndexService` 的 7 个 RPC，覆盖消息索引、归档、访问快照、撤回、会话删除、状态查询与检索；
+- 契约文档见 [CHAT_SEARCH_V1_CONTRACT.md](../contracts/CHAT_SEARCH_V1_CONTRACT.md)：显式建模"已保存/已索引/已归档"三态独立与四类修订（archive、access、lifecycle、retract）互不推进，并规定聊天没有 `authenticated_public` 对应物、空 allow-list 返回空结果；
+- `packages/proto/verify-generated.ps1` 与 CI 的 `generated-proto` 作业改为覆盖两个契约，生成物一致性检查不再只覆盖文档契约；
+- 新增 `apps/mixin-search/internal/architecture/contracts_test.go`，把 ADR-014 的隔离要求变成可执行断言：两个服务的 RPC 集合不重叠、任一契约不得出现属于另一语料的字段名、任一契约不得增加 `corpus_type` 一类的语料选择器（该测试在本轮就纠正了我自己一处过宽的断言：`tombstone_revision` 是两侧各自需要的机制名，不属于文档专有语义）。
+
+尚未落地：聊天控制服务与独立 generation/持久化、独立投影 reconciler、独立 Qdrant collection/alias、聊天 capability 角色接线，以及 ADR-014 五条验收条件的实测断言。这些是 P3.3 的剩余主体。
+
 ## 8. P3.4：QQ 身份与知识空间映射
 
 ### 目标

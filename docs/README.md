@@ -47,6 +47,7 @@ docs/
 | 架构 | [architecture/PROJECT_STRUCTURE.md](./architecture/PROJECT_STRUCTURE.md) | 目录职责、领域分层和依赖方向 |
 | 约定 | [architecture/DEVELOPMENT_CONVENTIONS.md](./architecture/DEVELOPMENT_CONVENTIONS.md) | 新增代码落位规则、身份与 HTTP 出入口契约、遗留模块冻结基线与迁移待办 |
 | 契约 | [contracts/MIXIN_SEARCH_V1_CONTRACT.md](./contracts/MIXIN_SEARCH_V1_CONTRACT.md) | 当前 RPC 边界和字段语义 |
+| 聊天契约 | [contracts/CHAT_SEARCH_V1_CONTRACT.md](./contracts/CHAT_SEARCH_V1_CONTRACT.md) | 聊天语料的独立 RPC 边界、三态独立性与授权规则 |
 | 调用边界 | [contracts/SERVICE_CALL_CAPABILITY.md](./contracts/SERVICE_CALL_CAPABILITY.md) | 调用方 capability 格式、角色权限与范围包含规则 |
 | 实施证据 | [reports/PHASE0_COMPLETION_REPORT.md](./reports/PHASE0_COMPLETION_REPORT.md)、[reports/PHASE1_IMPLEMENTATION_LOG.md](./reports/PHASE1_IMPLEMENTATION_LOG.md)、[reports/PHASE2_IMPLEMENTATION_LOG.md](./reports/PHASE2_IMPLEMENTATION_LOG.md) | 记录已经验证的结果，不承担后续排期 |
 | 证据快照 | [reports/evidence/](./reports/evidence/) | 阶段报告引用的运行产物归档，内容不随后续实现改写 |

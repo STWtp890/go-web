@@ -164,14 +164,17 @@ go run ./cmd/rag-server -store pgvector -pg-dsn "postgres://rag:rag@localhost:54
 
 远程接口接收文件名和文件字节，不接收服务端本地路径；`.md`、`.markdown`、`.doc`、`.docx` 都会进入已有的独立文档管道。默认单次请求上限为 16 MiB，可分别通过服务端 `-max-receive-bytes` 和客户端 `-max-send-bytes` 调整。
 
-重新生成 Protobuf 代码：
+重新生成 Protobuf 代码（两个语料契约各自独立）：
 
 ```powershell
 protoc -I ../.. `
   --go_out=../../packages/gen --go_opt=module=packages/gen `
   --go-grpc_out=../../packages/gen --go-grpc_opt=module=packages/gen `
-  ../../packages/proto/mixin-search/v1/mixin-search.proto
+  ../../packages/proto/mixin-search/v1/mixin-search.proto `
+  ../../packages/proto/mixin-search/chat/v1/chat.proto
 ```
+
+`-I` 必须是仓库根：生成文件的包路径由 `go_package` 决定，`--go_opt=module=packages/gen` 只是剥掉该前缀，因此产物相对 `--go_out` 落在 `mixin-search/v1/` 与 `mixin-search/chat/v1/`。
 
 ## 验证
 
@@ -231,7 +234,8 @@ go test ./internal/rag -run 'TestQdrant.*Integration|TestPGVectorStoreIntegratio
 - `internal/rag/store_qdrant.go`：Qdrant dense/sparse 命名向量、规范化控制 payload 和候选级过滤实现。
 - `internal/rag/store_pgvector.go`：pgvector + PostgreSQL 全文检索实现。
 - `../../packages/proto/mixin-search/v1/mixin-search.proto`：monorepo 中统一维护的版本化文档索引 gRPC 契约。
-- `../../packages/gen/mixin-search/v1`：由统一协议生成并供应用共享的 Go 类型与 gRPC 代码。
+- `../../packages/proto/mixin-search/chat/v1/chat.proto`：聊天语料的独立 gRPC 契约（[契约说明](../../docs/contracts/CHAT_SEARCH_V1_CONTRACT.md)），与文档契约不共享控制面或集合。
+- `../../packages/gen/mixin-search/v1`、`../../packages/gen/mixin-search/chat/v1`：由协议生成并供应用共享的 Go 类型与 gRPC 代码。
 - `internal/transport/grpc/server.go`：Protobuf DTO、gRPC 状态码与共享业务 Service 的适配层。
 - `internal/transport/grpc/auth.go`：调用方 capability 认证、角色权限与方法策略的 gRPC 拦截器。
 - `internal/security/capability.go`：capability 的签名、校验与“只允许缩小”的范围判定。

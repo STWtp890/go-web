@@ -97,19 +97,25 @@ jobs:
           set -euo pipefail
           # 注意：--go_opt=module=packages/gen 只是从 go_package 中剥掉该前缀，
           # 产物会落在 <out>/mixin-search/v1/，而不是 <out>/packages/gen/mixin-search/v1/。
-          # 因此必须生成到临时目录再逐一比对——不能直接 --go_out=. 后 diff packages/gen，
-          # 那样产物会落到仓库根的 mixin-search/ 且 diff 恒为空（假通过）。
-          # 参数与 packages/proto/verify-generated.ps1 保持一致。
+          # 因此必须生成到临时目录再逐一比对，且两侧使用同一个相对路径——不能直接
+          # --go_out=. 后 diff packages/gen，那样产物会落到仓库根的 mixin-search/ 且
+          # diff 恒为空（假通过）。生成参数与 packages/proto/verify-generated.ps1 一致。
           generated="$(mktemp -d)"
           protoc -I . \
             --go_out="$generated" --go_opt=module=packages/gen \
             --go-grpc_out="$generated" --go-grpc_opt=module=packages/gen \
-            packages/proto/mixin-search/v1/mixin-search.proto
+            packages/proto/mixin-search/v1/mixin-search.proto \
+            packages/proto/mixin-search/chat/v1/chat.proto
 
           status=0
-          for file in mixin-search.pb.go mixin-search_grpc.pb.go; do
-            committed="packages/gen/mixin-search/v1/$file"
-            fresh="$generated/mixin-search/v1/$file"
+          for relative in \
+            mixin-search/v1/mixin-search.pb.go \
+            mixin-search/v1/mixin-search_grpc.pb.go \
+            mixin-search/chat/v1/chat.pb.go \
+            mixin-search/chat/v1/chat_grpc.pb.go
+          do
+            committed="packages/gen/$relative"
+            fresh="$generated/$relative"
             if [[ ! -f "$fresh" ]]; then
               echo "::error::protoc 未产出预期文件 $fresh"
               status=1
@@ -121,7 +127,7 @@ jobs:
               continue
             fi
             if ! diff -u "$committed" "$fresh"; then
-              echo "::error::$file 与 proto 源不一致；请重新生成并提交。"
+              echo "::error::$relative 与 proto 源不一致；请重新生成并提交。"
               status=1
             fi
           done

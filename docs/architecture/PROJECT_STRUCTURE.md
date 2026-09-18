@@ -25,6 +25,7 @@ go-web/
 │   └── simple-frontend/   # Vue Web 应用
 ├── packages/
 │   ├── proto/             # 跨应用 RPC 契约源
+│   │   └── mixin-search/  # 文档契约 v1 与聊天契约 chat/v1（独立语料契约）
 │   └── gen/               # 由契约生成的共享 Go 代码
 ├── deployments/           # Compose、数据库空库初始化制品和验收脚本
 ├── docs/                  # 架构、契约、ADR 和阶段实施记录

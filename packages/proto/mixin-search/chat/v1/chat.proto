@@ -1,0 +1,204 @@
+syntax = "proto3";
+
+package mixin_search.chat.v1;
+
+option go_package = "packages/gen/mixin-search/chat/v1;mixinsearchchatv1";
+
+// ChatIndexService is the chat-corpus index boundary.
+//
+// It is deliberately a separate service from mixin_search.v1.RAGService rather
+// than another corpus inside it: chat messages have their own data model,
+// authorization scope, lifecycle and reference form, and sharing one control
+// plane would couple the two corpora's generations, rebuilds and failure domains
+// (see docs/adr/014-per-corpus-control-plane-isolation.md).
+//
+// Ownership: py-agent owns conversations, messages, QQ identities and channel
+// permissions. This service owns only rebuildable chat index state: chunk
+// vectors, execution snapshots, retraction tombstones and index control state.
+// It never creates, edits or deletes an archived chat record.
+//
+// Three states are independent and must not be conflated:
+//   - stored:   the message exists in py-agent. This service is never told about
+//               it and never influences it.
+//   - indexed:  IndexConversationMessages has accepted the message text.
+//   - archived: ArchiveConversation marked the conversation eligible for
+//               retrieval. Indexing without archiving is not searchable.
+//
+// A retracted message stays archived and stored but is no longer retrievable.
+service ChatIndexService {
+  rpc IndexConversationMessages(IndexConversationMessagesRequest) returns (IndexConversationMessagesResponse);
+  rpc ArchiveConversation(ArchiveConversationRequest) returns (ArchiveConversationResponse);
+  rpc UpdateConversationAccess(UpdateConversationAccessRequest) returns (UpdateConversationAccessResponse);
+  rpc RetractMessage(RetractMessageRequest) returns (RetractMessageResponse);
+  rpc DeleteConversation(DeleteConversationRequest) returns (DeleteConversationResponse);
+  rpc GetConversationIndexState(GetConversationIndexStateRequest) returns (GetConversationIndexStateResponse);
+  rpc SearchChatMessages(SearchChatMessagesRequest) returns (SearchChatMessagesResponse);
+}
+
+// ConversationIndexStatus describes the indexed state of one conversation. It
+// deliberately has no "stored" value: storage belongs to py-agent.
+enum ConversationIndexStatus {
+  CONVERSATION_INDEX_STATUS_UNSPECIFIED = 0;
+  CONVERSATION_INDEX_STATUS_INDEXED = 1;
+  CONVERSATION_INDEX_STATUS_ARCHIVED = 2;
+}
+
+message ChatMessageInput {
+  string message_id = 1;
+  string sender_id = 2;
+  int64 sent_at_unix_ms = 3;
+  string content = 4;
+  // content_sha256 is computed over the raw content. When the caller supplies it
+  // the service verifies it; when it is empty the service computes and returns it.
+  string content_sha256 = 5;
+  map<string, string> metadata = 6;
+}
+
+message ChatMessageRef {
+  string conversation_id = 1;
+  string message_id = 2;
+}
+
+message ChatMessageState {
+  ChatMessageRef ref = 1;
+  string owner_scope_id = 2;
+  string sender_id = 3;
+  int64 sent_at_unix_ms = 4;
+  uint64 archive_revision = 5;
+  uint64 access_revision = 6;
+  uint64 lifecycle_revision = 7;
+  uint64 retract_revision = 8;
+  bool retracted = 9;
+  int32 chunk_count = 10;
+  string content_sha256 = 11;
+}
+
+message ConversationAccessState {
+  string conversation_id = 1;
+  uint64 access_revision = 2;
+  uint64 lifecycle_revision = 3;
+  repeated string granted_scope_ids = 4;
+}
+
+message IndexConversationMessagesRequest {
+  // operation_id makes the call idempotent: a retry with the same id and payload
+  // replays the first response, while the same id with a different payload is
+  // rejected. A message is immutable per (conversation_id, message_id); a
+  // different content for the same message id is a conflict, not an update.
+  string operation_id = 1;
+  string conversation_id = 2;
+  // owner_scope_id is the chat scope that owns the conversation, for example a
+  // QQ group binding or a private chat scope. It is immutable for a conversation.
+  string owner_scope_id = 3;
+  uint64 lifecycle_revision = 4;
+  repeated ChatMessageInput messages = 5;
+}
+
+message IndexConversationMessagesResponse {
+  repeated ChatMessageState states = 1;
+}
+
+message ArchiveConversationRequest {
+  string operation_id = 1;
+  string conversation_id = 2;
+  // archive_revision only orders archive/unarchive decisions; it never advances
+  // the access or lifecycle revisions implicitly.
+  uint64 archive_revision = 3;
+  uint64 lifecycle_revision = 4;
+}
+
+message ArchiveConversationResponse {
+  ConversationIndexStatus status = 1;
+  uint64 archive_revision = 2;
+  uint64 lifecycle_revision = 3;
+}
+
+message UpdateConversationAccessRequest {
+  string operation_id = 1;
+  string conversation_id = 2;
+  uint64 access_revision = 3;
+  uint64 lifecycle_revision = 4;
+  // granted_scope_ids is the complete access snapshot: it replaces the previous
+  // set instead of patching it, so omitting a scope revokes it. Chat has no
+  // authenticated-public equivalent; retrieval always requires a granted scope.
+  repeated string granted_scope_ids = 5;
+}
+
+message UpdateConversationAccessResponse {
+  ConversationAccessState state = 1;
+}
+
+message RetractMessageRequest {
+  string operation_id = 1;
+  string conversation_id = 2;
+  string message_id = 3;
+  // retract_revision orders retractions for one message and is independent of
+  // archive, access and lifecycle revisions.
+  uint64 retract_revision = 4;
+  uint64 lifecycle_revision = 5;
+}
+
+message RetractMessageResponse {
+  bool retracted = 1;
+  uint64 retract_revision = 2;
+}
+
+message DeleteConversationRequest {
+  string operation_id = 1;
+  string conversation_id = 2;
+  uint64 lifecycle_revision = 3;
+}
+
+message DeleteConversationResponse {
+  bool tombstoned = 1;
+  uint64 lifecycle_revision = 2;
+}
+
+message GetConversationIndexStateRequest {
+  string conversation_id = 1;
+}
+
+message GetConversationIndexStateResponse {
+  bool exists = 1;
+  ConversationIndexStatus status = 2;
+  string owner_scope_id = 3;
+  uint64 archive_revision = 4;
+  uint64 access_revision = 5;
+  uint64 lifecycle_revision = 6;
+  uint64 tombstone_revision = 7;
+  bool tombstoned = 8;
+  int32 indexed_message_count = 9;
+  int32 retracted_message_count = 10;
+}
+
+message SearchChatMessagesRequest {
+  string query = 1;
+  // Both allow-lists may be empty, in which case nothing is returned: chat has no
+  // public corpus, so an empty request can never widen the visible set.
+  repeated string allowed_scope_ids = 2;
+  repeated string allowed_conversation_ids = 3;
+  // sent_after_unix_ms and sent_before_unix_ms are optional inclusive/exclusive
+  // bounds; zero means unbounded.
+  int64 sent_after_unix_ms = 4;
+  int64 sent_before_unix_ms = 5;
+  int32 top_k = 6;
+}
+
+message ChatSearchHit {
+  ChatMessageRef ref = 1;
+  string owner_scope_id = 2;
+  string sender_id = 3;
+  int64 sent_at_unix_ms = 4;
+  int32 position = 5;
+  string snippet = 6;
+  string content_sha256 = 7;
+  double rrf_score = 8;
+  int32 dense_rank = 9;
+  int32 sparse_rank = 10;
+}
+
+message SearchChatMessagesResponse {
+  string query = 1;
+  bool truncated = 2;
+  repeated ChatSearchHit hits = 3;
+}
