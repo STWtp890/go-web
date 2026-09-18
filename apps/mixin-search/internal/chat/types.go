@@ -183,13 +183,16 @@ type SearchMessagesRequest struct {
 }
 
 // ScoredMessageChunk is one candidate returned by the vector store.
+//
+// It identifies the candidate by its storage key only: the control plane owns
+// the storage-to-message mapping, and resolving through it means a store that
+// returns a stale or foreign key cannot produce a hit for a message it does not
+// correspond to.
 type ScoredMessageChunk struct {
-	ConversationID string
-	MessageID      string
-	StorageID      string
-	Position       int
-	Snippet        string
-	Score          float64
+	StorageID string
+	Position  int
+	Snippet   string
+	Score     float64
 }
 
 // MessageHit is one authorized search result.

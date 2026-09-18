@@ -275,10 +275,19 @@ P3.3 尚未完成。已落地的部分：
 - 新增 `internal/transport/grpc/server_chat.go`：聊天契约的协议适配与错误码映射，与文档适配器是两个独立类型，互不可达；
 - 测试断言：两个语料的角色集合不相交且每个 RPC 都有策略、文档凭证不能调用聊天 RPC（反之亦然）、聊天 ops 只能读状态、越界范围整体拒绝、适配器字段映射与错误码映射。
 
+**向量集合与装配（第四片）**
+
+- 新增 `internal/chatindex`（聊天语料与向量集合之间的适配层）：`Corpus` 用**专属 collection**、自己的向量核心与自己的平面切分管线装配聊天语料；`Store` 在 `SyncChatControls` 收到的投影上过滤候选（未归档、已撤回、已墓碑或非本存储域的块一律丢弃），并在过滤掉候选时按上限扩召回；它**故意不实现** `rag.ControlledVectorStore`——那个接口说的是文档 payload；
+- 聊天消息不复用 Markdown/DOCX 解析：新增平面切分管线，一个消息一个段落块（指南要求的"不同切分方式"）；
+- `cmd/rag-server` 装配第二个语料：`-chat-enabled`（默认关闭）、`-chat-collection`（默认 `go_web_chat_v1`）、`-chat-control-namespace`（默认 `chat-v1`），构造聊天语料并注册 `ChatIndexService`，同时启动它自己的 reconciler；启动时校验聊天集合名不得等于文档集合名，共享集合直接拒绝启动；
+- 根 Compose 打开聊天语料并传入两个独立名字（`MIXIN_SEARCH_CHAT_ENABLED` 可关闭）；
+- 新增 `cmd/rag-server/chat_e2e_test.go`：在真实 gRPC 连接（bufconn）上跑通注册、健康、capability 认证、角色隔离、范围包含、索引→归档→检索、撤回与状态查询。
+
+**本轮修掉的一个真实死锁**：`controlplane.Projection.Converge` 已经负责加锁与 synced 代数记账，而聊天 reconciler 的回调又调用了一次 `Converge`，于是自我重入死锁——后台收敛与并发检索会互相卡住。上面的进程内端到端测试把它暴露出来；修复是把回调改为只做原始投影写入，并补了 `TestProjectionReconcilerConvergesWithoutARequest` 覆盖这条路径。
+
 **尚未落地**
 
-- 聊天服务尚未注册到 gRPC 服务端，也尚未在组合根构造：`ChatServer` 已存在并通过测试，但 `cmd/rag-server` 仍只装配文档语料；
-- 独立 Qdrant collection/alias 与聊天向量存储实现（payload schema、候选级过滤、dense/sparse 检索）尚未落地，因此"聊天索引重建不切换文档 alias"这一条还没有实测断言，`chat.ProjectionStore` 也尚未接到真实集合。
+- **容器级验收未运行**：本轮 Docker daemon 停止（无进程、无命名管道），`deployments/verify.ps1` 在启动栈之前失败。因此聊天语料的 PostgreSQL 控制表与 Qdrant collection 创建、以及 Compose 装配路径**尚未在容器内验证**；进程内 gRPC 端到端测试覆盖了装配与协议路径，但不覆盖这两项真实依赖。
 
 ## 8. P3.4：QQ 身份与知识空间映射
 

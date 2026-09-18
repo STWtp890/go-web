@@ -61,6 +61,11 @@ type IndexServiceConfig struct {
 	Searcher Searcher
 	// ProjectionInterval overrides the reconciler's fallback interval.
 	ProjectionInterval time.Duration
+	// StorageDomain overrides the projection domain. It defaults to the control
+	// store's domain, and it must be the same value the vector collection was
+	// built with: the collection filters candidates on it, so a mismatch would
+	// silently hide everything.
+	StorageDomain string
 }
 
 // NewIndexService restores the chat control plane before returning a usable
@@ -84,12 +89,19 @@ func NewIndexService(ctx context.Context, config IndexServiceConfig) (*IndexServ
 	if err != nil {
 		return nil, fmt.Errorf("%w: restore chat control state: %w", ErrControlStoreUnavailable, err)
 	}
+	storageDomain := strings.TrimSpace(config.StorageDomain)
+	if storageDomain == "" {
+		storageDomain = config.ControlStore.StorageDomain()
+	}
+	if storageDomain == "" {
+		return nil, errors.New("chat storage domain is required")
+	}
 	return &IndexService{
 		store:           config.ControlStore,
 		indexer:         config.Indexer,
 		projectionStore: config.Projection,
 		searcher:        config.Searcher,
-		storageDomain:   config.ControlStore.StorageDomain(),
+		storageDomain:   storageDomain,
 		state:           controlplane.NewState(restored, restored.generation),
 		projection:      controlplane.NewProjection(),
 	}, nil
@@ -102,13 +114,21 @@ func (s *IndexService) StorageDomain() string { return s.storageDomain }
 // StartProjectionReconciler keeps the chat projection converged in the
 // background until ctx is cancelled. It is separate from the document
 // reconciler: neither corpus's changes can trigger the other's convergence.
+//
+// The callback performs the raw projection write only. Converge owns the locking
+// and the synced-generation bookkeeping, so calling it from inside this callback
+// would re-enter its own lock.
 func (s *IndexService) StartProjectionReconciler(ctx context.Context) {
 	s.projection.StartReconciler(ctx, controlplane.ReconcilerConfig{
 		Interval: defaultProjectionInterval,
 		Timeout:  projectionTimeout,
 		Target:   func() uint64 { return s.state.Generation() },
 		Sync: func(syncCtx context.Context, generation uint64) error {
-			return s.convergeProjection(syncCtx, generation)
+			current := s.state.Load()
+			if s.projectionStore == nil || current.generation != generation {
+				return nil
+			}
+			return s.syncProjection(syncCtx, current)
 		},
 	})
 }
@@ -627,8 +647,12 @@ func (s *IndexService) authorizedMessage(
 	allowedConversations map[string]struct{},
 	request SearchMessagesRequest,
 ) (*messageState, bool) {
-	message, ok := snapshot.messages[messageKey(candidate.ConversationID, candidate.MessageID)]
-	if !ok || message.storageID != candidate.StorageID {
+	key, ok := snapshot.messagesByStorage[candidate.StorageID]
+	if !ok {
+		return nil, false
+	}
+	message, ok := snapshot.messages[key]
+	if !ok {
 		return nil, false
 	}
 	conversation := snapshot.conversations[message.conversationID]
@@ -846,16 +870,6 @@ func (s *IndexService) ensureProjection(ctx context.Context, current *snapshot) 
 		return nil
 	}
 	return s.projection.Converge(ctx, current.generation, func(inner context.Context) error {
-		return s.syncProjection(inner, current)
-	})
-}
-
-func (s *IndexService) convergeProjection(ctx context.Context, generation uint64) error {
-	current := s.state.Load()
-	if s.projectionStore == nil || current.generation != generation {
-		return nil
-	}
-	return s.projection.Converge(ctx, generation, func(inner context.Context) error {
 		return s.syncProjection(inner, current)
 	})
 }

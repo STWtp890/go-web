@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeIndexer records the messages this corpus wrote to its collection and keeps
@@ -121,12 +122,10 @@ func (f *fakeSearcher) SearchMessages(_ context.Context, query string, limit int
 			continue
 		}
 		candidates = append(candidates, ScoredMessageChunk{
-			ConversationID: message.conversationID,
-			MessageID:      message.messageID,
-			StorageID:      storageID,
-			Position:       0,
-			Snippet:        message.content,
-			Score:          1,
+			StorageID: storageID,
+			Position:  0,
+			Snippet:   message.content,
+			Score:     1,
 		})
 		if len(candidates) == limit {
 			break
@@ -209,6 +208,61 @@ func (h *harness) search(t *testing.T, query string, scopes, conversations []str
 		t.Fatalf("search messages: %v", err)
 	}
 	return result
+}
+
+// TestProjectionReconcilerConvergesWithoutARequest covers the background path:
+// the reconciler alone must bring the projection up to the published generation,
+// and it must do so without deadlocking against a concurrent search that asks for
+// the same convergence.
+func TestProjectionReconcilerConvergesWithoutARequest(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	indexer := newFakeIndexer()
+	service, err := NewIndexService(context.Background(), IndexServiceConfig{
+		ControlStore: NewMemoryControlStore(),
+		Indexer:      indexer,
+		Projection:   indexer,
+		Searcher:     &fakeSearcher{indexer: indexer},
+	})
+	if err != nil {
+		t.Fatalf("new chat index service: %v", err)
+	}
+	service.StartProjectionReconciler(ctx)
+
+	if _, err := service.IndexMessages(context.Background(), IndexMessagesRequest{
+		OperationID: "op-1", ConversationID: "group-42", OwnerScopeID: "scope-group-42",
+		LifecycleRevision: 1,
+		Messages:          []MessageInput{{MessageID: "m-1", SenderID: "sender", SentAtUnixMs: 1, Content: "backgroundneedle"}},
+	}); err != nil {
+		t.Fatalf("index messages: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if service.projection.Synced() >= service.state.Generation() && service.state.Generation() > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf(
+				"the reconciler did not converge: synced=%d published=%d",
+				service.projection.Synced(), service.state.Generation(),
+			)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// A request that needs the same convergence must not deadlock against the
+	// reconciler, and once converged it performs no projection write of its own.
+	before := indexer.syncCount()
+	if _, err := service.SearchMessages(context.Background(), SearchMessagesRequest{
+		Query: "backgroundneedle", AllowedScopeIDs: []string{"scope-group-42"}, TopK: 1,
+	}); err != nil {
+		t.Fatalf("search after background convergence: %v", err)
+	}
+	if after := indexer.syncCount(); after != before {
+		t.Fatalf("search wrote the projection %d times after convergence, want 0", after-before)
+	}
 }
 
 // TestIndexingAloneIsNotSearchable is the heart of the corpus's semantics:

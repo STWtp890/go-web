@@ -87,6 +87,11 @@ services:
       - -control-dsn=postgres://mixin_control:mixin_control@control-postgres:5432/mixin_control?sslmode=disable
       - -control-namespace=go-web-shadow-v1
       - -control-bootstrap=true
+      # 聊天语料：独立 collection、独立控制 namespace、独立 reconciler。集合名必须与
+      # 文档集合不同，服务端启动时会校验，共享集合会被拒绝启动。
+      - -chat-enabled=${MIXIN_SEARCH_CHAT_ENABLED:-true}
+      - -chat-collection=go_web_chat_v1
+      - -chat-control-namespace=chat-v1
       # 调用方身份：缺少 capability 的调用被拒绝，因此密钥必须挂载。
       - -capability-key-file=/app/secrets/mixin_search_capability.key
       - -capability-issuer=go-web

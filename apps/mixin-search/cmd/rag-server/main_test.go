@@ -39,7 +39,7 @@ func TestGRPCServerReportsHealth(t *testing.T) {
 	}
 
 	listener := bufconn.Listen(1024 * 1024)
-	server := newGRPCServer(1024*1024, &testRAGService{}, authenticator, true)
+	server := newGRPCServer(1024*1024, &testRAGService{}, nil, authenticator, true)
 	go func() {
 		if err := server.Serve(listener); err != nil {
 			t.Errorf("serve: %v", err)
@@ -93,7 +93,7 @@ func TestProtectedRPCWithoutCapabilityIsRejected(t *testing.T) {
 	}
 
 	listener := bufconn.Listen(1024 * 1024)
-	server := newGRPCServer(1024*1024, &testRAGService{}, authenticator, false)
+	server := newGRPCServer(1024*1024, &testRAGService{}, nil, authenticator, false)
 	go func() {
 		if err := server.Serve(listener); err != nil {
 			t.Errorf("serve: %v", err)
@@ -127,6 +127,28 @@ func TestProtectedRPCWithoutCapabilityIsRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "capability") {
 		t.Fatalf("SearchDocuments error = %v, want a capability rejection", err)
+	}
+}
+
+func TestCorpusIsolationRejectsASharedCollection(t *testing.T) {
+	t.Parallel()
+
+	// The composition root's defaults must already be isolated.
+	if err := validateCorpusIsolation("go_web_shadow_v1", "go_web_chat_v1", true); err != nil {
+		t.Fatalf("distinct collections were rejected: %v", err)
+	}
+	// Sharing a collection is the failure this guard exists for: the chat corpus
+	// would then write into, and rebuild against, the document collection.
+	if err := validateCorpusIsolation("shared", "shared", true); err == nil {
+		t.Fatal("a shared collection was accepted while chat is enabled")
+	}
+	// With chat disabled the chat collection name is unused, so a collision is
+	// harmless; an empty name is still a configuration error.
+	if err := validateCorpusIsolation("shared", "shared", false); err != nil {
+		t.Fatalf("a collision with chat disabled was rejected: %v", err)
+	}
+	if err := validateCorpusIsolation("", "go_web_chat_v1", false); err == nil {
+		t.Fatal("an empty document collection was accepted")
 	}
 }
 

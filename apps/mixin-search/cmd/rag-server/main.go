@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -11,9 +12,12 @@ import (
 	"strconv"
 	"strings"
 
+	"mixin-search/internal/chat"
+	"mixin-search/internal/chatindex"
 	"mixin-search/internal/rag"
 	"mixin-search/internal/security"
 	grpcadapter "mixin-search/internal/transport/grpc"
+	mixinsearchchatv1 "packages/gen/mixin-search/chat/v1"
 	mixinsearchv1 "packages/gen/mixin-search/v1"
 
 	"google.golang.org/grpc"
@@ -68,6 +72,25 @@ func main() {
 		envBoolOrDefault("MIXIN_SEARCH_ENABLE_REFLECTION", true),
 		"register gRPC reflection; a development aid that must be off when the port is exposed",
 	)
+	// Chat corpus. Disabled by default: a deployment that does not consume chat
+	// must not grow a second control plane and collection by accident. The
+	// collection and namespace are deliberately separate names from the document
+	// ones, because the isolation is structural.
+	chatEnabled := flag.Bool(
+		"chat-enabled",
+		envBoolOrDefault("MIXIN_SEARCH_CHAT_ENABLED", false),
+		"serve the chat corpus on its own collection, control namespace and reconciler",
+	)
+	chatCollection := flag.String(
+		"chat-collection",
+		envOrDefault("MIXIN_SEARCH_CHAT_COLLECTION", "go_web_chat_v1"),
+		"chat vector collection; must differ from the document collection",
+	)
+	chatControlNamespace := flag.String(
+		"chat-control-namespace",
+		envOrDefault("MIXIN_SEARCH_CHAT_CONTROL_NAMESPACE", "chat-v1"),
+		"chat control namespace in the chat control table",
+	)
 	flag.Parse()
 
 	if *maxReceiveBytes <= 0 {
@@ -77,6 +100,9 @@ func main() {
 	boundaryKey, err := loadBoundaryKey(*capabilityKeyPath, *capabilityKey)
 	if err != nil {
 		log.Fatalf("load capability boundary key: %v", err)
+	}
+	if err := validateCorpusIsolation(*qdrantCollection, *chatCollection, *chatEnabled); err != nil {
+		log.Fatalf("corpus isolation: %v", err)
 	}
 	verifier, err := security.NewVerifier(boundaryKey, *capabilityIssuer, *capabilityAudience)
 	if err != nil {
@@ -128,6 +154,46 @@ func main() {
 	defer stopProjectionReconciler()
 	contractService.StartProjectionReconciler(reconcilerCtx)
 
+	// The chat corpus is a second, independent control plane with its own
+	// collection, its own control namespace and its own reconciler. It is built
+	// only when enabled, so a deployment that does not consume chat does not grow
+	// a second corpus by accident.
+	var chatServer *grpcadapter.ChatServer
+	if *chatEnabled {
+		chatStore, err := openStore(ctx, *backend, *qdrantHost, *qdrantPort, *chatCollection, *qdrantTLS, *pgDSN)
+		if err != nil {
+			log.Fatalf("open chat vector store: %v", err)
+		}
+		chatControlStore, closeChatControlStore, err := openChatControlStore(
+			ctx, *controlBackend, *controlDSN, *chatControlNamespace, *controlBootstrap,
+		)
+		if err != nil {
+			_ = chatStore.Close()
+			log.Fatalf("open chat control store: %v", err)
+		}
+		defer closeChatControlStore()
+
+		corpus, err := chatindex.New(ctx, chatindex.Config{
+			VectorStore:   chatStore,
+			ControlStore:  chatControlStore,
+			StorageDomain: *chatCollection,
+		})
+		if err != nil {
+			_ = chatStore.Close()
+			log.Fatalf("build chat corpus: %v", err)
+		}
+		defer func() {
+			if closeErr := corpus.Close(); closeErr != nil {
+				log.Printf("close chat vector store: %v", closeErr)
+			}
+		}()
+		corpus.StartProjectionReconciler(reconcilerCtx)
+		chatServer, err = grpcadapter.NewChatServer(corpus.Service())
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
 	handler, err := grpcadapter.NewServer(contractService)
 	if err != nil {
 		log.Fatal(err)
@@ -138,13 +204,15 @@ func main() {
 	}
 	defer listener.Close()
 
-	server := newGRPCServer(*maxReceiveBytes, handler, authenticator, *enableReflection)
+	server := newGRPCServer(*maxReceiveBytes, handler, chatServer, authenticator, *enableReflection)
 
 	log.Printf(
-		"RAG gRPC server listening on %s (store=%s control_store=%s issuer=%s audience=%s throttling=%t reflection=%t)",
+		"RAG gRPC server listening on %s (store=%s control_store=%s chat=%t chat_collection=%s issuer=%s audience=%s throttling=%t reflection=%t)",
 		listener.Addr(),
 		strings.ToLower(*backend),
 		strings.ToLower(*controlBackend),
+		*chatEnabled,
+		*chatCollection,
 		*capabilityIssuer,
 		*capabilityAudience,
 		limiter.Enabled(),
@@ -160,6 +228,7 @@ func main() {
 func newGRPCServer(
 	maxReceiveBytes int,
 	handler mixinsearchv1.RAGServiceServer,
+	chatHandler *grpcadapter.ChatServer,
 	authenticator *grpcadapter.Authenticator,
 	enableReflection bool,
 ) *grpc.Server {
@@ -176,6 +245,13 @@ func newGRPCServer(
 		mixinsearchv1.RAGService_ServiceDesc.ServiceName,
 		healthpb.HealthCheckResponse_SERVING,
 	)
+	if chatHandler != nil {
+		mixinsearchchatv1.RegisterChatIndexServiceServer(server, chatHandler)
+		healthServer.SetServingStatus(
+			mixinsearchchatv1.ChatIndexService_ServiceDesc.ServiceName,
+			healthpb.HealthCheckResponse_SERVING,
+		)
+	}
 
 	// Reflection lets anyone who reaches the port enumerate the API, so it is a
 	// development aid rather than a product capability. Health stays registered
@@ -270,6 +346,50 @@ func openControlStore(
 	default:
 		return nil, func() {}, fmt.Errorf("unknown control store %q", backend)
 	}
+}
+
+// openChatControlStore mirrors openControlStore for the chat corpus. The two are
+// separate functions on purpose: their store types differ, so a caller cannot
+// accidentally hand one corpus's control state to the other.
+func openChatControlStore(
+	ctx context.Context,
+	backend string,
+	dsn string,
+	namespace string,
+	bootstrap bool,
+) (chat.ControlStore, func(), error) {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "memory":
+		return chat.NewMemoryControlStore(), func() {}, nil
+	case "postgres":
+		store, err := chat.NewPostgresControlStore(ctx, chat.PostgresControlStoreConfig{
+			DSN:       dsn,
+			Namespace: namespace,
+			Bootstrap: bootstrap,
+		})
+		if err != nil {
+			return nil, func() {}, err
+		}
+		return store, store.Close, nil
+	default:
+		return nil, func() {}, fmt.Errorf("unknown control store %q", backend)
+	}
+}
+
+// validateCorpusIsolation refuses a configuration in which the two corpora would
+// share a collection. Collection and alias names are how isolation is enforced,
+// so a collision is a configuration error rather than something to discover at
+// query time.
+func validateCorpusIsolation(documentCollection, chatCollection string, chatEnabled bool) error {
+	documentCollection = strings.TrimSpace(documentCollection)
+	chatCollection = strings.TrimSpace(chatCollection)
+	if documentCollection == "" || chatCollection == "" {
+		return errors.New("both collection names are required")
+	}
+	if chatEnabled && documentCollection == chatCollection {
+		return fmt.Errorf("chat and document corpora must not share the collection %q", chatCollection)
+	}
+	return nil
 }
 
 func defaultPGDSN() string {
