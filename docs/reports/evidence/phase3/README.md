@@ -8,9 +8,17 @@
 | --- | --- | --- | --- |
 | P3.1a | `54cc1c8` | `full-api-p15_20260917_044228`、`document-search-evaluation-p25_20260917_044232`、`full-api-p24_outage_20260917_044235` | 可信签发方绑定 + 限流调用方表硬上限 |
 | P3.2 | `8e7abea` | `full-api-p15_20260917_045334`、`document-search-evaluation-p25_20260917_045338`、`full-api-p24_outage_20260917_045341` | 控制面不可变快照 + 后台投影收敛 |
-| P3.3 | 本片提交（功能树最后变更；A 档 + metadata 预算启用） | `full-api-p15_20260919_044948`、`document-search-evaluation-p25_20260919_044953`、`full-api-p24_outage_20260919_044956`，另加 `p33-chat-corpus-container_20260919`、`p33-chat-capacity-profile_20260919` | 多语料契约与索引隔离：独立契约、独立控制面、按语料 audience、Qdrant alias 与 `_g1` 基线、容量/账本/metadata 预算、容器级验收 |
+| P3.3 | `49be7c5`（功能树最后变更） | `full-api-p15_20260919_044948`、`document-search-evaluation-p25_20260919_044953`、`full-api-p24_outage_20260919_044956`，另加 `p33-chat-corpus-container_20260919`、`p33-chat-capacity-profile_20260919` | 多语料契约与索引隔离：独立契约、独立控制面、按语料 audience、Qdrant alias 与 `_g1` 基线、容量/账本/metadata 预算、容器级验收 |
 
 **"验收时提交"指的是功能树的最后变更提交，不是归档提交本身。** 阶段的归档与计划口径提交（例如 P3.3 的 `1f9ca5a`、`bc23a32`）只改文档，不改功能代码；判断"证据验证了哪份代码"应看该列，而不是看 HEAD。
+
+## P3.3 正式验收点
+
+**`32f4648`（tag `p3.3-accepted`，2026-09-19）** 是 P3.3 的正式验收点：容量口径收口后的 HEAD，`docs/check-doc-links.ps1` 报告 `DOC_LINKS=PASS`（202 链接 / 118 文档 / 0 断链），工作树干净。tag `p3.3-accepted` 指向的正是这个提交；记录本验收声明的提交只改文档，不改变验收对象（`git rev-parse 'p3.3-accepted^{commit}'` 可随时复核）。
+
+- 相对功能树最后变更 `49be7c5`，验收点只追加文档与 Compose **注释**，不含任何 `.go` / `.proto` / 生成代码改动，因此不重跑整栈门禁；
+- 已冻结的口径：`30,000` 是数量保险丝而非容量承诺、`有效容量 = min(消息数量上限, 24 MiB 快照上限)`、账本保留 `= min(7 天, 30,000 条)`；证据链为契约 §7 → ADR-015 → 本目录容量画像 → 根 Compose 注释；
+- 下一实施包（P3.5 / P3.6）的唯一入口是 `docs/planning/CURRENT_IMPLEMENTATION_PLAN.md` §7.1 结尾的两张待办表（"P3.6 前置待办"与"P3.5 承接项"），本目录不再新增 P3.3 范围。
 
 每个运行包含三个报告族（正常拓扑 API 回归、停机拓扑 API 回归、检索质量评估），各有 `.json` 与 `.md` 两种形式。P3.3 的聊天语料专项证据（容器日志、控制 namespace 隔离、对部署端点的三态与隔离验收）记在 `p33-chat-corpus-container_20260919.md`，因为三个通用报告族覆盖的是文档路径。
 

@@ -3,7 +3,7 @@
 > 文档职责：当前唯一阶段排期与实施入口
 > 上位目标：[ECOSYSTEM_EVOLUTION_GUIDE.md](../ECOSYSTEM_EVOLUTION_GUIDE.md)
 > 相关决策：[ADR-001](../adr/001-search-service-boundary.md)、[ADR-002](../adr/002-document-index-ownership.md)、[ADR-004](../adr/004-bm25-migration-strategy.md)、[ADR-005](../adr/005-development-baseline-over-production-migration.md)、[ADR-006](../adr/006-mixin-search-control-state-commit-order.md)、[ADR-007](../adr/007-qdrant-control-projection-and-filtering.md)、[ADR-008](../adr/008-document-index-transactional-outbox.md)、[ADR-009](../adr/009-shadow-index-compose-and-health-boundary.md)、[ADR-010](../adr/010-shadow-query-evaluation-gate.md)、[ADR-011](../adr/011-bounded-cache-runtime-and-revision-fencing.md)、[ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)、[ADR-013](../adr/013-immutable-control-snapshot-and-background-projection.md)、[ADR-014](../adr/014-per-corpus-control-plane-isolation.md)、[ADR-015](../adr/015-control-plane-idempotency-ledger-retention.md)
-> 当前状态：生态阶段二已收口（P2.0-P2.5 全部通过）；阶段三实施基线已建立，P3.0、P3.0a、P3.1、P3.2、P3.3a 已完成；**P3.3 已完成**（口径：多语料契约、授权、控制面、存储与 alias 切换机制已完成；**容量参数启用属于 P3.6 前置**，完整蓝绿重建编排属于 P3.5）。验收提交 `a544a34`（功能树最后变更），证据见 `docs/reports/evidence/phase3/`
+> 当前状态：生态阶段二已收口（P2.0-P2.5 全部通过）；阶段三实施基线已建立，P3.0、P3.0a、P3.1、P3.2、P3.3a 已完成；**P3.3 已完成并归档**——正式验收点 `32f4648`（tag `p3.3-accepted`），功能树最后变更 `49be7c5`；多语料契约、授权、控制面、存储与 alias 切换机制已完成，容量 A 档（30,000/24 MiB/7 天/30,000 条）已启用且口径冻结。证据见 `docs/reports/evidence/phase3/`；**下一实施包的唯一入口是 §7.1 结尾的"P3.6 前置待办"与"P3.5 承接项"两张表**（完整蓝绿重建编排属 P3.5，接入约定属 P3.6）
 > 更新日期：2026-09-19
 
 ## 1. 当前全局进度结论
@@ -66,7 +66,7 @@
 | P3.1 | mixin-search 调用身份与授权边界 | P3.0 | 已完成 |
 | P3.2 | 在线检索并发模型 | P3.0 | 已完成 |
 | P3.3a | 多语料控制面隔离决策 | P3.2 | 已完成 |
-| P3.3 | 多语料契约与索引隔离 | P3.0、P3.3a | 已完成（一处 P3.6 前置待办：容量上限数值与账本窗口启用，见 §7.1） |
+| P3.3 | 多语料契约与索引隔离 | P3.0、P3.3a | 已完成并归档（验收点 `32f4648` / tag `p3.3-accepted`）；剩余事项归属 P3.5 与 P3.6，见 §7.1 结尾的两张待办表 |
 | P3.4 | QQ 身份与知识空间映射 | P3.1、P3.3 | 待推进 |
 | P3.5 | 在线可靠性门禁 | P3.1、P3.2、P3.4 | 待推进 |
 | P3.6 | py-agent 文档知识闭环 | P3.5 | 待推进 |
@@ -251,7 +251,18 @@ P3.3a 已于 2026-09-17 完成，决策记录为 [ADR-014](../adr/014-per-corpus
 
 ### 进展
 
-P3.3 **已完成**（验收提交 `a544a34`，证据归档于 `docs/reports/evidence/phase3/`）：独立聊天契约、独立控制面与持久化、独立 Qdrant alias 与 `_g1` 基线、capability 硬隔离（角色 + audience 双锁）、容量硬限制与幂等账本保留机制全部落地，本地单元/架构门禁、进程内端到端与容器整栈验收全绿。收口前经过多轮独立对抗性复审，确认的缺陷（含一处 HIGH：alias 批次失败会把 alias 删掉而当时被描述为"fail closed"）已全部修复并各自带回归测试。
+P3.3 **已完成**：独立聊天契约、独立控制面与持久化、独立 Qdrant alias 与 `_g1` 基线、capability 硬隔离（角色 + audience 双锁）、容量硬限制与幂等账本保留机制全部落地，本地单元/架构门禁、进程内端到端与容器整栈验收全绿。收口前经过多轮独立对抗性复审，确认的缺陷（含一处 HIGH：alias 批次失败会把 alias 删掉而当时被描述为"fail closed"）已全部修复并各自带回归测试。
+
+**正式验收点：`32f4648`（tag `p3.3-accepted`，2026-09-19）**。三点区分必须同时记住，避免把不同提交混为一谈：
+
+| 角色 | 提交 | 含义 |
+| --- | --- | --- |
+| **正式验收点** | `32f4648` | 容量口径收口后的 HEAD；`docs/check-doc-links.ps1` PASS，工作树干净 |
+| 功能树最后变更 | `49be7c5` | 最后一个改动 `apps/`、`packages/` 的提交；验收点相对它只追加文档与 Compose 注释 |
+| 容量启用与实测 | `41a7bbf`、`49be7c5` | A 档参数写入根 Compose、metadata 预算与边界 CAS 实测、错误码修正 |
+| 证据归档 | `docs/reports/evidence/phase3/` | 三次门禁运行的原始报告已入库（`deployments/test-results/*_20260919_*`） |
+
+**容量口径已冻结**：`30,000` 是数量保险丝、`有效容量 = min(消息数量上限, 24 MiB 快照上限)`、账本保留 `= min(7 天, 30,000 条)`。该口径已在契约 §7、ADR-015、实测证据与 Compose 注释之间形成一致证据链，后续实施包**不得再次变更**，也无需重读阶段三全过程——下一包的唯一入口是 §7.1 结尾的两张待办表（"P3.6 前置待办"与"P3.5 承接项"）。
 
 已落地的部分：
 
@@ -398,14 +409,23 @@ go test ./internal/chat -run TestChatCapacity -v
 docker compose -p p33cap -f docker-compose.yaml down -v
 ```
 
-**P3.6 前置待办（不阻塞 P3.3 收口，但必须在 `py-agent` 正式接入前完成）**
+### 下一步的唯一入口（P3.3 验收点 `32f4648` 起生效）
+
+P3.3 已归档，**结构性问题不再回头讨论**。下一实施包（P3.5 / P3.6）开工时只读下面两张表，不必重新翻阅阶段三全过程，也不得重新打开已确认的容量口径：
+
+- **P3.6 前置待办** → 归属 P3.6 的接入前事项（容量已就绪，剩余的是接入约定与加固项）；
+- **P3.5 承接项** → 归属 P3.5 的 alias 编排事项。
+
+两张表就是完整清单；表中每一条都写明归属包、验收方式与所引证据，新增事项只能追加到对应表中，不得反向扩大 P3.3 范围。
+
+**P3.6 前置待办（归属 P3.6；`py-agent` 正式接入前完成）**
 
 - **容量上限数值与账本窗口（已拍板并已启用，不再是待办）**：A 档已写入根 Compose 并验证生效——30,000 条消息 / 24 MiB 快照 / 7 天 / 30,000 条账本，metadata 预算 8 项、key ≤ 32 B、value ≤ 64 B、keys+values ≤ 64 B。**2026-09-19 复核确认不下调 `maxMessages` 为 26,000**：有效容量本就是 `min(条数, 字节)`，下调只会制造"保证能存 26k"的错觉（26k + 64 B metadata 距 24 MiB 仅约 2% 余量）；`maxMessages` 的定性是第二道保险，不是产品容量指标，契约与运维文档均不得把它写成保证容量。真实 ID 形态下字节上限约在 29.5k（无 metadata）/ 27k（32 B）/ 26k（64 B）先触发，证据见 `docs/reports/evidence/phase3/p33-chat-capacity-profile_20260919.md`；P3.6 的接入约定需据此限制每消息 metadata 规模；
 - **分片/行级 CAS 的触发**：命中任一硬限制或持续 p95 超 SLO 时，启动独立 ADR 讨论迁移；本包不做；
 - **聊天侧 PostgreSQL 适配器已补上集成测试**（`internal/chat/capacity_postgres_test.go`，`CHAT_CONTROL_STORE_INTEGRATION=1` + `CONTROL_DATABASE_DSN`，覆盖消息上限、快照上限与账本清理三条真实路径）；
 - **纯加固两项**（判定为既有行为或不必需，不构成错误状态）：适配器把包装后的内部错误文本回给调用方（文档与聊天同样如此，改动会变更客户端可见文本）；聊天索引写入没有按意图租约设 deadline（只影响写锁持有时长）。
 
-**P3.5 承接项**：alias 机制与切换已交付，**蓝绿重建编排**（把数据填进新世代、完整性校验、保留上一代用于回退）仍属 P3.5。编排还必须处理本包明确留下的 **alias 单写者与补偿竞态**：
+**P3.5 承接项（归属 P3.5）**：alias 机制与切换已交付，**蓝绿重建编排**（把数据填进新世代、完整性校验、保留上一代用于回退）仍属 P3.5。编排还必须处理本包明确留下的 **alias 单写者与补偿竞态**：
 
 - **单写者/租约**：alias 只能由一个管理者切换（单实例角色或分布式租约）；并发管理者会互相覆盖；
 - **切换前预检**：目标集合存在、schema（向量维度/sparse 配置）正确且健康，而不只检查存在性与 payload 索引；
