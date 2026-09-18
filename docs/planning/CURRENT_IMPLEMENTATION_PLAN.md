@@ -2,7 +2,7 @@
 
 > 文档职责：当前唯一阶段排期与实施入口
 > 上位目标：[ECOSYSTEM_EVOLUTION_GUIDE.md](../ECOSYSTEM_EVOLUTION_GUIDE.md)
-> 相关决策：[ADR-001](../adr/001-search-service-boundary.md)、[ADR-002](../adr/002-document-index-ownership.md)、[ADR-004](../adr/004-bm25-migration-strategy.md)、[ADR-005](../adr/005-development-baseline-over-production-migration.md)、[ADR-006](../adr/006-mixin-search-control-state-commit-order.md)、[ADR-007](../adr/007-qdrant-control-projection-and-filtering.md)、[ADR-008](../adr/008-document-index-transactional-outbox.md)、[ADR-009](../adr/009-shadow-index-compose-and-health-boundary.md)、[ADR-010](../adr/010-shadow-query-evaluation-gate.md)、[ADR-011](../adr/011-bounded-cache-runtime-and-revision-fencing.md)、[ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)、[ADR-013](../adr/013-immutable-control-snapshot-and-background-projection.md)、[ADR-014](../adr/014-per-corpus-control-plane-isolation.md)
+> 相关决策：[ADR-001](../adr/001-search-service-boundary.md)、[ADR-002](../adr/002-document-index-ownership.md)、[ADR-004](../adr/004-bm25-migration-strategy.md)、[ADR-005](../adr/005-development-baseline-over-production-migration.md)、[ADR-006](../adr/006-mixin-search-control-state-commit-order.md)、[ADR-007](../adr/007-qdrant-control-projection-and-filtering.md)、[ADR-008](../adr/008-document-index-transactional-outbox.md)、[ADR-009](../adr/009-shadow-index-compose-and-health-boundary.md)、[ADR-010](../adr/010-shadow-query-evaluation-gate.md)、[ADR-011](../adr/011-bounded-cache-runtime-and-revision-fencing.md)、[ADR-012](../adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)、[ADR-013](../adr/013-immutable-control-snapshot-and-background-projection.md)、[ADR-014](../adr/014-per-corpus-control-plane-isolation.md)、[ADR-015](../adr/015-control-plane-idempotency-ledger-retention.md)
 > 当前状态：生态阶段二已收口（P2.0-P2.5 全部通过）；阶段三实施基线已建立，P3.0、P3.0a、P3.1、P3.2、P3.3a 已完成；**P3.3 进行中**——独立聊天契约、独立控制面与持久化、独立 Qdrant alias 与 `_g1` 基线、capability 硬隔离（角色 + audience 双锁）、容量硬限制机制与容器级验收均已落地并通过门禁，唯一未决项是容量上限的**数值**（待确认后填入配置与 Compose，见 §7.1）；蓝绿重建编排属 P3.5
 > 更新日期：2026-09-19
 
@@ -355,6 +355,8 @@ Docker Desktop 恢复运行后，P3.3 缺失的那一项终于有了容器内证
 - SLO（不作为拒绝依据）：在硬限制内，单次写入 p95 ≤ **1 s**（50k 时实测最差 834 ms，留一档余量）；
 - 迁移触发（改成分区/行级 CAS 的判据，任一命中即启动独立 ADR）：消息数 ≥ 50k、快照 ≥ 24 MiB、或持续观测到 p95 写入 > 1 s；
 - 100k / 200k 的外推（**未实测**，仅用于说明为何要在 50k 处触发迁移）：约 42 MiB / 1.5 s、约 85 MiB / 3.0 s 每次写入。
+
+**幂等账本保留窗口（ADR-015，2026-09-19 决策已定、实现待做）**：账本只进不出，是快照里唯一没有回收路径的部分，因此"重放保证的有效窗口"必须先写成契约再实现。已接受 [ADR-015](../adr/015-control-plane-idempotency-ledger-retention.md)：窗口内重放返回首次响应、改绑被拒；窗口外不承诺响应复现与改绑检测，但**不重复写入**由状态本身保证（向量键含 `operation_id`、消息内容不可变、修订号幂等）；清理按年龄为主（建议 7 天）并以条数上限兜底（建议 100,000 条），走既有机会式维护路径，不新增后台任务。清理实现与容量上限数值一并落地，避免两次契约变更。
 
 **拒绝机制已就位（数值待确认）**：`-chat-max-messages` 与 `-chat-max-snapshot-bytes` 两个配置项（默认 0 = 不限）已落地，超限写入返回 `ErrCapacityExceeded` → gRPC `FAILED_PRECONDITION`；消息数为精确检查，快照字节数按上一次持久化的快照判定（最多滞后一次写入，避免把候选快照再编码一遍——50k 时那会多花约 340 ms/次）。`SizingControlStore` 让持久化适配器与内存适配器都把刚写入的负载大小报给守卫，零额外编码。测试：`TestCapacityGuardRefusesWritesPastTheMessageLimit`、`TestCapacityGuardRefusesOnceTheSnapshotLimitIsReached`、`TestZeroCapacityLimitsDoNotRestrictWrites`、`TestNegativeCapacityLimitsAreRejected`，以及适配器的错误码映射用例。确认上限后只需把数值填进配置与 Compose（并写进契约 §7 的默认值）。
 
