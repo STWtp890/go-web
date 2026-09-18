@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"mixin-search/internal/security"
+	mixinsearchchatv1 "packages/gen/mixin-search/chat/v1"
 	mixinsearchv1 "packages/gen/mixin-search/v1"
 
 	"google.golang.org/grpc"
@@ -388,20 +389,59 @@ func TestNewAuthenticatorRequiresVerifier(t *testing.T) {
 	}
 }
 
-func TestEveryRAGMethodHasARolePolicy(t *testing.T) {
+// TestEveryProtectedMethodHasARolePolicy covers both corpora. A new RPC without
+// a policy would be denied at runtime, but silently; this test makes the omission
+// visible while a contract is being extended.
+func TestEveryProtectedMethodHasARolePolicy(t *testing.T) {
 	t.Parallel()
 
-	// A new RPC without a policy would be denied at runtime, but silently. This
-	// test makes the omission visible while the contract is being extended.
-	for _, method := range mixinsearchv1.RAGService_ServiceDesc.Methods {
-		fullMethod := ragServicePrefix + method.MethodName
-		roles, ok := methodRoles[fullMethod]
-		if !ok {
-			t.Errorf("RPC %s has no role policy", method.MethodName)
+	cases := []struct {
+		service string
+		methods []grpc.MethodDesc
+	}{
+		{"mixin_search.v1.RAGService", mixinsearchv1.RAGService_ServiceDesc.Methods},
+		{"mixin_search.chat.v1.ChatIndexService", mixinsearchchatv1.ChatIndexService_ServiceDesc.Methods},
+	}
+	for _, testCase := range cases {
+		for _, method := range testCase.methods {
+			fullMethod := "/" + testCase.service + "/" + method.MethodName
+			roles, ok := methodRoles[fullMethod]
+			if !ok {
+				t.Errorf("RPC %s has no role policy", fullMethod)
+				continue
+			}
+			if len(roles) == 0 {
+				t.Errorf("RPC %s has an empty role policy", fullMethod)
+			}
+		}
+	}
+}
+
+// TestDocumentAndChatRolesStayDisjoint is the authorization half of corpus
+// isolation: a capability minted for one corpus must never satisfy the other.
+func TestDocumentAndChatRolesStayDisjoint(t *testing.T) {
+	t.Parallel()
+
+	documentRoles := map[string]struct{}{}
+	for method, roles := range methodRoles {
+		if !strings.HasPrefix(method, "/mixin_search.v1.RAGService/") {
 			continue
 		}
-		if len(roles) == 0 {
-			t.Errorf("RPC %s has an empty role policy", method.MethodName)
+		for _, role := range roles {
+			documentRoles[role] = struct{}{}
+		}
+	}
+	if len(documentRoles) == 0 {
+		t.Fatal("no document roles were collected, so the assertion below is vacuous")
+	}
+	for method, roles := range methodRoles {
+		if !strings.HasPrefix(method, "/mixin_search.chat.v1.ChatIndexService/") {
+			continue
+		}
+		for _, role := range roles {
+			if _, shared := documentRoles[role]; shared {
+				t.Errorf("role %q is accepted by both corpora via %s", role, method)
+			}
 		}
 	}
 }

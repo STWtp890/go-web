@@ -15,15 +15,18 @@
 
 ## 2. 角色
 
-角色决定**可调用哪些 RPC**，不决定数据范围。
+角色决定**可调用哪些 RPC**，不决定数据范围。角色按语料划分：文档角色与聊天角色是两组不相交的字符串，因此为某一语料签发的 capability 无法调用另一语料的 RPC（[ADR-014](../adr/014-per-corpus-control-plane-isolation.md) 决策 5）。
 
-| 角色 | 允许的 RPC | 持有者 |
-| --- | --- | --- |
-| `index-writer` | `IndexDocumentVersion`、`ActivateDocumentVersion`、`UpdateDocumentAccess`、`DeleteDocumentVersion`、`DeleteDocument`、`GetDocumentVersionState` | `go-web` 的索引 Worker、对账与全量重建 |
-| `searcher` | `SearchDocuments` | `go-web` 影子查询、检索评测，以及后续经 `go-web` 授权的 `py-agent` |
-| `ops` | `GetDocumentVersionState` | 运维/诊断工具，只读且不能检索或写入 |
+| 语料 | 角色 | 允许的 RPC | 持有者 |
+| --- | --- | --- | --- |
+| 文档 | `index-writer` | `IndexDocumentVersion`、`ActivateDocumentVersion`、`UpdateDocumentAccess`、`DeleteDocumentVersion`、`DeleteDocument`、`GetDocumentVersionState` | `go-web` 的索引 Worker、对账与全量重建 |
+| 文档 | `searcher` | `SearchDocuments` | `go-web` 影子查询、检索评测，以及后续经 `go-web` 授权的 `py-agent` |
+| 文档 | `ops` | `GetDocumentVersionState` | 运维/诊断工具，只读且不能检索或写入 |
+| 聊天 | `chat-index-writer` | `IndexConversationMessages`、`ArchiveConversation`、`UpdateConversationAccess`、`RetractMessage`、`DeleteConversation`、`GetConversationIndexState` | `py-agent` 的聊天索引路径 |
+| 聊天 | `chat-searcher` | `SearchChatMessages` | `py-agent` 的检索路径，范围由 `go-web` 或未来的统一授权入口签发 |
+| 聊天 | `chat-ops` | `GetConversationIndexState` | 聊天语料的诊断工具，只读 |
 
-索引写入与检索刻意分离：负责写派生索引的进程不是提供检索的进程，因此被攻陷的检索调用方无法改写它读取的内容。`SearchDocuments` 不接受 `index-writer`，即使请求只针对公开文档。
+索引写入与检索刻意分离：负责写派生索引的进程不是提供检索的进程，因此被攻陷的检索调用方无法改写它读取的内容。`SearchDocuments` 不接受 `index-writer`，`SearchChatMessages` 不接受 `chat-index-writer`，即使请求范围很小。
 
 未在角色表中登记的方法一律拒绝（失败关闭）；新增 RPC 时必须同时登记策略，否则运行期拒绝，且 `internal/transport/grpc` 的测试会直接失败。
 

@@ -40,24 +40,27 @@ func TestDependencyRules(t *testing.T) {
 			reason: "internal/rag must stay independent of transport, commands, and Protobuf DTOs",
 		},
 		{
-			name: "transport points inward to rag",
+			name: "transport points inward to the corpus control planes",
 			root: filepath.Join(internalRoot, "transport"),
 			forbidden: func(path string) bool {
 				if strings.HasPrefix(path, "mixin-search/cmd/") || path == "mixin-search/document_pipeline" {
 					return true
 				}
-				// internal/security holds the caller-capability primitives and no
-				// application state. The transport boundary is where a caller is
-				// authenticated, so it must be allowed to verify credentials there
-				// instead of pushing identity parsing into the rag core or the
-				// command wiring.
-				if path == "mixin-search/internal/security" || strings.HasPrefix(path, "mixin-search/internal/security/") {
-					return false
+				// The transport boundary is where a caller is authenticated and
+				// where each corpus's protocol surface is mapped, so it may reach
+				// the corpora and the capability primitives. It still may not reach
+				// commands or any other internal package.
+				allowed := func(candidate string) bool {
+					return candidate == "mixin-search/internal/rag" ||
+						strings.HasPrefix(candidate, "mixin-search/internal/rag/") ||
+						candidate == "mixin-search/internal/chat" ||
+						strings.HasPrefix(candidate, "mixin-search/internal/chat/") ||
+						candidate == "mixin-search/internal/security" ||
+						strings.HasPrefix(candidate, "mixin-search/internal/security/")
 				}
-				return strings.HasPrefix(path, "mixin-search/internal/") &&
-					path != "mixin-search/internal/rag" && !strings.HasPrefix(path, "mixin-search/internal/rag/")
+				return strings.HasPrefix(path, "mixin-search/internal/") && !allowed(path)
 			},
-			reason: "transport may map protocol types to rag and verify capabilities only, and must not depend on commands or concrete lower layers",
+			reason: "transport may map protocol types to a corpus control plane and verify capabilities only, and must not depend on commands or concrete lower layers",
 		},
 		{
 			name: "controlplane stays a mechanism",

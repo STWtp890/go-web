@@ -29,14 +29,28 @@ import (
 const TokenVersion = 1
 
 // Caller roles. A role grants a fixed set of RPCs; it never grants data scope.
+//
+// Roles are corpus-qualified where the corpus matters. The document roles and
+// the chat roles are disjoint sets on purpose: a capability minted for document
+// search must not be replayable against the chat corpus, and the reverse, so a
+// single leaked capability can never span both corpora
+// (see docs/adr/014-per-corpus-control-plane-isolation.md).
 const (
 	// RoleIndexWriter may mutate the derived document index. It is held by the
 	// go-web index worker, outbox reconciler and admin tooling.
 	RoleIndexWriter = "index-writer"
 	// RoleSearcher may run document searches, bounded by the granted scope.
 	RoleSearcher = "searcher"
-	// RoleOps may inspect index state for diagnostics and never searches or writes.
+	// RoleOps may inspect document index state and never searches or writes.
 	RoleOps = "ops"
+
+	// RoleChatIndexWriter may mutate the derived chat index. It is held by
+	// py-agent's chat indexing path.
+	RoleChatIndexWriter = "chat-index-writer"
+	// RoleChatSearcher may run chat retrievals, bounded by the granted scope.
+	RoleChatSearcher = "chat-searcher"
+	// RoleChatOps may inspect chat index state and never searches or writes.
+	RoleChatOps = "chat-ops"
 )
 
 // MinKeyBytes is the shortest accepted boundary key. HMAC-SHA256 keys shorter
@@ -105,6 +119,13 @@ func (identity Identity) Allows(spaceIDs, documentIDs []string) error {
 }
 
 // Claims is the signed payload.
+//
+// The two scope declarations are corpus-neutral by shape and corpus-specific by
+// meaning: they are the granted container identifiers and the granted object
+// identifiers for whichever corpus the role belongs to. For the document roles
+// they carry space and document identifiers; for the chat roles they carry chat
+// scope and conversation identifiers. The containment rule is identical either
+// way, which is why one verifier and one format serve both.
 type Claims struct {
 	Version            int      `json:"version"`
 	Issuer             string   `json:"issuer"`
@@ -158,9 +179,10 @@ func (claims Claims) validate() error {
 
 // ParseRole reports whether role is a role this service defines.
 func ParseRole(role string) (string, error) {
-	switch strings.TrimSpace(role) {
-	case RoleIndexWriter, RoleSearcher, RoleOps:
-		return strings.TrimSpace(role), nil
+	switch trimmed := strings.TrimSpace(role); trimmed {
+	case RoleIndexWriter, RoleSearcher, RoleOps,
+		RoleChatIndexWriter, RoleChatSearcher, RoleChatOps:
+		return trimmed, nil
 	default:
 		return "", fmt.Errorf("%w: %q", ErrUnknownRole, role)
 	}
@@ -350,7 +372,10 @@ func (issuer *Issuer) Issue(subject, role, userID string, spaceIDs, documentIDs 
 		IssuedAt:  issuedAt.Unix(),
 		ExpiresAt: issuedAt.Add(issuer.ttl).Unix(),
 	}
-	if parsedRole == RoleSearcher {
+	// Scope-bearing roles carry the granted envelope. Index writers and ops
+	// deliberately carry none: their permission is the role, so a leaked write
+	// capability can never be replayed as a scoped search.
+	if parsedRole == RoleSearcher || parsedRole == RoleChatSearcher {
 		claims.AllowedSpaceIDs = normalizeIDs(spaceIDs)
 		claims.AllowedDocumentIDs = normalizeIDs(documentIDs)
 	}

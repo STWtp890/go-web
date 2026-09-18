@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"mixin-search/internal/security"
+	mixinsearchchatv1 "packages/gen/mixin-search/chat/v1"
 	mixinsearchv1 "packages/gen/mixin-search/v1"
 
 	"google.golang.org/grpc"
@@ -27,8 +28,12 @@ const bearerPrefix = "bearer "
 // writes the derived index is not the process that serves searches, so a
 // compromised searcher cannot rewrite what it reads.
 //
-// Every method of the RAG service must appear here. A method that is missing is
-// denied rather than allowed, so adding an RPC without a policy fails closed.
+// Every method of a protected service must appear here. A method that is missing
+// is denied rather than allowed, so adding an RPC without a policy fails closed.
+//
+// Chat methods list chat roles only, and document methods list document roles
+// only. The two role sets are disjoint, so a capability minted for one corpus can
+// never call the other (docs/adr/014-per-corpus-control-plane-isolation.md).
 var methodRoles = map[string][]string{
 	mixinsearchv1.RAGService_IndexDocumentVersion_FullMethodName:    {security.RoleIndexWriter},
 	mixinsearchv1.RAGService_ActivateDocumentVersion_FullMethodName: {security.RoleIndexWriter},
@@ -40,11 +45,25 @@ var methodRoles = map[string][]string{
 		security.RoleOps,
 	},
 	mixinsearchv1.RAGService_SearchDocuments_FullMethodName: {security.RoleSearcher},
+
+	mixinsearchchatv1.ChatIndexService_IndexConversationMessages_FullMethodName: {security.RoleChatIndexWriter},
+	mixinsearchchatv1.ChatIndexService_ArchiveConversation_FullMethodName:       {security.RoleChatIndexWriter},
+	mixinsearchchatv1.ChatIndexService_UpdateConversationAccess_FullMethodName:  {security.RoleChatIndexWriter},
+	mixinsearchchatv1.ChatIndexService_RetractMessage_FullMethodName:            {security.RoleChatIndexWriter},
+	mixinsearchchatv1.ChatIndexService_DeleteConversation_FullMethodName:        {security.RoleChatIndexWriter},
+	mixinsearchchatv1.ChatIndexService_GetConversationIndexState_FullMethodName: {
+		security.RoleChatIndexWriter,
+		security.RoleChatOps,
+	},
+	mixinsearchchatv1.ChatIndexService_SearchChatMessages_FullMethodName: {security.RoleChatSearcher},
 }
 
-// ragServicePrefix identifies the protected service, including methods this
-// build does not know about.
-var ragServicePrefix = "/" + mixinsearchv1.RAGService_ServiceDesc.ServiceName + "/"
+// protectedServicePrefixes identifies the protected services, including methods
+// this build does not know about.
+var protectedServicePrefixes = []string{
+	"/" + mixinsearchv1.RAGService_ServiceDesc.ServiceName + "/",
+	"/" + mixinsearchchatv1.ChatIndexService_ServiceDesc.ServiceName + "/",
+}
 
 // AuthConfig configures the boundary authenticator.
 type AuthConfig struct {
@@ -93,7 +112,7 @@ func (a *Authenticator) UnaryInterceptor(
 	handler grpc.UnaryHandler,
 ) (any, error) {
 	roles, protected := methodRoles[info.FullMethod]
-	if !protected && !strings.HasPrefix(info.FullMethod, ragServicePrefix) {
+	if !protected && !isProtectedServiceMethod(info.FullMethod) {
 		return handler(ctx, request)
 	}
 	startedAt := a.now()
@@ -163,6 +182,26 @@ func (a *Authenticator) UnaryInterceptor(
 		}
 	}
 
+	if info.FullMethod == mixinsearchchatv1.ChatIndexService_SearchChatMessages_FullMethodName {
+		search, ok := request.(*mixinsearchchatv1.SearchChatMessagesRequest)
+		if !ok {
+			record.Outcome = security.OutcomeDenied
+			record.Detail = fmt.Sprintf("unexpected request type %T", request)
+			a.record(record, startedAt)
+			return nil, status.Error(codes.Internal, "unexpected request type for SearchChatMessages")
+		}
+		// The containment rule is the same one documents use: the granted
+		// envelope carries container identifiers (chat scopes) and object
+		// identifiers (conversations) for this corpus.
+		record.RequestedScope = len(search.GetAllowedScopeIds()) + len(search.GetAllowedConversationIds())
+		if err := identity.Allows(search.GetAllowedScopeIds(), search.GetAllowedConversationIds()); err != nil {
+			record.Outcome = security.OutcomeDenied
+			record.Detail = err.Error()
+			a.record(record, startedAt)
+			return nil, status.Errorf(codes.PermissionDenied, "chat search scope exceeds the granted capability: %v", err)
+		}
+	}
+
 	response, handlerErr := handler(security.WithIdentity(ctx, identity), request)
 	record.Outcome = security.OutcomeAllowed
 	if handlerErr != nil {
@@ -200,6 +239,18 @@ func (a *Authenticator) record(record security.AuditRecord, startedAt time.Time)
 func roleAllowed(allowed []string, role string) bool {
 	for _, candidate := range allowed {
 		if candidate == role {
+			return true
+		}
+	}
+	return false
+}
+
+// isProtectedServiceMethod reports whether the method belongs to a service whose
+// methods must all have a policy. An unmapped method of a known service is denied
+// rather than allowed, so a new RPC cannot go live without a role decision.
+func isProtectedServiceMethod(fullMethod string) bool {
+	for _, prefix := range protectedServicePrefixes {
+		if strings.HasPrefix(fullMethod, prefix) {
 			return true
 		}
 	}

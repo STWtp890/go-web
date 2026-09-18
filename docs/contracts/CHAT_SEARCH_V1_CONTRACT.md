@@ -70,4 +70,6 @@
 
 - 契约形状由 `apps/mixin-search/internal/architecture/contracts_test.go` 强制：两个契约的 RPC 集合互不重叠，任一契约不得出现属于另一语料的字段名，也不得增加 `corpus_type` 一类的语料选择器；
 - 生成代码一致性由 `packages/proto/verify-generated.ps1` 与 CI 的 `generated-proto` 作业强制；
-- 服务端、独立控制面与独立集合的验收条件见 [ADR-014](../adr/014-per-corpus-control-plane-isolation.md) 的"验证"一节；本契约不重复排期。
+- 角色策略由 `internal/transport/grpc/auth.go` 的方法表强制：聊天方法只接受 `chat-index-writer` / `chat-searcher` / `chat-ops`，未登记的方法一律拒绝；`internal/transport/grpc` 的测试断言两个语料的角色集合不相交且每个 RPC 都有策略；
+- 控制面在 `internal/chat`，与文档语料不共享快照、generation、持久化表或 reconciler；跨语料隔离由 `internal/chat/isolation_test.go` 与 `internal/architecture/dependencies_test.go` 的可执行断言保证；
+- 服务端、独立集合与不中断重建的验收条件见 [ADR-014](../adr/014-per-corpus-control-plane-isolation.md) 的"验证"一节；本契约不重复排期。

@@ -268,11 +268,17 @@ P3.3 尚未完成。已落地的部分：
 - ADR-014 的五条最低验收条件已有可执行证据（`internal/chat/isolation_test.go`）：聊天活动使文档控制面的 `Load`/`Generation`/`Save` 计数**零增长**且文档控制负载字节数不变、文档活动不推进聊天 generation、聊天规模增长不改变文档控制快照大小、聊天投影故障不影响文档检索、聊天投影被挂起时文档授权撤销与检索照常完成；
 - 契约语义测试（`internal/chat/service_test.go`）：索引不等于可检索（未归档检索为空）、撤回后仍被索引且计数、四类修订互不推进、墓碑拒绝迟到事件且删除可重放、operation_id 重放不重复写向量且改绑冲突、消息内容不可变、聊天无公开语料（空 allow-list 不召回）、投影不可用时检索失败关闭、索引失败留下可清理的持久化声明。
 
+**传输与授权（第三片）**
+
+- capability 新增三个聊天角色（`chat-index-writer`、`chat-searcher`、`chat-ops`），与文档角色是不相交的字符串集合，因此一个语料的凭证无法调用另一个语料的 RPC；
+- 拦截器的方法策略表覆盖两个服务的全部 14 个 RPC，未登记方法一律拒绝；`SearchChatMessages` 复用与文档相同的**范围包含**校验（请求范围必须是已授予范围的子集），审计记录同时记录请求与已授予范围大小；
+- 新增 `internal/transport/grpc/server_chat.go`：聊天契约的协议适配与错误码映射，与文档适配器是两个独立类型，互不可达；
+- 测试断言：两个语料的角色集合不相交且每个 RPC 都有策略、文档凭证不能调用聊天 RPC（反之亦然）、聊天 ops 只能读状态、越界范围整体拒绝、适配器字段映射与错误码映射。
+
 **尚未落地**
 
-- 聊天服务尚未注册到 gRPC 服务端：`internal/chat` 的适配器与 capability 角色（`chat-index-writer`、`chat-searcher`）接线属于下一片；
-- 独立 Qdrant collection/alias 与聊天向量存储实现（payload schema、候选级过滤、dense/sparse 检索）尚未落地，因此"聊天索引重建不切换文档 alias"这一条还没有实测断言；
-- 组合根（`cmd/rag-server`）尚未构造聊天语料的服务与 reconciler。
+- 聊天服务尚未注册到 gRPC 服务端，也尚未在组合根构造：`ChatServer` 已存在并通过测试，但 `cmd/rag-server` 仍只装配文档语料；
+- 独立 Qdrant collection/alias 与聊天向量存储实现（payload schema、候选级过滤、dense/sparse 检索）尚未落地，因此"聊天索引重建不切换文档 alias"这一条还没有实测断言，`chat.ProjectionStore` 也尚未接到真实集合。
 
 ## 8. P3.4：QQ 身份与知识空间映射
 
