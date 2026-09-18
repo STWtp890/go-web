@@ -287,7 +287,12 @@ P3.3 尚未完成。已落地的部分：
 
 **尚未落地**
 
-- **容器级验收未运行**：本轮 Docker daemon 停止（无进程、无命名管道），`deployments/verify.ps1` 在启动栈之前失败。因此聊天语料的 PostgreSQL 控制表与 Qdrant collection 创建、以及 Compose 装配路径**尚未在容器内验证**；进程内 gRPC 端到端测试覆盖了装配与协议路径，但不覆盖这两项真实依赖。
+- **容器级验收未运行**：本轮 Docker daemon 停止（无进程、无命名管道），`deployments/verify.ps1` 在启动栈之前失败。因此聊天语料的 PostgreSQL 控制表与 Qdrant collection 创建、以及 Compose 装配路径**尚未在容器内验证**；进程内 gRPC 端到端测试覆盖了装配与协议路径，但不覆盖这两项真实依赖；
+- **alias 机制两侧都还没有**：两个语料直接用各自的 collection 名检索，Qdrant alias 与其原子切换尚未引入（蓝绿重建见 P3.5）。因此验收条件"聊天索引重建不切换文档 alias"目前是由"集合名独立 + 聊天重建只操作自己的集合"保证的（`internal/chatindex/corpus_test.go`），不是由 alias 保证的；alias 落地后需要补一条真正的切换断言。同理，`deployments/verify-qdrant-control.ps1` 这类脚本也不能代替容器内的 alias 检查；
+- **聊天侧 PostgreSQL 适配器仍没有集成测试**：文档语料有环境变量门控的 `internal/rag/control_store_integration_test.go`（`CONTROL_STORE_INTEGRATION=1` + `CONTROL_DATABASE_DSN`）。聊天侧本轮补的是两项**不依赖数据库**的替代证据，而不是一份无法执行的集成测试：
+  - `internal/chat/control_schema_test.go`：断言聊天 schema 只创建自己的 `chat_control_states`，不触碰文档的 `control_states`（复制文档 schema 却漏改表名这类错误对 PostgreSQL 是合法的，只会在容器门禁里暴露）；
+  - `internal/chat/control_store_encoding_test.go`：把真实控制状态走一遍持久化编码边界（`json.Marshal` → `Unmarshal` → `normalize` → `validate`），再断言恢复后的语料检索结果、对账视图、幂等账本与墓碑围栏与原来一致；该断言经一次刻意的反向改动确认有效（去掉 generation 列还原即失败）。
+  两项都不覆盖 SQL 本身（DDL 执行、CAS `UPDATE ... RETURNING`、连接池行为），后者仍只能在容器门禁里验证。
 
 ## 8. P3.4：QQ 身份与知识空间映射
 
