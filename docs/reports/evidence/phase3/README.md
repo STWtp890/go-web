@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | P3.1a | `54cc1c8` | `full-api-p15_20260917_044228`、`document-search-evaluation-p25_20260917_044232`、`full-api-p24_outage_20260917_044235` | 可信签发方绑定 + 限流调用方表硬上限 |
 | P3.2 | `8e7abea` | `full-api-p15_20260917_045334`、`document-search-evaluation-p25_20260917_045338`、`full-api-p24_outage_20260917_045341` | 控制面不可变快照 + 后台投影收敛 |
-| P3.3 | `2d6a184` | `full-api-p15_20260919_031530`、`document-search-evaluation-p25_20260919_031536`、`full-api-p24_outage_20260919_031539`，另加 `p33-chat-corpus-container_20260919` | 多语料契约与索引隔离：独立契约、独立控制面、按语料 audience、Qdrant alias 与 `_g1` 基线、容器级验收（容量上限待确认，见实施计划 §7.1） |
+| P3.3 | `0bb7180` | `full-api-p15_20260919_031956`、`document-search-evaluation-p25_20260919_032002`、`full-api-p24_outage_20260919_032005`，另加 `p33-chat-corpus-container_20260919` | 多语料契约与索引隔离：独立契约、独立控制面、按语料 audience、Qdrant alias 与 `_g1` 基线、容器级验收（容量上限数值待确认，机制已就位，见实施计划 §7.1） |
 
 每个运行包含三个报告族（正常拓扑 API 回归、停机拓扑 API 回归、检索质量评估），各有 `.json` 与 `.md` 两种形式。P3.3 的聊天语料专项证据（容器日志、控制 namespace 隔离、对部署端点的三态与隔离验收）记在 `p33-chat-corpus-container_20260919.md`，因为三个通用报告族覆盖的是文档路径。
 

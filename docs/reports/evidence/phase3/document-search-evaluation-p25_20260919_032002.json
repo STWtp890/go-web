@@ -1,7 +1,7 @@
 {
   "schemaVersion": "document-search-evaluation/v1",
-  "runId": "p25_20260919_031536",
-  "generatedAt": "2026-09-18T19:15:37.5831818Z",
+  "runId": "p25_20260919_032002",
+  "generatedAt": "2026-09-18T19:20:03.7652744Z",
   "datasetName": "document-search-v1",
   "datasetSha256": "d2fe1ecebbb66a3bb15682bc4794d3923a99a30f4cf801856d12f47676a32c50",
   "embeddingProfile": "local-hash-v1",
@@ -10,18 +10,18 @@
     "meanRecallAtK": 1,
     "meanMrr": 1,
     "meanNdcgAtK": 1,
-    "latencyP50Micros": 8425,
-    "latencyP95Micros": 197592,
-    "latencyMaxMicros": 197592,
+    "latencyP50Micros": 5360,
+    "latencyP95Micros": 169532,
+    "latencyMaxMicros": 169532,
     "errors": 0
   },
   "shadow": {
     "meanRecallAtK": 1,
     "meanMrr": 0.9047619047619049,
     "meanNdcgAtK": 0.9285714285714286,
-    "latencyP50Micros": 4345,
-    "latencyP95Micros": 4805,
-    "latencyMaxMicros": 4805,
+    "latencyP50Micros": 3432,
+    "latencyP95Micros": 4073,
+    "latencyMaxMicros": 4073,
     "errors": 0
   },
   "correctness": {
@@ -62,8 +62,8 @@
         "mrr": 1,
         "ndcgAtK": 1
       },
-      "bm25LatencyMicros": 197592,
-      "shadowLatencyMicros": 4383
+      "bm25LatencyMicros": 169532,
+      "shadowLatencyMicros": 3172
     },
     {
       "id": "q-en",
@@ -96,8 +96,8 @@
         "mrr": 1,
         "ndcgAtK": 1
       },
-      "bm25LatencyMicros": 7003,
-      "shadowLatencyMicros": 4805
+      "bm25LatencyMicros": 6096,
+      "shadowLatencyMicros": 3941
     },
     {
       "id": "q-code",
@@ -115,7 +115,7 @@
         "code-timeout",
         "zh-concurrency",
         "title-beidou",
-        "semantic-recovery",
+        "en-outbox",
         "exact-quasar"
       ],
       "bm25Metrics": {
@@ -128,8 +128,8 @@
         "mrr": 1,
         "ndcgAtK": 1
       },
-      "bm25LatencyMicros": 8425,
-      "shadowLatencyMicros": 3590
+      "bm25LatencyMicros": 5360,
+      "shadowLatencyMicros": 3762
     },
     {
       "id": "q-title",
@@ -158,8 +158,8 @@
         "mrr": 0.3333333333333333,
         "ndcgAtK": 0.5
       },
-      "bm25LatencyMicros": 8607,
-      "shadowLatencyMicros": 4799
+      "bm25LatencyMicros": 6735,
+      "shadowLatencyMicros": 3308
     },
     {
       "id": "q-body",
@@ -188,8 +188,8 @@
         "mrr": 1,
         "ndcgAtK": 1
       },
-      "bm25LatencyMicros": 11161,
-      "shadowLatencyMicros": 4345
+      "bm25LatencyMicros": 5360,
+      "shadowLatencyMicros": 3144
     },
     {
       "id": "q-exact",
@@ -206,7 +206,7 @@
         "title-beidou",
         "zh-concurrency",
         "semantic-recovery",
-        "body-mars"
+        "en-outbox"
       ],
       "bm25Metrics": {
         "recallAtK": 1,
@@ -218,8 +218,8 @@
         "mrr": 1,
         "ndcgAtK": 1
       },
-      "bm25LatencyMicros": 7602,
-      "shadowLatencyMicros": 3726
+      "bm25LatencyMicros": 5062,
+      "shadowLatencyMicros": 3432
     },
     {
       "id": "q-semantic",
@@ -248,8 +248,8 @@
         "mrr": 1,
         "ndcgAtK": 1
       },
-      "bm25LatencyMicros": 3837,
-      "shadowLatencyMicros": 4008
+      "bm25LatencyMicros": 2222,
+      "shadowLatencyMicros": 4073
     }
   ]
 }
