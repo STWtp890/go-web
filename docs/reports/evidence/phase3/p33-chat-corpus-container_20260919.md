@@ -1,18 +1,21 @@
 # P3.3 聊天语料容器级验收证据（2026-09-19）
 
 本文件记录 P3.3（多语料契约与索引隔离）在**容器内**取得的聊天语料专项证据。同一次运行的三个通用报告族见
-`full-api-p15_20260919_001036`、`full-api-p24_outage_20260919_001045`、
-`document-search-evaluation-p25_20260919_001041`；本文件只记录那些报告族没有覆盖的部分。
+`full-api-p15_20260919_003700`、`full-api-p24_outage_20260919_003706`、
+`document-search-evaluation-p25_20260919_003704`；本文件只记录那些报告族没有覆盖的部分。
 
-验收时提交：`f60233f`（含本轮新增的两步门禁与宿主发布端口参数化）。
+验收时提交：`bf2ec4a`（含把 generation 隔离升级为门禁断言的改动；更早一次运行 `f60233f` 只做了
+namespace 隔离断言与专项取证，其报告族已被本次运行取代）。
 
 ## 运行方式
 
 由 `deployments/verify.ps1` 从空数据卷构建完整根 Compose 环境（`GIN_BACKEND_PORT=18080`，
-因为宿主 Windows 保留了 TCP 8070–8169，默认的 8080 无法绑定）。本轮在该门禁中新增两步：
+因为宿主 Windows 保留了 TCP 8070–8169，默认的 8080 无法绑定）。本轮在该门禁中新增三步：
 
-1. `Run chat corpus container acceptance` → `go test ./cmd/rag-server -run TestChatCorpusAgainstADeployedStack`；
-2. `Verify the corpora keep separate control namespaces` → 对 `control-postgres` 执行 psql 断言。
+1. 采样两个语料的控制 generation（`Sample control generations before chat activity`）；
+2. `Run chat corpus container acceptance` → `go test ./cmd/rag-server -run TestChatCorpusAgainstADeployedStack`；
+3. `Verify chat activity did not advance the document generation`（比较步骤 1 与步骤 2 之后的两次采样）；
+4. `Verify the corpora keep separate control namespaces` → 对 `control-postgres` 执行 psql 断言。
 
 ## 证据 1：服务与两个语料的装配
 
@@ -28,20 +31,20 @@ RAG gRPC server listening on [::]:9090 (store=qdrant control_store=postgres chat
 
 ## 证据 2：控制状态在 PostgreSQL 中互不相干
 
-`verify.ps1` 的输出行：
+门禁输出行：
 
 ```
+==> Sample control generations before chat activity: document=0 chat=0
+PASS control generation isolation: chat 0 -> 4, document unchanged at 0
 PASS control namespace isolation: chat=[chat-v1] documents=[go-web-shadow-v1]
 ```
 
-另有一次聊天写入（索引 + 归档 + 撤回 + 幂等重放）之后的直接查询：聊天表
-`mixin_search_control.chat_control_states` 只有 `chat-v1` 且 `generation = 4`，
-文档表 `mixin_search_control.control_states` 只有 `go-web-shadow-v1` 且 `generation = 0`。
+第一条是 ADR-014 第 1 条的可重复断言：这一轮聊天写入（索引、归档、撤回、幂等重放）把聊天
+namespace 从 generation 0 推到 4，而文档 namespace 在同一窗口内保持 0——**聊天 generation
+变化没有推进文档控制面**。该断言每次整栈门禁都会执行，不再是专项取证。
 
-这正是 ADR-014 两条最低验收条件的容器内证据：
-
-- 聊天 generation 变化（0 → 4）**没有**触发文档快照重新加载（文档 generation 仍为 0）；
-- 聊天活动**没有**增大文档控制快照（文档行的 payload 未被触碰）。
+第二条证明两个语料各自拥有独立持久化状态：聊天表 `chat_control_states` 只有 `chat-v1`，
+文档表 `control_states` 只有 `go-web-shadow-v1`。
 
 ## 证据 3：对部署端点的聊天契约验收
 
@@ -59,5 +62,11 @@ PASS control namespace isolation: chat=[chat-v1] documents=[go-web-shadow-v1]
 
 - 没有直接列出 Qdrant 的 collection 清单：qdrant 镜像内没有 `curl`，且该端口未发布到宿主，
   因此 collection 的存在是由"向量确实写入并经检索命中"间接证明的；
-- Qdrant alias 的原子切换仍未实现（两侧都没有 alias，属于 P3.5 蓝绿重建路径）；
-  P3.3 的"聊天重建不切换文档 alias"当前由"集合名独立 + 聊天重建只操作自己的集合"保证。
+- Qdrant alias 的原子切换**未实现**：两侧都没有 alias 机制，两个语料直接用各自的 collection
+  名检索。因此 ADR-014 第 2 条（聊天重建不切换文档 alias）目前只以"集合名独立 + 聊天重建只
+  操作自己的集合"这一较弱形式成立，且这是 P3.3 的未完成项之一（另见实施计划 §7.1 的
+  "尚未落地"）；
+- capability audience 仍两侧共用（ADR-014 决策 5 未落地），跨语料调用只靠角色集合不相交挡住；
+- 聊天控制快照的容量上限、operation ledger 保留期限与行级 CAS 迁移触发指标尚未定义；
+- 远程 CI 没有本次提交的运行记录（仓库领先 `origin/main` 38 个提交），这里只声明本地门禁
+  与容器验收的结果。
