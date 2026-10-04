@@ -1,9 +1,26 @@
 package domain
 
 import (
-	"context"
 	"time"
 )
+
+// Page 是列表与检索共用的分页信封。
+//
+// 它放在领域层，因为它同时是 application、infrastructure 与 interfaces 的返回
+// 形状；放在其中任一层都会让另外两层为了一个纯数据结构而反向依赖。
+//
+// NextCursor 是来源服务给出的不透明前向游标，调用方只能原样回传。Number 只用于
+// 展示：游标分页下服务端不再按页码换算偏移，页码由前端根据游标历史自行维护。
+//
+// Truncated 是检索服务给出的“结果未完整展示”信号：本页之后仍有结果。列表分页没有
+// 这个概念，保持 false。
+type Page struct {
+	Number     int
+	Size       int
+	Total      int64
+	NextCursor string
+	Truncated  bool
+}
 
 // DocumentHead 是构造版本化缓存键和执行访问判断所需的最小当前状态。
 type DocumentHead struct {
@@ -35,21 +52,4 @@ type DocumentSummary struct {
 	Summary             string
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
-}
-
-// QueryRepository 提供 document 当前状态的只读查询端口。
-type QueryRepository interface {
-	GetActiveDocumentHead(context.Context, string) (*DocumentHead, error)
-	GetActiveDocumentView(context.Context, DocumentHead) (*DocumentView, error)
-	ListOwnedDocuments(context.Context, int64, int, int) ([]DocumentSummary, int64, error)
-	ListPublicDocuments(context.Context, int, int) ([]DocumentSummary, int64, error)
-	SearchOwnedDocuments(context.Context, int64, string, int, int) ([]DocumentSummary, int64, error)
-}
-
-// DocumentViewLoader 在缓存未命中时加载当前文档详情。
-type DocumentViewLoader func(context.Context) (*DocumentView, error)
-
-// QueryCache 使用包含活动版本和三类修订号的键缓存不可变详情快照。
-type QueryCache interface {
-	GetDocumentView(context.Context, DocumentHead, DocumentViewLoader) (*DocumentView, error)
 }

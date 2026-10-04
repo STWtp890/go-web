@@ -1,11 +1,59 @@
 # 本地依赖与验证
 
-根目录 Compose 默认构建并启动 PostgreSQL、Redis、gin-backend、simple-frontend、控制 PostgreSQL、Qdrant、mixin-search 与 document-index-worker。前四者承载正式 Web/Documents/BM25 链路，后四者承载可重建的影子索引和查询链路；mixin-search 故障不改变 gin-backend `/readyz` 或正式搜索结果。Chat/WebSocket schema 和源码保留，但服务、连接、路由和前端入口均未注册。
+根目录 Compose 默认构建并启动 PostgreSQL、Redis、gin-backend、simple-frontend、Qdrant，以及 ADR-017 拆出的 document-service、document-search 与 qq-search。Web/Documents 链路经 document-service 完成文档写入与详情读取，并经 document-search 完成正式文档检索。Chat/WebSocket schema 和源码保留，但服务、连接、路由和前端入口均未注册。
+
+旧的 `document-index-worker` 与 `document-index-admin` 已在阶段 C 删除，不再有 Compose 入口。旧的 mixin-search 检索基线与它的控制 PostgreSQL 仍在仓库里，但**已退出默认启动路径**，位于 Compose profile `legacy-retrieval`：
+
+```powershell
+# 只在需要对照验证旧检索基线时显式启动
+docker compose --profile legacy-retrieval up -d mixin-search control-postgres
+```
 
 | 依赖 | 当前作用 | 宿主机端口 |
 | --- | --- | --- |
-| PostgreSQL | 用户、管理员、版本化文档、BM25 投影；保留 Chat 表 | `127.0.0.1:15432` |
+| PostgreSQL | 用户、管理员，以及三个服务各自的 schema（`document_service` / `document_search` / `qq_search`） | `127.0.0.1:15432` |
 | Redis | 会话 SID、缓存、Token 状态与会话撤销广播 | `127.0.0.1:16379` |
+| 控制 PostgreSQL | 迁移期 mixin-search 文档控制状态 | `127.0.0.1:15433` |
+| Qdrant | 迁移期 mixin-search 文档语料集合；三个新服务各自的 collection/alias 命名空间已在 schema 中登记 | `127.0.0.1:16334`（gRPC） |
+
+### 来源专属服务的数据库账号与隔离
+
+三个服务各自使用独立的 PostgreSQL 角色与 schema，由 `postgresql/sql/service/service_roles.sql` 建立：
+
+| 服务 | schema | 写入账号 | 索引命名空间 |
+| --- | --- | --- | --- |
+| document-service | `document_service` | `document_service_writer` | 无（文档服务不写索引） |
+| document-search | `document_search` | `document_search_writer` | Qdrant alias `go_web_document_v1` |
+| qq-search | `qq_search` | `qq_search_writer` | Qdrant alias `qq_source_messages_v1` / `qq_source_files_v1` |
+
+唯一的跨 schema 权限是**按列只读**授予 `document_search_writer` 读取 `document_service.document_events`。写入权限矩阵可用以下门禁实测（需要运行中的 postgres 容器）：
+
+```powershell
+.\deployments\postgresql\verify-service-isolation.ps1
+```
+
+### 来源专属服务的端到端验收
+
+在开发数据库与本地端口上启动三个服务并跑通两条链路（Web 文档命令 → 事件 → 正式文档索引；QQ 原始事件 → QQ 索引）：
+
+```powershell
+.\deployments\verify-source-owned-services.ps1
+```
+
+该脚本真实构建并以独立进程启动三个服务，等待 `/readyz`，然后运行 `apps/document-service/cmd/document-service-e2e`：它以已签名的服务身份断言扮演 `go-web` 与 `py-agent`，断言文档创建与详情读回、事件消费后的检索命中、越界请求整体拒绝、跨 audience capability 被拒、无 `document-index-writer` 的索引写入被拒、QQ 消息与文件索引互不串源、撤回后不再命中但记录仍为 `RECALLED`。任何一步失败即整体失败，不会降级为跳过。
+
+空间与成员的管理入口同样在文档服务侧（旧 `gin-backend` spacectl 的直接写表路径已删除）：
+
+```powershell
+cd apps/document-service
+go run ./cmd/document-service-spacectl `
+  -endpoint 127.0.0.1:18081 `
+  -capability-key-file ../../deployments/secrets/mixin_search_capability.key `
+  -subject web:user:42 -actor admin@example.com -reason "create the team space" `
+  create-team -name "Team A"
+```
+
+`-subject` 是断言代表的主体（也是 `CreateTeamSpace` 记录的空间 owner），`-actor` 与 `-reason` 必填并进入审计；`bind-group` / `revoke-group` / `add-member` / `revoke-member` / `list-subjects` / `get-space` 同理。
 
 ## 前置（全新克隆只需一次）
 
@@ -52,19 +100,21 @@ docker compose -f docker-compose.yaml up -d --build --wait
 .\deployments\verify.ps1
 ```
 
-脚本只使用一个随机命名、一次性的 Compose 环境，依次完成：
+它按当前架构依次执行：
 
-1. Compose 与 `mixin-search/v1` 生成代码检查；
-2. Vue/TypeScript 构建；
-3. 从空卷构建并启动完整栈；
-4. PostgreSQL 目标 schema、BM25-only 边界、User/Manager cache revision fencing 和管理员测试种子；
-5. 三个 Go module 的 `go test ./...` 与 `go vet ./...`；
-6. 认证、Documents、管理员、Nginx 代理、旧 Markdown 404 和 Chat 未注册的运行时 API 回归；
-7. 等待影子索引收敛，使用七类固定样本生成 BM25/mixin-search Recall@K、MRR、nDCG、延迟和正确性报告；
-8. 停止 mixin-search，确认第二轮 95 项 API 回归仍通过、影子失败被记录，再恢复服务并自动排空 Outbox；
-9. HTTP 健康检查，输出 P2.5_SHADOW_QUERY_EVALUATION=PASS，并默认销毁容器和测试数据卷。
+1. 协议生成物一致性（六份契约）；
+2. 七个 Go module 的 `go build` / `go vet` / `gofmt -l` / `go test`；
+3. 数据库写权限矩阵（`verify-service-isolation.ps1`）；
+4. 三个来源服务的真实 gRPC 链路（`verify-source-owned-services.ps1`，输出 `ADR017_E2E=PASS`）；
+5. 真实进程与真实认证下的 Web 文档链路（`verify-stage-a-web.ps1`，输出 `STAGE_A_WEB=PASS`）；
+6. 前端阶段边界、类型检查与生产构建；
+7. 文档链接检查。
 
-成功运行会在 test-results 生成 document-search-evaluation-<run-id>.json/.md。当前 local-hash-v1 只用于确定性评估，因此报告即使数值门禁通过也会给出 KEEP_BM25；正式读取不会由脚本自动切换。
+不需要启动服务的一侧可用 `-SkipServices`，跳过前端构建可用 `-SkipFrontend`。
+
+本脚本**取代**了 P1.5/P2.3/P2.4/P2.5 的旧整栈门禁：那套门禁驱动 `document-index-worker`/`document-index-admin`/`document-search-eval`，断言 `public.*` 投影、投递账本与影子观测；这些对象与入口已随阶段 C 退场，继续驱动已删除的二进制只会因错误的原因失败。mixin-search 自身的语料与控制面验收仍在该 module 内（`verify-control-store.ps1`、`verify-qdrant-control.ps1`），需要它们自己的 Compose 工程，因此不并入本门禁。
+
+阶段 A 的验收结果与逐条断言见 [stage-a-web-acceptance.md](../docs/reports/evidence/phase4/stage-a-web-acceptance.md)。
 
 ### 验收产物的保留策略
 

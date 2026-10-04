@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { ChevronLeft, ChevronRight } from '@lucide/vue'
 
 interface Props {
@@ -6,20 +7,26 @@ interface Props {
   totalPages: number
   total?: number
   disabled?: boolean
+  /** 游标分页时由调用方给出：没有下一页时后端不下发游标。 */
+  hasNext?: boolean
+  hasPrev?: boolean
 }
 
-defineProps<Props>()
+const props = defineProps<Props>()
 const emit = defineEmits<{ change: [page: number] }>()
+
+const canGoPrev = computed(() => props.hasPrev ?? props.page > 1)
+const canGoNext = computed(() => props.hasNext ?? props.page < props.totalPages)
 </script>
 
 <template>
-  <nav v-if="totalPages > 1" class="pagination" aria-label="分页">
+  <nav v-if="canGoPrev || canGoNext || totalPages > 1" class="pagination" aria-label="分页">
     <span v-if="total !== undefined" class="pagination__total">共 {{ total }} 项</span>
-    <button type="button" class="pagination__button" :disabled="disabled || page <= 1" aria-label="上一页" @click="emit('change', page - 1)">
+    <button type="button" class="pagination__button" :disabled="disabled || !canGoPrev" aria-label="上一页" @click="emit('change', page - 1)">
       <ChevronLeft :size="17" />
     </button>
-    <span class="pagination__page"><strong>{{ page }}</strong> / {{ totalPages }}</span>
-    <button type="button" class="pagination__button" :disabled="disabled || page >= totalPages" aria-label="下一页" @click="emit('change', page + 1)">
+    <span class="pagination__page"><strong>{{ page }}</strong> / {{ Math.max(totalPages, page) }}</span>
+    <button type="button" class="pagination__button" :disabled="disabled || !canGoNext" aria-label="下一页" @click="emit('change', page + 1)">
       <ChevronRight :size="17" />
     </button>
   </nav>

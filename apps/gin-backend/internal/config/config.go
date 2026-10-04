@@ -16,15 +16,16 @@ import (
 // - RedisConfig: Redis 配置
 // - TLSConfig: TLS 配置
 // - CustomConfig: 自定义配置
+// - SourceOwnedServicesConfig: ADR-017 拆出的文档服务与两个检索服务的接线
 type Config struct {
-	ServerConfig        must.ServerConfig              `yaml:"server"`
-	LogConfig           must.LogConfig                 `yaml:"log"`
-	PostgresConfig      must.PostgresConfig            `yaml:"postgres"`
-	RedisConfig         must.RedisConfig               `yaml:"redis"`
-	IndexDeliveryConfig must.IndexDeliveryConfig       `yaml:"document_index_delivery"`
-	ShadowSearchConfig  must.ShadowSearchConfig        `yaml:"document_search_shadow"`
-	MixinSearchSecurity must.MixinSearchSecurityConfig `yaml:"mixin_search_security"`
-	TLSConfig           must.TLSConfig                 `yaml:"tls"`
+	ServerConfig   must.ServerConfig   `yaml:"server"`
+	LogConfig      must.LogConfig      `yaml:"log"`
+	PostgresConfig must.PostgresConfig `yaml:"postgres"`
+	RedisConfig    must.RedisConfig    `yaml:"redis"`
+	TLSConfig      must.TLSConfig      `yaml:"tls"`
+	// SourceOwnedServices 是 ADR-017 的服务拆分接线。未启用时文档相关的 Web
+	// 路由不可用（fail closed），而不是退回直接读写业务表。
+	SourceOwnedServices must.SourceOwnedServicesConfig `yaml:"source_owned_services"`
 
 	CustomConfig custom.CustomConfig `yaml:"custom"`
 }
@@ -89,13 +90,7 @@ func ConfigCheck(c *Config) error {
 	if err := c.RedisConfig.ConfigCheck(); err != nil {
 		return err
 	}
-	if err := c.IndexDeliveryConfig.ConfigCheck(); err != nil {
-		return err
-	}
-	if err := c.ShadowSearchConfig.ConfigCheck(); err != nil {
-		return err
-	}
-	if err := c.MixinSearchSecurity.ConfigCheck(); err != nil {
+	if err := c.SourceOwnedServices.ConfigCheck(); err != nil {
 		return err
 	}
 	if err := c.CustomConfig.ConfigCheck(); err != nil {

@@ -1,11 +1,15 @@
 name: verify
 
 # 仓库原先没有任何 CI，投入最大的资产（依赖边界、proto 生成物一致性、
-# 95 项运行时 API 断言）全靠人工记得执行。本流水线覆盖其中可在无外部依赖
-# 环境下确定性复现的部分。
+# 95 项运行时 API 断言）全靠人工记得执行。本流水线覆盖 module 测试、协议生成物、
+# 前端构建和仓库卫生；来源服务集成测试使用一次性 PostgreSQL 与 Qdrant 服务容器。
+#
+# document-search 的向量流程默认启用：它启动即要求 Qdrant，集成测试连不上就
+# Fatal 而不是跳过，因此 Qdrant 是本作业的必需依赖而不是可选加速项。Qdrant 镜像
+# 没有 shell，无法用 --health-cmd 探活，就绪由下面的等待步骤显式轮询。
 #
 # 不在本流水线内：deployments/verify.ps1 的跨服务端到端验收——它需要构建镜像、
-# 启动 8 个容器与空数据卷，属于里程碑/行级改动的门禁，按需手工执行。
+# 启动完整栈与空数据卷，属于里程碑/行级改动的门禁，按需手工执行。
 
 on:
   push:
@@ -31,6 +35,34 @@ jobs:
   go-modules:
     name: go build / vet / test（逐 module，GOWORK=off）
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_DB: gin_demo
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 15432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d gin_demo"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      # Qdrant serves the document-search vector flow. Its image ships no shell,
+      # so a container health command cannot be expressed here; the job waits for
+      # /readyz in a step instead.
+      #
+      # The host port is 16334, not 6334: the service's own default configuration
+      # (and therefore every integration test, which builds on config.Default())
+      # dials 127.0.0.1:16334. Publishing the container port unchanged would leave
+      # the tests connecting to nothing, and no environment variable would help -
+      # the tests take the default rather than the environment.
+      qdrant:
+        image: qdrant/qdrant:v1.19.1
+        ports:
+          - 6333:6333
+          - 16334:6334
     # GOWORK=off 是刻意的：只 cd 到子目录仍会向上发现根 go.work，
     # 那样无法证明 module 自洽（曾实测 GOWORK=off 下两个应用均构建失败）。
     # 两个应用现已在 go.mod 中显式 require + replace packages/gen。
@@ -39,19 +71,60 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Wait for Qdrant to become ready
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:6333/readyz >/dev/null 2>&1; then
+              echo "qdrant ready after ${attempt} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Qdrant did not answer /readyz on 127.0.0.1:6333 within 120s"
+          exit 1
+
+      - name: Initialize PostgreSQL for source-service integration tests
+        env:
+          POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          docker exec -i "$POSTGRES_CONTAINER_ID" psql -X -v ON_ERROR_STOP=1 -U postgres -d gin_demo < deployments/postgresql/sql/plugin/trigram_setup.sql
+          # The Web account tables come first: service_roles.sql grants go_web_app
+          # rights on them, and a grant on a missing relation aborts the file.
+          docker exec -i "$POSTGRES_CONTAINER_ID" psql -X -v ON_ERROR_STOP=1 -U postgres -d gin_demo < deployments/postgresql/sql/service/auth/schema_init.sql
+          docker exec -i "$POSTGRES_CONTAINER_ID" psql -X -v ON_ERROR_STOP=1 -U postgres -d gin_demo < deployments/postgresql/sql/service/manager/schema_init.sql
+          docker exec -i "$POSTGRES_CONTAINER_ID" psql -X -v ON_ERROR_STOP=1 -U postgres -d gin_demo < apps/document-service/schema/schema_init.sql
+          docker exec -i "$POSTGRES_CONTAINER_ID" psql -X -v ON_ERROR_STOP=1 -U postgres -d gin_demo < apps/document-search/schema/schema_init.sql
+          docker exec -i "$POSTGRES_CONTAINER_ID" psql -X -v ON_ERROR_STOP=1 -U postgres -d gin_demo < apps/qq-search/schema/schema_init.sql
+          docker exec -i "$POSTGRES_CONTAINER_ID" psql -X -v ON_ERROR_STOP=1 -U postgres -d gin_demo < deployments/postgresql/sql/service/service_roles.sql
+          docker exec -i "$POSTGRES_CONTAINER_ID" psql -X -v ON_ERROR_STOP=1 -U postgres -d gin_demo < deployments/postgresql/sql/service/verify_service_isolation.sql
+
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: |
             apps/gin-backend/go.sum
             apps/mixin-search/go.sum
+            apps/document-service/go.sum
+            apps/document-search/go.sum
+            apps/qq-search/go.sum
             packages/gen/go.sum
+            packages/serviceauth/go.sum
 
       # go.work 不把 ./... 传递到各 module，必须逐目录执行。
       - name: Build, vet and test
         run: |
           set -euo pipefail
-          for module in apps/gin-backend apps/mixin-search packages/gen; do
+          for module in \
+            apps/document-service \
+            apps/document-search \
+            apps/qq-search \
+            apps/gin-backend \
+            apps/mixin-search \
+            packages/gen \
+            packages/serviceauth
+          do
             echo "::group::$module"
             (
               cd "$module"
@@ -61,6 +134,33 @@ jobs:
             )
             echo "::endgroup::"
           done
+
+      # The source-owned services must exercise their real dependencies. A suite
+      # that silently skipped would leave the vector flow, the event consumer and
+      # the scope filters unproven while the job stayed green, so the skip count
+      # is asserted rather than assumed.
+      - name: Assert the source-owned integration tests ran with no skips
+        run: |
+          set -euo pipefail
+          for module in apps/document-service apps/document-search apps/qq-search; do
+            log="$(mktemp)"
+            echo "::group::$module integration"
+            (
+              cd "$module"
+              go test ./... -count=1 -run Integration -v 2>&1 | tee "$log"
+            )
+            echo "::endgroup::"
+            if grep -qE '^[[:space:]]*--- SKIP' "$log"; then
+              echo "::error::$module skipped an integration test; these tests must fail without their dependencies, not skip"
+              exit 1
+            fi
+            if ! grep -qE '^--- PASS|^ok[[:space:]]' "$log"; then
+              echo "::error::$module reported no passing integration test"
+              exit 1
+            fi
+            rm -f "$log"
+          done
+          echo "OK: every source-owned integration suite ran with no skips"
 
       # mixin-search 的依赖边界由 Go 测试强制，单独列出以便失败时定位。
       - name: Architecture boundary (mixin-search)
@@ -92,49 +192,9 @@ jobs:
           go install "google.golang.org/grpc/cmd/protoc-gen-go-grpc@${{ env.PROTOC_GEN_GO_GRPC_VERSION }}"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
-      - name: Regenerate and compare against committed code
-        run: |
-          set -euo pipefail
-          # 注意：--go_opt=module=packages/gen 只是从 go_package 中剥掉该前缀，
-          # 产物会落在 <out>/mixin-search/v1/，而不是 <out>/packages/gen/mixin-search/v1/。
-          # 因此必须生成到临时目录再逐一比对，且两侧使用同一个相对路径——不能直接
-          # --go_out=. 后 diff packages/gen，那样产物会落到仓库根的 mixin-search/ 且
-          # diff 恒为空（假通过）。生成参数与 packages/proto/verify-generated.ps1 一致。
-          generated="$(mktemp -d)"
-          protoc -I . \
-            --go_out="$generated" --go_opt=module=packages/gen \
-            --go-grpc_out="$generated" --go-grpc_opt=module=packages/gen \
-            packages/proto/mixin-search/v1/mixin-search.proto \
-            packages/proto/mixin-search/chat/v1/chat.proto
-
-          status=0
-          for relative in \
-            mixin-search/v1/mixin-search.pb.go \
-            mixin-search/v1/mixin-search_grpc.pb.go \
-            mixin-search/chat/v1/chat.pb.go \
-            mixin-search/chat/v1/chat_grpc.pb.go
-          do
-            committed="packages/gen/$relative"
-            fresh="$generated/$relative"
-            if [[ ! -f "$fresh" ]]; then
-              echo "::error::protoc 未产出预期文件 $fresh"
-              status=1
-              continue
-            fi
-            if [[ ! -f "$committed" ]]; then
-              echo "::error::$committed 缺失"
-              status=1
-              continue
-            fi
-            if ! diff -u "$committed" "$fresh"; then
-              echo "::error::$relative 与 proto 源不一致；请重新生成并提交。"
-              status=1
-            fi
-          done
-          if [[ "$status" -ne 0 ]]; then
-            exit 1
-          fi
-          echo "OK: packages/gen 与 proto 源一致"
+      - name: Regenerate and compare all six protocol contracts
+        shell: pwsh
+        run: ./packages/proto/verify-generated.ps1
 
   frontend:
     name: 前端 type-check 与构建

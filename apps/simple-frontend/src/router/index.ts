@@ -18,6 +18,7 @@ const router = createRouter({
         { path: 'explore', name: 'explore', component: () => import('@/views/app/LibraryView.vue'), props: { mode: 'public' } },
         { path: 'search', name: 'search', component: () => import('@/views/app/LibraryView.vue'), props: { mode: 'search' } },
         { path: 'new', name: 'editor', component: () => import('@/views/app/MarkdownEditorView.vue') },
+        { path: 'edit/:documentId', name: 'document-edit', component: () => import('@/views/app/MarkdownEditorView.vue') },
         { path: 'document/:documentId', name: 'document-detail', component: () => import('@/views/app/DocumentDetailView.vue') },
       ],
     },

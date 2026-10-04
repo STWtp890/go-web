@@ -1,7 +1,11 @@
 go 1.26.8
 
 use (
+	./apps/document-search
+	./apps/document-service
 	./apps/gin-backend
 	./apps/mixin-search
+	./apps/qq-search
 	./packages/gen
+	./packages/serviceauth
 )

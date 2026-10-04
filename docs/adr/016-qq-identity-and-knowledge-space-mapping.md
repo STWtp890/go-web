@@ -1,10 +1,13 @@
 # ADR-016：QQ 身份与知识空间映射
 
 > 状态：**已接受**
-> 修订：v2（2026-09-19，按协作评审修订：上下文化解析、撤销生效点、绑定写入口、验收重写）；v2.1（2026-09-19 第二轮评审后接受：判定二态 + 三类服务端标签、标签不变量验收、`Denied` 终止签发链）
+> 修订：v2（2026-09-19，按协作评审修订：上下文化解析、撤销生效点、绑定写入口、验收重写）；v2.1（2026-09-19 第二轮评审后接受：判定二态 + 三类服务端标签、标签不变量验收、`Denied` 终止签发链）；v2.2（2026-09-24：Bot 身份命名空间与 P3.4 spacectl 实施约定）；v2.3（2026-09-25：同步账号不可用拒绝原因与现行服务所有权入口）；**v3（2026-09-26，按 ADR-017 的责任划分重写身份与所有权：资源侧事实全部迁入文档服务，取消“QQ 用户 ↔ go-web 用户绑定”作为资源权限前提，明确 Web 与 QQ 身份不以互相绑定为前提）**
 > 日期：2026-09-19
 > 决策范围：P3.4（QQ 身份与知识空间映射）；P3.6 的接入前置
-> 相关决策：[ADR-003](./003-chat-domain-boundary.md)、[ADR-012](./012-multi-consumer-search-boundary-and-critical-path-shift.md)、[ADR-014](./014-per-corpus-control-plane-isolation.md)、[ADR-015](./015-control-plane-idempotency-ledger-retention.md)；契约 [SERVICE_CALL_CAPABILITY.md](../contracts/SERVICE_CALL_CAPABILITY.md)、[CHAT_SEARCH_V1_CONTRACT.md](../contracts/CHAT_SEARCH_V1_CONTRACT.md)
+> 现行服务所有权与实施进度：[ADR-017](./017-source-owned-document-and-search-services.md) 调整服务边界；[当前实施计划](../planning/CURRENT_IMPLEMENTATION_PLAN.md) §0 记录当前任务与验收。本 ADR 的 v2/v2.2 文字保留为历史决策说明，v3 各节取代与 ADR-017 冲突的所有权描述。
+> 相关决策：[ADR-003](./003-chat-domain-boundary.md)、[ADR-012](./012-multi-consumer-search-boundary-and-critical-path-shift.md)、[ADR-014](./014-per-corpus-control-plane-isolation.md)、[ADR-015](./015-control-plane-idempotency-ledger-retention.md)；契约 [SERVICE_IDENTITY_AND_CAPABILITY.md](../contracts/SERVICE_IDENTITY_AND_CAPABILITY.md)、[DOCUMENT_SERVICE_V1_CONTRACT.md](../contracts/DOCUMENT_SERVICE_V1_CONTRACT.md)
+>
+> **v3 阅读指引**：第 1 节已被 §决策 1（v3）取代；第 2 节中 `qq_user_bindings` 已取消，见 §决策 3（v3）与 §数据结构（v3）；第 8 节的解析入口迁入文档服务，判定结构与标签不变量保持不变。
 
 ## 背景
 
@@ -25,9 +28,9 @@
 2. 在文档契约里，**空范围不等于没有访问权**：范围判定是包含，"含空集，即只检索公开文档"（[SERVICE_CALL_CAPABILITY.md](../contracts/SERVICE_CALL_CAPABILITY.md) §5），实现上 `authenticated_public` 恒为 `min_should` 的基础条件（`internal/rag/store_qdrant.go` 的 `qdrantControlFilter`）。所以"没有范围"必须表达为**拒绝**，不能表达为空集合；
 3. 资源范围与**会话上下文**相关：同一个用户在不同私聊/群聊里能用的范围不同，而群与空间的绑定（决策 4）只有在解析时被读入才有意义。
 
-## 决策
+## 决策（v2/v2.2 原文，所有权部分由 v3 取代）
 
-### 1. 事实源与职责边界
+### 1. 事实源与职责边界（**已由 v3 取代，见文末 §决策（v3）**）
 
 - QQ 会话、消息、聊天上下文与**渠道权限**：`py-agent` 是事实源；
 - go-web 用户、知识空间、空间成员、文档与**资源权限**：`go-web` 是事实源；
@@ -36,7 +39,7 @@
 
 ### 2. QQ 身份与用户绑定是可撤销的显式关系
 
-- 同一 QQ 身份**至多有一条活动绑定**；同一 go-web 用户可以绑定多个 QQ 身份（为多渠道预留 `channel` 维度，本包只实现 `qq`）；
+- 同一 QQ 身份**至多有一条活动绑定**；本包的 QQ 身份键是 `(channel, bot_id, external_id)`，用户和群各自有外部 ID 字段；同一 go-web 用户可以绑定多个 QQ 身份（为多渠道预留 `channel` 维度，本包只实现 `qq`）；
 - 解绑与改绑都是**追加式操作**：写入新行或标记 `revoked_at`，历史绑定保留用于审计，不做物理删除；
 - 每行绑定必须记录 `actor`、`source`（操作来源）、`reason` 与时间，供事后追溯（见决策 9）。
 
@@ -48,7 +51,7 @@
 
 ### 4. QQ 群与团队空间：1 群 : 1 空间，可改绑，留审计
 
-- 同一时刻：一个 QQ 群至多绑定一个 team space，一个 team space 至多被一个 QQ 群绑定；唯一性由数据库约束保证，而不是靠约定；
+- 同一时刻：同一 `(channel, bot_id)` 下，一个 QQ 群至多绑定一个 team space，一个 team space 至多被一个 QQ 群绑定；唯一性由数据库约束保证，而不是靠约定；
 - 改绑 = 撤销旧绑定 + 新增活动绑定，保留完整历史（支持"空间迁移"与事故追溯）；
 - team space 的 owner 是 go-web 用户（创建者），**群标识不进入空间主键**，避免把群固化为空间；同一个用户可以拥有私人空间并加入多个团队空间。
 
@@ -108,7 +111,7 @@ OtherTeams:    []spaceID     // Granted 专有：该用户的其他活动团队�
 - **群聊**：`CurrentTeam` = **当前群**的活动绑定空间，且仅当该用户是它的活动成员；未绑定群 → `Denied`；其他群绑定的空间**不得**出现在 `CurrentTeam`；
 - 用户属于其他团队空间时，它们只能出现在 `OtherTeams`（**带标签**），供编排层按生态指南 §7 的语义决定是否使用，而不得被当作"当前团队"；
 - **标签不变量**：三类标签由服务端生成、互不重叠——`CurrentTeam` 不得同时出现在 `OtherTeams`，`Private` 不得出现在任何团队标签里；绑定目标必须是 `team` 空间，因此 private 空间**不可能**成为 `CurrentTeam`；调用方不能提交标签，也不能通过重新标记改变权限类别；
-- `Denied` 的四种来源：未绑定用户、未绑定群、绑定已撤销、不是该空间的活动成员；
+- `Denied` 的当前拒绝原因：用户未绑定、用户绑定已撤销、go-web 账号被禁用或删除、群未绑定、群绑定已撤销、不是当前空间的活动成员；
 - `ListUserSpaces(userID)` 可以存在（供管理界面与对账），**但不得用于签发任何会话的 capability**；
 - 多表读取必须使用**单条 JOIN 或一致性读事务**，不得在并发改绑时拼出"旧用户绑定 + 新群绑定"这类混合快照。
 
@@ -138,13 +141,13 @@ OtherTeams:    []spaceID     // Granted 专有：该用户的其他活动团队�
 - `py-agent` **不得**直接写绑定表、不得持有 go-web 数据库凭据；它与 go-web 的服务认证方案随换取入口一并在 P3.6 决定（本包不实现服务间认证）；
 - 未授权写入必须整体失败，且不改变活动绑定与审计历史。
 
-### 数据结构草图（实现细节，待第 2 片定型）
+### 数据结构（P3.4 实施）
 
 | 对象 | 形态 | 关键约束 |
 | --- | --- | --- |
-| QQ 身份 | `qq_identities`（渠道 + 外部标识） | `(channel, external_id)` 唯一 |
-| 用户绑定 | `qq_user_bindings`（身份、用户、`revoked_at`、actor/source/reason） | 每个身份至多一条活动绑定 |
-| 群↔空间绑定 | `group_space_bindings`（群标识、空间、`revoked_at`、actor/source/reason） | 群与空间各自至多一条活动绑定；**目标空间必须是 `team` 类型**（private 空间不得被绑定） |
+| QQ 用户绑定 | `qq_user_bindings`（channel、bot_id、external_user_id、user_id、`revoked_at`、actor/source/reason） | 每个 Bot 侧身份至多一条活动绑定；历史行保留 |
+| 群空间绑定 | `group_space_bindings`（channel、bot_id、external_group_id、space_id、`revoked_at`、actor/source/reason） | 活动群与空间分别按 `(channel, bot_id, external_group_id)`、`(channel, bot_id, space_id)` 唯一；目标空间必须是 `team` |
+| 审计 | `space_audit_events`（实体、动作、身份键、前后目标、actor/source/reason、时间） | 只追加；与对应绑定或成员变更同事务提交 |
 | 团队空间成员 | 复用 `space_members` | 复用既有延迟约束触发器；创建空间与 owner 成员须同一事务 |
 
 ## 结果与权衡
@@ -158,7 +161,7 @@ OtherTeams:    []spaceID     // Granted 专有：该用户的其他活动团队�
 1. **私聊信封**：绑定用户的私聊解析 `Private` 为其私人空间，`CurrentTeam` 为空；其他团队空间只能以 `OtherTeams` 出现，不得被标成当前团队。
 2. **群聊信封**：群聊解析的 `CurrentTeam` 必须是**当前群**活动绑定的那个空间，且该用户是它的活动成员；其他群绑定的空间不得出现在 `CurrentTeam`；未绑定群 → `Denied`。
 3. **资源侧不变量**：创建用户绑定、创建群空间绑定、处理入群事实都**不会**新增 `space_members` 行（断言表行数不变）。
-4. **拒绝而非空范围**：未绑定用户、未绑定群、已撤销绑定、非活动成员四种情形都返回 `Denied`；`Denied` 不得被折叠为空集合——空集合在文档契约里等价于"仅 `authenticated_public`"，因此未绑定身份**不能**取得公开文档、私人空间、团队空间或任何文档级范围。
+4. **拒绝而非空范围**：未绑定用户、未绑定群、已撤销绑定、go-web 账号被禁用或删除、非活动成员都返回 `Denied`；`Denied` 不得被折叠为空集合——空集合在文档契约里等价于"仅 `authenticated_public`"，因此未绑定身份**不能**取得公开文档、私人空间、团队空间或任何文档级范围。
 5. **撤销生效点**：解绑、成员撤销、群改绑之后，**下一次**解析立即得到新结果，且 generation 与 alias 不变（无索引重建）。
 6. **包含规则**：请求空间必须是本次上下文解析结果的子集，越界整体拒绝，不静默裁剪。
 7. **并发与一致性**：用户绑定、群绑定、空间反向绑定的活动唯一性在并发事务下成立；改绑提交前读旧值、提交后读新值，不出现混合快照；历史行可审计。
@@ -181,3 +184,112 @@ OtherTeams:    []spaceID     // Granted 专有：该用户的其他活动团队�
 - 产品决定收紧"私聊/群聊可用的最大信封"（策略变更，需同步生态指南 §7）；
 - P3.6 的换取协议要求 go-web 暴露范围解析的其它形态（批量解析或预计算）；
 - 出现跨 go-web 实例并发写入绑定的部署形态（需要分布式一致性讨论）。
+
+## P3.4 实施约定（v2.2）
+
+- QQ Bot 的用户与群身份均按 `(channel, bot_id, external_id)` 区分。相同数字 ID 在不同 Bot 下属于不同身份；QQ OAuth 等其他提供方必须使用独立提供方/实例命名空间。
+- P3.4 的受信写入口是 `apps/gin-backend/cmd/tools/spacectl/`。不新增绑定 HTTP 接口。命令将 `source` 固定为 `spacectl`，操作者必须提供 `actor` 与 `reason`；业务校验、写入及审计由 `space/application` 与 PostgreSQL 仓储负责。
+- 用户绑定、群绑定、撤销和改绑的活动记录及审计事件在同一事务提交。改绑关闭旧行并新增活动行，失败时完整回滚；QQ 绑定或群绑定不写入 `space_members`。
+- `ResolveQQResourceScope` 只接收 Bot/QQ 身份与会话上下文，由 go-web 查出 go-web 用户，不接受调用方提供 `user_id`。`Denied` 不含范围；`Granted` 的 `Private`、`CurrentTeam`、`OtherTeams` 标签只由服务端生成。
+- 请求子集校验对完整资源信封执行：出现任一越界 ID 或服务端标签重叠时整体拒绝。P3.6 再按可信会话策略限制首发私聊使用 `Private`、群聊使用 `CurrentTeam`；不把该策略固化进 P3.4 解析器。
+- P3.4 的表结构进入 `deployments/postgresql/sql/service/document/schema_init.sql`；该脚本用于全新开发数据库初始化，仓库当前不维护数据库升级迁移 runner。
+
+## 决策（v3，2026-09-26）
+
+本节按 [ADR-017](./017-source-owned-document-and-search-services.md) 的责任划分重写身份与所有权。v2/v2.2 中与之冲突的表述（尤其是 `qq_user_bindings` 与 `go-web` 持有资源侧解析）不再有效；判定结构、标签不变量与验收语义继续沿用。
+
+### 1（v3）. 事实源与职责边界
+
+- **QQ Bot 身份命名空间、QQ 用户与群的会话事实、渠道权限、QQ 原始消息/文件/撤回事实**：`py-agent` 是事实源。它只证明“这个身份在当前会话中是什么、渠道允许什么”，不判定资源权限。
+- **正式文档、版本、知识空间、空间成员、群空间绑定、资源权限、审计、文档 Outbox、资源访问主体登记**：**文档服务**是事实源。资源权限判定在文档服务内闭合，不依赖其他系统回传。
+- **Web 账号与 Web 界面**：`go-web` 是事实源。它是 Web 侧业务入口，通过文档服务接口操作正式文档与空间，不直接读写文档服务业务表。
+- **索引与控制状态**：文档检索服务与 QQ 检索服务各自拥有自己来源的派生索引与控制表；它们不解释身份，只在查询前校验已签发的范围 capability。
+- `mixin-search` 在迁移期内仍是既有文档/聊天语料的实现，但不再是两个来源的目标归属地（见 ADR-017 决策 5）。
+
+### 2（v3）. 资源访问主体，以及为什么不再需要 QQ↔Web 用户绑定
+
+文档服务拥有 `document_service.access_subjects`：主体键是带命名空间的规范字符串。
+
+```text
+web:user:<web user id>              // go-web 账号，由 go-web 断言
+qq:user:<bot_id>/<external_user_id> // QQ 身份，按 Bot 隔离，由 py-agent 断言
+```
+
+- **两类身份不以互相绑定为前提**：QQ 主体可以是团队空间的活动成员而不存在对应 Web 账号；Web 主体也不需要先绑定 QQ 身份才能操作文档。ADR-017 的责任划分要求资源权限判定只使用文档服务自己的事实，绑定关系会把输入放回另一个服务。
+- 每个请求只能声明自己命名空间内的主体（`go-web` → `web:*`，`py-agent` → `qq:*`）；跨命名空间声明在校验阶段整体拒绝。
+- 主体由文档服务登记：受信入口首次声明某主体时，文档服务在一次事务中登记主体（`subject_type`、`origin`、`display_name`）并写入审计（动作 `register`）。登记只表示“这个主体出现过”，**不产生任何空间成员或文档权限**。
+- 主体可以停用（`active = false`）；停用后解析返回 `Denied{subject_inactive}`。
+- **取消 `qq_user_bindings`**：v2 用“QQ 身份绑定到 go-web 用户”推出私聊的私人空间。v3 不再把资源权限建立在跨系统绑定上。QQ 主体对空间的访问一律来自文档服务自己的活动 `space_members` 记录，即显式授予。
+- 因此私聊的资源信封是“该主体已是活动成员的空间”，而不是“某个 Web 用户的私人空间”。这不是放宽限制：主体仍是活动成员才进信封，`Denied` 仍然不降级为空范围。
+
+### 3（v3）. 群与空间绑定属于文档服务
+
+- `document_service.group_space_bindings` 是群↔空间的唯一事实源；绑定写入通过文档服务的 `BindGroupSpace` / `RevokeGroupSpace` 用例，不再由 `go-web` 直接写表。
+- 基数与唯一性不变：同一 `(channel, bot_id)` 下，一个 QQ 群至多绑定一个 team space，一个 team space 至多被一个 QQ 群绑定；唯一性由数据库部分唯一索引保证。改绑 = 撤销旧绑定 + 新增活动绑定，历史行保留。
+- 绑定目标必须是 `team` 空间，由数据库触发器与用例共同保证；private 空间不可能成为 `CurrentTeam`。
+- `actor` / `source` / `reason` 必填并进入审计；`source` 取值来自调用方与入口（`document-service-api`、`spacectl`、`go-web-api`），不再固定为 `spacectl`。
+
+### 4（v3）. 资源范围解析的入口与判定
+
+唯一入口是文档服务的 `ResolveAccessScope`。它只接收受信入口已经证明的主体键与会话上下文：
+
+```text
+ResolveAccessScope(
+    subject_key,           // 受信入口证明：web:user:42 或 qq:user:10001/20002
+    ConversationContext{ Kind: Private | Group, ExternalGroupID },
+) Resolution
+```
+
+`Resolution` 结构、`Granted`/`Denied` 二态、`Private`/`CurrentTeam`/`OtherTeams` 三类服务端标签、标签不重叠、越界整体拒绝、空范围等价“仅 `authenticated_public`”的语义**与 v2 完全一致**。变化只有两处：
+
+1. 判定的输入是文档服务自己的主体与空间事实，不再有跨服务的用户绑定查询；
+2. 私聊的 `Private` 是“该主体拥有的私人空间（若已创建）”，`OtherTeams` 是“该主体的其他活动团队空间”；群聊的 `CurrentTeam` 仍是当前群的活动绑定空间且主体是它的活动成员。
+
+`Denied` 原因集合更新为：`subject_unknown`、`subject_revoked`、`subject_inactive`、`group_unbound`、`group_binding_revoked`、`not_space_member`、`session_context_invalid`。非法输入仍按既有契约返回 `INVALID_ARGUMENT`，依赖不可用返回 `UNAVAILABLE`，两者都不是“范围解析结果”。
+
+### 5（v3）. 渠道权限 ∩ 资源权限
+
+不变：`最大资源信封（文档服务解析，带标签） ∩ 可信渠道策略（py-agent 结论，调用方按标签裁剪） ∩ 调用方请求子集 = 最终 capability 范围`。
+
+变化：交集的计算者是**发起该次会话的调用方**（`py-agent` 代表 QQ 会话，`go-web` 代表 Web 请求），不再由 `go-web` 独占。文档服务不解释渠道策略；检索服务不解释任何权限，只做包含校验。
+
+### 6（v3）. 撤销的生效点
+
+不变：解绑、移出空间、改绑在下一次解析与下一次签发立即生效，且不推进索引 generation、不切换 alias；已签发的范围 capability 在 `TTL + leeway` 内仍有效，ADR-017 的 capability 默认 `2m` 有效期与 `30s` 时钟偏差沿用。不声称对已签发 capability 实现即时撤销。
+
+### 7（v3）. 写入主体与审计
+
+- 绑定、成员与空间的写入主体是**受信服务身份**：文档服务只接受持有边界密钥的已登记调用方，且要求对应 scope（`space.admin`）。每次写入记录 `actor`、`source`、`reason`、`request_id` 与 `occurred_at`。
+- `spacectl` 仍是运维入口，但它改为调用文档服务接口（scope `space.admin`），不再直接写表，也不再是唯一的写入来源。
+- 未授权写入整体失败，且不改变活动绑定、成员与审计历史。
+- **QQ 身份所有权证明**（如何证明操作者持有该 QQ 号）与群管理权证明仍依赖 `py-agent` 的渠道事实，属于后续接入工作；在此之前禁止把“操作者声称”当作证明，也禁止任何匿名外部入口。
+
+### 数据结构（v3）
+
+| 对象 | 形态 | 关键约束 |
+| --- | --- | --- |
+| 资源访问主体 | `document_service.access_subjects`（`subject_key`、`subject_type`、`origin`、`display_name`、`active`） | 主体键形如 `web:user:42`；`subject_key LIKE origin \|\| ':%'` 保证前缀与 origin 一致 |
+| 知识空间 | `document_service.knowledge_spaces`（`owner_subject_key`、`space_type`、`name`） | 每个主体至多一个 private 空间 |
+| 空间成员 | `document_service.space_members`（`space_id`、`subject_key`、`member_role`、`revoked_at`） | 每个空间必须有一个活动 owner 成员；private 空间只能有 owner；由延迟约束触发器保证 |
+| 群空间绑定 | `document_service.group_space_bindings`（`channel`、`bot_id`、`external_group_id`、`space_id`、`revoked_at`、actor/source/reason） | 活动群与空间分别按 `(channel, bot_id, external_group_id)`、`(channel, bot_id, space_id)` 唯一；目标空间必须是 `team` |
+| 审计 | `document_service.space_audit_events`（实体、动作、主体键、身份键、前后目标、actor/source/reason/request_id、时间） | 只追加；与对应主体、绑定或成员变更同事务提交 |
+| ~~QQ 用户绑定~~ | **已取消** | ADR-017 不再要求资源权限依赖跨系统用户绑定 |
+
+### 验收（v3，取代 v2 的最低验收条件）
+
+1. **主体登记**：受信入口首次声明主体时登记成功并写审计；跨命名空间声明（`py-agent` 声明 `web:*`，或反之）整体拒绝；未持有 boundary key 的调用被拒绝。
+2. **私聊信封**：主体的私人空间出现在 `Private`；`CurrentTeam` 为空；其他团队空间只以 `OtherTeams` 出现。
+3. **群聊信封**：`CurrentTeam` 必须是当前群活动绑定的空间且主体是它的活动成员；未绑定群 `Denied{group_unbound}`；其他群绑定空间不得出现在 `CurrentTeam`。
+4. **资源侧不变量**：登记主体、创建群空间绑定、处理入群事实都**不会**新增 `space_members` 行（断言表行数不变）。
+5. **拒绝而非空范围**：未知或停用主体返回 `Denied`，且 `Denied` 不携带范围；空信封只能来自“主体有效但当前没有活动成员空间”，不得折叠为拒绝以外的语义。
+6. **撤销生效点**：成员撤销、群改绑之后**下一次**解析立即得到新结果，且 generation 与 alias 不变。
+7. **包含规则**：请求空间必须是本次上下文解析结果的子集，越界整体拒绝，不静默裁剪。
+8. **并发与一致性**：主体登记、群绑定的活动唯一性在并发事务下成立；改绑提交前读旧值、提交后读新值，不出现混合快照。
+9. **标签不变量**：三类标签由服务端生成且互不重叠；调用方无法通过提交或重新标记改变权限类别。
+10. **事务性**：绑定、成员、主体登记与审计在同一事务提交；任一步失败时全量回滚，审计不残留。
+
+### 复审条件（v3 补充）
+
+- 出现“同一自然人在 QQ 与 Web 必须共享资源权限”的产品需求（那会重新引入跨系统身份绑定，需要重新论证最小权限）；
+- 需要允许一个 QQ 主体同时绑定多个群空间（当前 1 群 : 1 空间不变）；
+- 需要把群成员自动同步为空间成员（策略变更）。

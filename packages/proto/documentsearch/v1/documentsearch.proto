@@ -1,0 +1,168 @@
+syntax = "proto3";
+
+package documentsearch.v1;
+
+option go_package = "packages/gen/documentsearch/v1;documentsearchv1";
+
+// DocumentSearchService owns the formal document index only. It consumes
+// document-service change events and never calls back into document-service,
+// go-web or py-agent while answering a query.
+//
+// Authorization model: the caller first obtains a resource-scope capability from
+// document-service (issuer "document-service", audience "document-search") and
+// then presents it here. The capability is validated offline with a shared
+// boundary key; the request scope must be a subset of the granted scope, and any
+// identifier outside it rejects the whole request instead of being silently
+// trimmed.
+service DocumentSearchService {
+  // IndexDocumentEvent applies one document change event. Repeating the same
+  // event_id and revision is idempotent; an event whose aggregate_revision is
+  // lower than the applied revision is ignored (out-of-order delivery).
+  rpc IndexDocumentEvent(IndexDocumentEventRequest) returns (IndexDocumentEventResponse);
+  rpc SearchDocuments(SearchDocumentsRequest) returns (SearchDocumentsResponse);
+  rpc GetDocumentIndexState(GetDocumentIndexStateRequest) returns (GetDocumentIndexStateResponse);
+  // RebuildIndex reindexes from the events the service has already consumed.
+  // It never fetches content from the document service.
+  rpc RebuildIndex(RebuildIndexRequest) returns (RebuildIndexResponse);
+  rpc GetIndexStatus(GetIndexStatusRequest) returns (GetIndexStatusResponse);
+}
+
+enum IndexStatus {
+  INDEX_STATUS_UNSPECIFIED = 0;
+  INDEX_STATUS_ABSENT = 1;
+  INDEX_STATUS_INDEXED = 2;
+  INDEX_STATUS_DELETED = 3;
+}
+
+message DocumentIndexState {
+  string document_id = 1;
+  string version_id = 2;
+  uint64 aggregate_revision = 3;
+  uint64 activation_revision = 4;
+  uint64 access_revision = 5;
+  uint64 lifecycle_revision = 6;
+  IndexStatus status = 7;
+  int32 chunk_count = 8;
+  string content_sha256 = 9;
+  string indexed_at = 10;
+}
+
+// IndexDocumentEventRequest mirrors document.v1.DocumentEventEnvelope. The
+// consumer stores the payload verbatim so a rebuild never needs the fact source.
+message IndexDocumentEventRequest {
+  string event_id = 1;
+  int64 sequence = 2;
+  // upsert | access_changed | delete
+  string kind = 3;
+  string document_id = 4;
+  string version_id = 5;
+  uint64 aggregate_revision = 6;
+  uint64 activation_revision = 7;
+  uint64 access_revision = 8;
+  uint64 lifecycle_revision = 9;
+  string lifecycle_status = 10;
+  string publication_status = 11;
+  string owner_subject_key = 12;
+  string owner_space_id = 13;
+  bool authenticated_public = 14;
+  repeated string allowed_space_ids = 15;
+  string title = 16;
+  string summary = 17;
+  string content = 18;
+  string content_format = 19;
+  string content_sha256 = 20;
+  string index_profile = 21;
+  string occurred_at = 22;
+  // The document's creation instant, copied from the document service event so
+  // the index can present a real creation time without calling back.
+  string created_at = 23;
+}
+
+message IndexDocumentEventResponse {
+  bool applied = 1;
+  string reason = 2;
+  DocumentIndexState state = 3;
+}
+
+message SearchDocumentsRequest {
+  string query = 1;
+  // The resource scope the caller is asking about. Naming a space or a document
+  // replaces the granted envelope for that family with exactly what was named:
+  // the request must still be a subset of the capability, and the answer is
+  // restricted to the named identifiers. An empty family means "everything I was
+  // granted in this family", including the authenticated-public floor.
+  repeated string allowed_space_ids = 2;
+  repeated string allowed_document_ids = 3;
+  // Hits per page. 0 selects the configured default; a value above the
+  // configured maximum is lowered to it and reported as truncated.
+  int32 page_size = 4;
+  // 1-based page number. Pages are disjoint and ordered by the documented
+  // ranking, so page N+1 never repeats or skips a hit from page N.
+  int32 page = 5;
+  // Restricts the answer to documents owned by the subject the capability was
+  // issued for. The owner comes from the validated capability, never from the
+  // request: a caller cannot ask about another subject's holdings. When set, the
+  // authenticated-public floor is applied to that subject's own documents only,
+  // so a personal search never returns someone else's public document.
+  bool owned_by_subject_only = 6;
+}
+
+message SearchDocumentsResponse {
+  string query = 1;
+  repeated SearchHit hits = 2;
+  // True when the answer is not the complete result set: the page size was
+  // lowered to the configured maximum, or more matches exist beyond this page.
+  bool truncated = 3;
+  // Number of documents matching the query under the same scope, lifecycle and
+  // publication conditions as the hits. It is the real total, not the page size,
+  // so a caller can compute the page count.
+  int32 total = 4;
+}
+
+message SearchHit {
+  string document_id = 1;
+  string version_id = 2;
+  string owner_space_id = 3;
+  string title = 4;
+  string snippet = 5;
+  double score = 6;
+  // The corpus this hit came from, so a future combined query can merge labelled
+  // results without guessing.
+  string source = 7;
+  // The fields a Web surface renders. They are stored in the index projection
+  // when the event is applied, so answering a query never calls the fact source.
+  string owner_subject_key = 8;
+  bool authenticated_public = 9;
+  string created_at = 10;
+  string updated_at = 11;
+}
+
+message GetDocumentIndexStateRequest {
+  string document_id = 1;
+}
+
+message GetDocumentIndexStateResponse {
+  bool exists = 1;
+  DocumentIndexState state = 2;
+}
+
+message RebuildIndexRequest {
+  // Optional guard so an operator cannot rebuild by accident.
+  bool confirm = 1;
+}
+
+message RebuildIndexResponse {
+  int32 documents_rebuilt = 1;
+  int32 documents_skipped = 2;
+  int32 documents_failed = 3;
+}
+
+message GetIndexStatusRequest {}
+
+message GetIndexStatusResponse {
+  string collection_alias = 1;
+  string generation = 2;
+  int32 indexed_documents = 3;
+  int64 events_applied = 4;
+  int64 last_sequence = 5;
+}

@@ -24,7 +24,7 @@ GetDocumentVersionState     -> 查询版本状态与修订信息
 
 `activation_revision`、`access_revision`、`lifecycle_revision` 是三个独立高水位。低修订请求失败；同修订同 payload 幂等；同修订不同 payload 冲突。成功写入还会把 `operation_id` 绑定到 RPC 类型、规范化载荷和首次响应；同 ID 同载荷精确重放首次响应，同 ID 改绑其他载荷或 RPC 会冲突。`DeleteDocument` 按 `document_id + lifecycle_revision` 幂等并留下墓碑，旧事件不能复活文档。重新发布必须在更高 lifecycle 下先索引，再以不回退的 activation revision 激活。
 
-P2.1 已将文档清单、版本状态、三类修订高水位、访问快照、墓碑、`operation_id` 首次响应及未完成向量操作持久化到独立 PostgreSQL 控制存储。P2.2 已把规范化控制投影写入 Qdrant，并在 dense/sparse 候选选择前下推 storage domain、ACL、活动版本和墓碑过滤；返回前仍执行契约复核与有界回填。P2.3 已接入 gin-backend Outbox 自动重试、对账与全量重建，P2.4 已在根 Compose 持续运行影子索引，P2.5 已通过 SearchDocuments 运行同查询影子评估。当前 local-hash-v1 只用于确定性评估，正式查询仍由 PostgreSQL BM25 返回。
+P2.1 已将文档清单、版本状态、三类修订高水位、访问快照、墓碑、`operation_id` 首次响应及未完成向量操作持久化到独立 PostgreSQL 控制存储。P2.2 已把规范化控制投影写入 Qdrant，并在 dense/sparse 候选选择前下推 storage domain、ACL、活动版本和墓碑过滤；返回前仍执行契约复核与有界回填。P2.3–P2.5 的 gin-backend Outbox 投递 Worker、对账/重建命令与影子查询链路**已在 ADR-017 阶段 C 删除**，这些历史结论只说明当时的实现，不再代表当前可用的运维入口。当前 local-hash-v1 只用于确定性评估。
 
 ## 文档管道
 
@@ -46,21 +46,7 @@ P2.1 已将文档清单、版本状态、三类修订高水位、访问快照、
 
 ## 运行
 
-内存后端：
-
-```powershell
-go run ./cmd/demo -store memory
-```
-
-直接写入 Markdown、DOC 或 DOCX 文件：
-
-```powershell
-go run ./cmd/demo -store memory -file ./examples/knowledge.md -query "文档向量化管道"
-go run ./cmd/demo -store qdrant -file C:\docs\guide.docx -query "部署步骤"
-go run ./cmd/demo -store pgvector -file C:\docs\legacy.doc -query "历史方案"
-```
-
-可用 `-document-id`、`-title`、`-chunk-size`、`-overlap` 覆盖默认参数。
+本应用的运行入口是 `cmd/rag-server`（文档语料 gRPC 服务）与 `cmd/rag-healthcheck`（容器探针）。原先的手工演示与调试命令 `cmd/demo`、`cmd/rag-token`、`cmd/rag-grpc-client` 已在 ADR-017 阶段 C 退场：正式文档检索正被 `apps/document-search` 接管，仓库不再保留绕过契约、由本地进程手工签发 capability 的调试客户端。
 
 启动本地依赖：
 
@@ -74,19 +60,7 @@ Compose 包含控制 PostgreSQL、Qdrant 和 pgvector。只运行默认控制存
 docker compose up -d --wait control-postgres
 ```
 
-Qdrant（Go 客户端使用 gRPC 端口 `6334`）：
-
-```powershell
-go run ./cmd/demo -store qdrant -qdrant-host localhost -qdrant-port 6334
-```
-
-pgvector：
-
-```powershell
-go run ./cmd/demo -store pgvector -pg-dsn "postgres://rag:rag@localhost:5432/rag?sslmode=disable"
-```
-
-向量存储可使用环境变量 `QDRANT_API_KEY` 和 `PGVECTOR_DSN`。
+向量后端由 `cmd/rag-server -store` 选择：`memory`（仅测试与显式本地演示）、`qdrant`（首个生产候选，Go 客户端使用 gRPC 端口 `6334`）、`pgvector`（实验性替代，用 `-pg-dsn` 指定连接串）。向量存储可使用环境变量 `QDRANT_API_KEY` 和 `PGVECTOR_DSN`。各后端的集成测试见「验证」一节。
 
 ## gRPC 服务
 
@@ -133,23 +107,18 @@ go run ./cmd/rag-server -store memory -control-store memory `
 
 索引先持久化带 15 分钟租约的 pending write，再写入向量，最后提交版本映射和首次响应；删除先持久化逻辑删除、墓碑和 pending delete，再清理物理向量。generation 冲突返回 `ABORTED`，控制存储不可用或快照损坏返回 `UNAVAILABLE`。完整故障收敛语义见 [ADR-006](../../docs/adr/006-mixin-search-control-state-commit-order.md)。
 
-索引写入与检索是不同角色，命令行客户端因此需要两个 capability。用开发工具 `cmd/rag-token` 分别签发（它需要边界密钥，因此只用于本地调试）：
+索引写入与检索是不同角色，因此调用方需要两个 capability。阶段 C 之前由本模块的开发工具 `cmd/rag-token` 手工签发、`cmd/rag-grpc-client` 发起最小调用；两者已随 `cmd/demo` 一起删除，**当前模块内没有等价的手工调试入口**。需要端到端验证请使用仓库级验收脚本与包内集成测试：
 
 ```powershell
-$indexToken = go run ./cmd/rag-token -capability-key-file ../../deployments/secrets/mixin_search_capability.key `
-  -role index-writer -subject dev-index
-$searchToken = go run ./cmd/rag-token -capability-key-file ../../deployments/secrets/mixin_search_capability.key `
-  -role searcher -subject dev-search -space demo
+# 仓库根：启动根 Compose 并跑跨服务验收
+./deployments/verify.ps1
 
-go run ./cmd/rag-grpc-client `
-  -address 127.0.0.1:9090 `
-  -file ./examples/knowledge.md `
-  -document-id knowledge `
-  -owner-space-id demo `
-  -query "Eino 文档向量化" `
-  -index-token $indexToken `
-  -search-token $searchToken
+# 本模块：控制面与 Qdrant 的一次性环境验收
+./verify-control-store.ps1
+./verify-qdrant-control.ps1
 ```
+
+capability 的签发方固定为 `go-web`（见上文调用边界参数），签发与校验格式见 [SERVICE_CALL_CAPABILITY.md](../../docs/contracts/SERVICE_CALL_CAPABILITY.md)。
 
 服务端注册标准 grpc.health.v1.Health，空服务名和 mixin_search.v1.RAGService 均在成功完成存储初始化后报告 SERVING。健康检查刻意不要求 capability，容器探针因此不需要持有密钥。
 
@@ -187,13 +156,13 @@ go vet ./...
 docker compose config --quiet
 ```
 
-仓库级影子索引、停机隔离与自动恢复验收从仓库根目录执行：
+仓库级跨服务验收从仓库根目录执行（脚本由仓库主线维护）：
 
 ```powershell
 ./deployments/verify.ps1
 ```
 
-通过时输出 `P2.5_SHADOW_QUERY_EVALUATION=PASS` 与 `P2.4_SHADOW_INDEX=PASS`；根 Compose 使用本镜像内的 `rag-healthcheck` 执行标准 gRPC Health 探测。
+根 Compose 使用本镜像内的 `rag-healthcheck` 执行标准 gRPC Health 探测。
 
 控制 PostgreSQL 与 Qdrant 集成测试默认跳过。推荐使用一次性随机端口、空数据卷和随机 Compose project 的验收脚本，结束后默认删除容器、网络和数据卷：
 
@@ -245,7 +214,6 @@ go test ./internal/rag -run 'TestQdrant.*Integration|TestPGVectorStoreIntegratio
 - `cmd/rag-healthcheck/main.go`：根 Compose 使用的标准 gRPC Health 探针。
 - `verify-control-store.ps1`：创建并清理一次性控制 PostgreSQL 的 P2.1 验收入口。
 - `verify-qdrant-control.ps1`：创建并清理一次性 Qdrant 的 P2.2 验收入口。
-- `cmd/rag-grpc-client/main.go`：携带索引与检索两个 capability 的最小客户端。
-- `cmd/rag-token/main.go`：本地调试用 capability 签发工具；持有边界密钥，因此不进产品镜像。
-- `cmd/demo/main.go`：后端切换、文档写入和混合查询演示。
 - `examples/knowledge.md`：可直接运行的 Markdown 示例文档。
+
+阶段 C 退场的入口：`cmd/demo`（后端切换与混合查询演示）、`cmd/rag-grpc-client`（最小远程调用客户端）、`cmd/rag-token`（本地 capability 签发工具）。文档与聊天检索能力接管到 `apps/document-search` 与 `apps/qq-search` 后不再保留这些绕过契约的手工工具。

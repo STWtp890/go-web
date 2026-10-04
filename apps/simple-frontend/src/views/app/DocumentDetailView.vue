@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, CalendarDays, Copy, Globe2, LockKeyhole } from '@lucide/vue'
+import { ArrowLeft, CalendarDays, Copy, Globe2, LockKeyhole, Pencil } from '@lucide/vue'
 import { documentApi } from '@/api/document'
 import { getApiError } from '@/api/client'
 import MarkdownBody from '@/components/MarkdownBody.vue'
@@ -36,6 +36,7 @@ async function copyLink() {
     <template v-else-if="document">
       <nav class="detail-actions">
         <button type="button" class="button button--ghost button--small" @click="router.back()"><ArrowLeft :size="17" />返回</button>
+        <RouterLink class="button button--primary button--small" :to="{ name: 'document-edit', params: { documentId } }"><Pencil :size="15" />编辑</RouterLink>
         <button type="button" class="button button--soft button--small" @click="copyLink"><Copy :size="15" />复制链接</button>
       </nav>
       <article class="detail-paper">
@@ -45,7 +46,7 @@ async function copyLink() {
           </span>
           <h1>{{ document.title }}</h1>
           <p v-if="document.summary" class="detail-paper__summary">{{ document.summary }}</p>
-          <div class="detail-paper__meta"><span><CalendarDays :size="15" />创建于 {{ formatDate(document.createdAt) }}</span><span>更新于 {{ formatDate(document.updatedAt) }}</span></div>
+          <div class="detail-paper__meta"><span><CalendarDays :size="15" />创建于 {{ formatDate(document.createdAt) }}</span><span>更新于 {{ formatDate(document.updatedAt) }}</span><span v-if="document.ownerId">作者 #{{ document.ownerId }}</span></div>
         </header>
         <MarkdownBody :content="document.content" />
       </article>

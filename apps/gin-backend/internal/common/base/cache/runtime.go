@@ -10,8 +10,7 @@ import (
 )
 
 const (
-	PartitionEntities  = "entities"
-	PartitionDocuments = "documents"
+	PartitionEntities = "entities"
 )
 
 type RuntimeOptions struct {
@@ -190,7 +189,6 @@ func (counters *entityCounters) snapshot() EntityCacheStats {
 
 func defaultPartitionOptions() map[string]MemCacheOptions {
 	return map[string]MemCacheOptions{
-		PartitionEntities:  {MaxEntries: 10000, MaxBytes: 32 << 20, SweepInterval: time.Minute},
-		PartitionDocuments: {MaxEntries: 2048, MaxBytes: 64 << 20, SweepInterval: time.Minute},
+		PartitionEntities: {MaxEntries: 10000, MaxBytes: 32 << 20, SweepInterval: time.Minute},
 	}
 }

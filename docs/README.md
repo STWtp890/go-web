@@ -12,6 +12,7 @@ docs/
 ├── planning/                         # 当前实施计划
 ├── architecture/                     # 项目结构与依赖约束
 ├── contracts/                        # 当前跨服务契约
+├── operations/                       # 运维操作说明
 ├── reports/                          # 阶段完成报告与实施证据
 │   └── evidence/                     # 阶段报告引用的不可变证据快照
 ├── adr/                              # 架构决策记录
@@ -21,33 +22,35 @@ docs/
 ## 推荐阅读顺序
 
 1. [生态演进核心目标](./ECOSYSTEM_EVOLUTION_GUIDE.md)
-2. [当前实施计划](./planning/CURRENT_IMPLEMENTATION_PLAN.md)
-3. [项目结构与依赖约束](./architecture/PROJECT_STRUCTURE.md)
-4. [结构与复用开发约定](./architecture/DEVELOPMENT_CONVENTIONS.md)（新增代码落位与复用规则的唯一约定）
-5. [mixin-search/v1 契约](./contracts/MIXIN_SEARCH_V1_CONTRACT.md)
-6. [聊天语料契约](./contracts/CHAT_SEARCH_V1_CONTRACT.md)（含 §8 三方责任边界）
-7. [调用方 capability 契约](./contracts/SERVICE_CALL_CAPABILITY.md)
-8. [阶段 1 实施日志](./reports/PHASE1_IMPLEMENTATION_LOG.md)
-9. [阶段 2 实施日志](./reports/PHASE2_IMPLEMENTATION_LOG.md)
-10. 需要追溯决策时阅读 [ADR 一览](#adr-一览)；需要理解历史方案时阅读 [history](./history/)
+2. [按来源划分写入与检索服务的目标架构（ADR-017）](./adr/017-source-owned-document-and-search-services.md)
+3. [当前实施计划](./planning/CURRENT_IMPLEMENTATION_PLAN.md)
+4. [项目结构与依赖约束](./architecture/PROJECT_STRUCTURE.md)（当前实现）
+5. [结构与复用开发约定](./architecture/DEVELOPMENT_CONVENTIONS.md)
+6. [现有 mixin-search/v1 契约](./contracts/MIXIN_SEARCH_V1_CONTRACT.md)
+7. [聊天语料契约](./contracts/CHAT_SEARCH_V1_CONTRACT.md)（含 §8 三方责任边界）
+8. [现有调用方 capability 契约](./contracts/SERVICE_CALL_CAPABILITY.md)
+9. 需要追溯已完成的工作时阅读 [阶段报告](./reports/)；需要追溯历史方案时阅读 [history](./history/)
 
 ## 当前执行重点
 
-生态阶段二已收口，阶段三正在推进。`mixin-search` 现在只接受携带 capability 的调用方，索引写入与检索分离，请求范围只能缩小不能扩大；进程内控制状态是不可变快照，读路径不取全局锁、不加载全量控制状态，控制投影由后台 reconciler 收敛。文档与聊天是**两个独立语料**：各自拥有契约、控制面实例、generation、持久化、投影 reconciler 与索引 alias，共享的只是机制；联合检索只在编排层的结果层融合。PostgreSQL BM25 仍是正式文档搜索的读取方，读取切换属于独立的 B 线。
+当前按 [当前实施计划 §0.10](./planning/CURRENT_IMPLEMENTATION_PLAN.md) 的三阶段推进：**阶段 A**（修复 Web 文档链路与 Go 查询权限）已完成并通过真实 Web 验收；**阶段 B**（把保留的检索能力、索引管理与评测职责接管到所属新服务）进行中；**阶段 C**（清理已被替代的旧代码、入口与初始化内容）已完成。
 
-阶段三的多语料控制面隔离与聊天语料契约/索引隔离已经建立，推进方向转向 QQ 身份与知识空间映射、在线可靠性门禁，以及让 `py-agent` 成为正式在线消费者。三方责任边界（谁判定、谁执行、谁举证）见 [聊天语料契约 §8](./contracts/CHAT_SEARCH_V1_CONTRACT.md)。
-
-**实施包编号与完成进度只在 [当前实施计划](./planning/CURRENT_IMPLEMENTATION_PLAN.md) 维护**，本文件不重复记录，以免两处状态漂移。判断依据见 [ADR-012](./adr/012-multi-consumer-search-boundary-and-critical-path-shift.md)（多消费者边界）、[ADR-013](./adr/013-immutable-control-snapshot-and-background-projection.md)（控制面并发模型）、[ADR-014](./adr/014-per-corpus-control-plane-isolation.md)（多语料控制面隔离）、[ADR-015](./adr/015-control-plane-idempotency-ledger-retention.md)（幂等账本保留窗口）与 [ADR-016](./adr/016-qq-identity-and-knowledge-space-mapping.md)（QQ 身份与知识空间映射）；调用凭据格式见 [调用方 capability 契约](./contracts/SERVICE_CALL_CAPABILITY.md)。
+2026-09-26 的“只清理不改检索实现”临时冻结已被取代：检索能力要接管到所属新服务，旧实现要在核对证据后删除。具体范围、顺序和验收只在 [当前实施计划](./planning/CURRENT_IMPLEMENTATION_PLAN.md) 维护。
 
 ## 分类索引
 
 | 分类 | 文档 | 职责 |
 | --- | --- | --- |
-| 上位目标 | [ECOSYSTEM_EVOLUTION_GUIDE.md](./ECOSYSTEM_EVOLUTION_GUIDE.md) | 定义跨项目产品定位、数据所有权、知识域隔离和宏观阶段 |
+| 上位目标 | [ECOSYSTEM_EVOLUTION_GUIDE.md](./ECOSYSTEM_EVOLUTION_GUIDE.md) | 定义跨项目产品定位、数据所有权和知识域隔离 |
+| 目标架构 | [ADR-017](./adr/017-source-owned-document-and-search-services.md) | 独立文档服务与按来源划分检索服务的目标边界 |
 | 当前计划 | [planning/CURRENT_IMPLEMENTATION_PLAN.md](./planning/CURRENT_IMPLEMENTATION_PLAN.md) | 当前唯一排期与实施入口 |
 | 架构 | [architecture/PROJECT_STRUCTURE.md](./architecture/PROJECT_STRUCTURE.md) | 目录职责、领域分层和依赖方向 |
 | 约定 | [architecture/DEVELOPMENT_CONVENTIONS.md](./architecture/DEVELOPMENT_CONVENTIONS.md) | 新增代码落位规则、身份与 HTTP 出入口契约、遗留模块冻结基线与迁移待办 |
-| 契约 | [contracts/MIXIN_SEARCH_V1_CONTRACT.md](./contracts/MIXIN_SEARCH_V1_CONTRACT.md) | 当前 RPC 边界和字段语义 |
+| 契约 | [contracts/MIXIN_SEARCH_V1_CONTRACT.md](./contracts/MIXIN_SEARCH_V1_CONTRACT.md) | mixin-search/v1 的 RPC 边界和字段语义（迁移期） |
+| 文档服务契约 | [contracts/DOCUMENT_SERVICE_V1_CONTRACT.md](./contracts/DOCUMENT_SERVICE_V1_CONTRACT.md) | 文档命令、保存用例、详情读取、检索查询语义与文档变更事件 |
+| 身份与凭证 | [contracts/SERVICE_IDENTITY_AND_CAPABILITY.md](./contracts/SERVICE_IDENTITY_AND_CAPABILITY.md) | 服务身份断言与资源范围 capability 的格式、签发方规则与校验顺序 |
+| py-agent 交付 | [contracts/PY_AGENT_INTEGRATION_DELIVERY.md](./contracts/PY_AGENT_INTEGRATION_DELIVERY.md) | 交付给独立 py-agent 任务的 Go 侧接口材料、固定凭证样例与依赖登记 |
+| 运维 | [operations/QQ_SPACE_BINDINGS.md](./operations/QQ_SPACE_BINDINGS.md) | QQ 主体、团队空间、资源范围解析与 capability 签发的当前模型 |
 | 聊天契约 | [contracts/CHAT_SEARCH_V1_CONTRACT.md](./contracts/CHAT_SEARCH_V1_CONTRACT.md) | 聊天语料的独立 RPC 边界、三态独立性与授权规则 |
 | 调用边界 | [contracts/SERVICE_CALL_CAPABILITY.md](./contracts/SERVICE_CALL_CAPABILITY.md) | 调用方 capability 格式、角色权限与范围包含规则 |
 | 实施证据 | [reports/PHASE0_COMPLETION_REPORT.md](./reports/PHASE0_COMPLETION_REPORT.md)、[reports/PHASE1_IMPLEMENTATION_LOG.md](./reports/PHASE1_IMPLEMENTATION_LOG.md)、[reports/PHASE2_IMPLEMENTATION_LOG.md](./reports/PHASE2_IMPLEMENTATION_LOG.md) | 记录已经验证的结果，不承担后续排期 |
@@ -76,7 +79,8 @@ docs/
 | [ADR-013](./adr/013-immutable-control-snapshot-and-background-projection.md) | 控制面不可变快照与后台投影收敛 |
 | [ADR-014](./adr/014-per-corpus-control-plane-isolation.md) | 多语料控制面与索引隔离 |
 | [ADR-015](./adr/015-control-plane-idempotency-ledger-retention.md) | 控制面幂等账本的保留窗口 |
-| [ADR-016](./adr/016-qq-identity-and-knowledge-space-mapping.md) | QQ 身份与知识空间映射 |
+| [ADR-016](./adr/016-qq-identity-and-knowledge-space-mapping.md) | QQ 身份与知识空间映射（现有阶段决策；目标所有权见 ADR-017） |
+| [ADR-017](./adr/017-source-owned-document-and-search-services.md) | 独立文档服务与按来源划分检索服务 |
 
 `history/` 当前包含：
 
@@ -86,16 +90,9 @@ docs/
 - [阶段 1 破坏性改造初始方向](./history/PHASE1_BREAKING_REFACTOR_DIRECTION.md)
 - [HttpOnly Cookie 专项迁移记录](./history/HTTPONLY_COOKIE_MIGRATION.md)
 
-## 阶段映射
+## 状态入口
 
-| 生态宏观阶段 | go-web 本地阶段 | 当前状态 |
-| --- | --- | --- |
-| 阶段一：现状审计与边界确认 | 阶段 0 | 已完成并冻结 |
-| 阶段二：文档知识链路贯通 | 阶段 1 → 阶段 2 | 已完成；P2.5 结论为 KEEP_BM25 |
-| 阶段三：QQ 身份与知识空间融合 | 阶段 3 | 进行中；进度见当前计划 |
-| 阶段四：聊天记录域建设 | 后续专项阶段 | 未进入；Chat/WebSocket 保持代码存在但不接入 |
-| 阶段五：治理、可靠性与持续演进 | 持续治理阶段 | 未进入 |
-| 文档 BM25 交接 | B 线（独立排期） | 未完成；PostgreSQL BM25 仍是正式读取方 |
+已完成阶段的结果见 [阶段报告](./reports/)；当前代码结构见 [项目结构](./architecture/PROJECT_STRUCTURE.md)。2026-09-25 起的目标架构见 [ADR-017](./adr/017-source-owned-document-and-search-services.md)，其实施状态只在 [当前实施计划](./planning/CURRENT_IMPLEMENTATION_PLAN.md) 更新。历史阶段报告不因新方向改写。
 
 ## 维护规则
 

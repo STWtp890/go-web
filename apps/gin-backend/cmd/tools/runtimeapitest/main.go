@@ -16,8 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 type result struct {
@@ -33,7 +31,6 @@ type tester struct {
 	runID       string
 	baseURL     string
 	frontendURL string
-	groupID     string
 	results     []result
 }
 
@@ -49,26 +46,12 @@ type response struct {
 	header http.Header
 }
 
-type wireMessage struct {
-	Metadata struct {
-		DeliveryID      string `json:"deliveryId"`
-		MessageID       uint   `json:"messageId"`
-		ClientMessageID string `json:"clientMessageId"`
-		Type            string `json:"type"`
-		GroupType       string `json:"groupType"`
-		From            string `json:"from"`
-		To              string `json:"to"`
-		Timestamp       int64  `json:"timestamp"`
-	} `json:"metadata"`
-	Content string `json:"content"`
-}
-
 func main() {
-	var baseURL, frontendURL, runID, groupID, bootstrapUser, bootstrapPass, reportDir string
+	var baseURL, frontendURL, runID, bootstrapUser, bootstrapPass, reportDir string
 	flag.StringVar(&baseURL, "base-url", "http://127.0.0.1:8080", "backend base URL")
 	flag.StringVar(&frontendURL, "frontend-url", "http://127.0.0.1:15173", "frontend/Nginx base URL")
 	flag.StringVar(&runID, "run-id", time.Now().Format("20060102_150405"), "unique fixture suffix")
-	flag.StringVar(&groupID, "group-id", "", "optional legacy Chat group fixture; unused while Chat is disconnected")
+
 	flag.StringVar(&bootstrapUser, "bootstrap-manager", "", "pre-created active manager username")
 	flag.StringVar(&bootstrapPass, "bootstrap-password", "", "pre-created active manager password")
 	flag.StringVar(&reportDir, "report-dir", "../deployments/test-results", "report output directory")
@@ -83,7 +66,6 @@ func main() {
 		runID:       runID,
 		baseURL:     strings.TrimRight(baseURL, "/"),
 		frontendURL: strings.TrimRight(frontendURL, "/"),
-		groupID:     groupID,
 	}
 	t.run(bootstrapUser, bootstrapPass)
 
@@ -562,178 +544,6 @@ func (t *tester) runDocuments(a, b *session) (string, string) {
 	return publicID, privateID
 }
 
-func (t *tester) runChat(a, b *session, userAID, userBID string) {
-	unauth := newSession(t.baseURL)
-	conn, resp, err := dialWS(unauth, "/api/v1/protected/chat/ws", "http://localhost:15173")
-	if conn != nil {
-		_ = conn.Close()
-	}
-	t.add("WebSocket 未登录握手拒绝", "GET /api/v1/protected/chat/ws", "HTTP 401", fmt.Sprintf("HTTP %d", statusOf(resp)), err != nil && statusOf(resp) == 401, errorText(err))
-
-	r, reqErr := a.do(http.MethodPost, "/api/v1/protected/chat/deliveries/ack", map[string]any{"deliveryIds": []string{}}, "pp_user_csrf", true)
-	t.requestResult("ACK 空批次校验", "POST /api/v1/protected/chat/deliveries/ack", 400, r, reqErr, bodyCode(r) == "VALIDATION_FAILED", "code="+bodyCode(r))
-	r, reqErr = a.do(http.MethodPost, "/api/v1/protected/chat/deliveries/ack", map[string]any{"deliveryIds": []string{"not-a-uuid"}}, "pp_user_csrf", true)
-	t.requestResult("ACK UUID 格式校验", "POST /api/v1/protected/chat/deliveries/ack", 400, r, reqErr, bodyCode(r) == "VALIDATION_FAILED", "code="+bodyCode(r))
-	r, reqErr = a.do(http.MethodPost, "/api/v1/protected/chat/deliveries/ack", map[string]any{"deliveryIds": []string{"00000000-0000-0000-0000-000000000000"}}, "pp_user_csrf", true)
-	t.requestResult("ACK 不存在 ID 幂等", "POST /api/v1/protected/chat/deliveries/ack", 204, r, reqErr, len(r.body) == 0, "empty body")
-
-	r, reqErr = a.do(http.MethodPost, "/api/v1/protected/chat/groups/does-not-exist/join", map[string]any{}, "pp_user_csrf", true)
-	t.requestResult("加入不存在群", "POST /api/v1/protected/chat/groups/:groupId/join", 404, r, reqErr, bodyCode(r) == "NOT_FOUND", "code="+bodyCode(r))
-	r, reqErr = a.do(http.MethodGet, "/api/v1/protected/chat/groups/"+t.groupID+"/members", nil, "", false)
-	t.requestResult("非成员禁止查看群成员", "GET /api/v1/protected/chat/groups/:groupId/members", 403, r, reqErr, bodyCode(r) == "FORBIDDEN", "code="+bodyCode(r))
-
-	for label, s := range map[string]*session{"A": a, "B": b} {
-		r, reqErr = s.do(http.MethodPost, "/api/v1/protected/chat/groups/"+t.groupID+"/join", map[string]any{}, "pp_user_csrf", true)
-		t.requestResult("用户 "+label+" 加入群", "POST /api/v1/protected/chat/groups/:groupId/join", 200, r, reqErr, asString(nested(jsonMap(r.body), "data", "groupId")) == t.groupID, "groupId matched")
-	}
-	r, reqErr = a.do(http.MethodPost, "/api/v1/protected/chat/groups/"+t.groupID+"/join", map[string]any{}, "pp_user_csrf", true)
-	t.requestResult("重复加入群幂等", "POST /api/v1/protected/chat/groups/:groupId/join", 200, r, reqErr, true, "membership unchanged")
-	r, reqErr = a.do(http.MethodGet, "/api/v1/protected/chat/groups/mine", nil, "", false)
-	t.requestResult("我的群列表", "GET /api/v1/protected/chat/groups/mine", 200, r, reqErr, arrayContainsString(nested(jsonMap(r.body), "data", "groups"), t.groupID), "fixture group present")
-	r, reqErr = a.do(http.MethodGet, "/api/v1/protected/chat/groups/"+t.groupID+"/members", nil, "", false)
-	members := nested(jsonMap(r.body), "data", "members")
-	t.requestResult("群成员列表", "GET /api/v1/protected/chat/groups/:groupId/members", 200, r, reqErr, arrayContainsString(members, userAID) && arrayContainsString(members, userBID), "contains user A and B")
-
-	badConn, badResp, badErr := dialWS(a, "/api/v1/protected/chat/ws", "https://invalid.example")
-	if badConn != nil {
-		_ = badConn.Close()
-	}
-	t.add("WebSocket Origin 拒绝", "GET /api/v1/protected/chat/ws", "HTTP 403", fmt.Sprintf("HTTP %d", statusOf(badResp)), badErr != nil && statusOf(badResp) == 403, errorText(badErr))
-
-	invalidConn, invalidResp, invalidErr := dialWS(a, "/api/v1/protected/chat/ws", "http://localhost:15173")
-	if invalidErr != nil {
-		t.add("WebSocket 非法消息返回错误帧", "WS /api/v1/protected/chat/ws", "type=error", fmt.Sprintf("handshake HTTP %d", statusOf(invalidResp)), false, invalidErr.Error())
-	} else {
-		_ = invalidConn.WriteJSON(map[string]any{"metadata": map[string]any{"clientMessageId": "invalid-" + t.runID, "type": "image", "groupType": "private", "to": userBID}, "content": "invalid"})
-		msg, readErr := readWS(invalidConn, 900*time.Millisecond)
-		ok := readErr == nil && msg.Metadata.Type == "error"
-		actual := "timeout/no frame"
-		if readErr == nil {
-			actual = "type=" + msg.Metadata.Type
-		}
-		t.add("WebSocket 非法消息返回错误帧", "WS /api/v1/protected/chat/ws", "type=error", actual, ok, "client validation failure must be observable")
-		_ = invalidConn.Close()
-	}
-
-	aWS, aResp, aErr := dialWS(a, "/api/v1/protected/chat/ws", "http://localhost:15173")
-	bWS, bResp, bErr := dialWS(b, "/api/v1/protected/chat/ws", "http://localhost:15173")
-	t.add("用户 A WebSocket 建连", "GET /api/v1/protected/chat/ws", "HTTP 101", fmt.Sprintf("HTTP %d", statusOf(aResp)), aErr == nil && statusOf(aResp) == 101, errorText(aErr))
-	t.add("用户 B WebSocket 建连", "GET /api/v1/protected/chat/ws", "HTTP 101", fmt.Sprintf("HTTP %d", statusOf(bResp)), bErr == nil && statusOf(bResp) == 101, errorText(bErr))
-	if aErr != nil || bErr != nil {
-		if aWS != nil {
-			_ = aWS.Close()
-		}
-		if bWS != nil {
-			_ = bWS.Close()
-		}
-		return
-	}
-
-	clientID1 := "private-1-" + t.runID
-	_ = sendText(aWS, clientID1, "private", userBID, "hello-private-1")
-	aAccepted, aReadErr := readUntil(aWS, 3*time.Second, func(m wireMessage) bool {
-		return m.Metadata.Type == "accepted" && m.Metadata.ClientMessageID == clientID1
-	})
-	bDelivery, bReadErr := readUntil(bWS, 3*time.Second, func(m wireMessage) bool { return m.Metadata.Type == "text" && m.Metadata.ClientMessageID == clientID1 })
-	acceptedID := messageIDFromAccepted(aAccepted)
-	acceptedOK := aReadErr == nil && acceptedID != "" && aAccepted.Metadata.Type == "accepted"
-	t.add("发送方收到 accepted", "WS private send", "accepted with persisted messageId", wsActual(aAccepted, aReadErr), acceptedOK, "accepted is sender persistence confirmation")
-	deliveryOK := bReadErr == nil && bDelivery.Metadata.DeliveryID != "" && bDelivery.Metadata.MessageID != 0 && bDelivery.Metadata.From == userAID && bDelivery.Content == "hello-private-1"
-	t.add("接收方收到专属 deliveryId", "WS private receive", "text with deliveryId/messageId/from/content", wsActual(bDelivery, bReadErr), deliveryOK, "deliveryId="+bDelivery.Metadata.DeliveryID)
-
-	r, reqErr = b.do(http.MethodPost, "/api/v1/protected/chat/deliveries/ack", map[string]any{"deliveryIds": []string{bDelivery.Metadata.DeliveryID}}, "pp_user_csrf", true)
-	t.requestResult("接收方应用 ACK", "POST /api/v1/protected/chat/deliveries/ack", 204, r, reqErr, true, "pending delivery deleted")
-	r, reqErr = b.do(http.MethodPost, "/api/v1/protected/chat/deliveries/ack", map[string]any{"deliveryIds": []string{bDelivery.Metadata.DeliveryID}}, "pp_user_csrf", true)
-	t.requestResult("接收方重复 ACK 幂等", "POST /api/v1/protected/chat/deliveries/ack", 204, r, reqErr, true, "duplicate accepted")
-
-	clientID2 := "private-2-" + t.runID
-	_ = sendText(aWS, clientID2, "private", userBID, "hello-private-replay")
-	_, _ = readUntil(aWS, 3*time.Second, func(m wireMessage) bool {
-		return m.Metadata.Type == "accepted" && m.Metadata.ClientMessageID == clientID2
-	})
-	bPending, pendingErr := readUntil(bWS, 3*time.Second, func(m wireMessage) bool { return m.Metadata.Type == "text" && m.Metadata.ClientMessageID == clientID2 })
-	r, reqErr = a.do(http.MethodPost, "/api/v1/protected/chat/deliveries/ack", map[string]any{"deliveryIds": []string{bPending.Metadata.DeliveryID}}, "pp_user_csrf", true)
-	t.requestResult("其他用户 ACK 不泄露且不删除", "POST /api/v1/protected/chat/deliveries/ack", 204, r, reqErr, pendingErr == nil, "HTTP is idempotent; replay verifies ownership")
-	_ = bWS.Close()
-	bWS, bResp, bErr = dialWS(b, "/api/v1/protected/chat/ws", "http://localhost:15173")
-	replayed, replayErr := readUntil(bWS, 3*time.Second, func(m wireMessage) bool { return m.Metadata.DeliveryID == bPending.Metadata.DeliveryID })
-	replayOK := bErr == nil && replayErr == nil && replayed.Content == "hello-private-replay"
-	t.add("未 ACK 消息重连重放", "WS reconnect replay", "same deliveryId replayed", wsActual(replayed, replayErr), replayOK, "delivery ownership preserved")
-	r, reqErr = b.do(http.MethodPost, "/api/v1/protected/chat/deliveries/ack", map[string]any{"deliveryIds": []string{bPending.Metadata.DeliveryID}}, "pp_user_csrf", true)
-	t.requestResult("重放消息由接收方 ACK", "POST /api/v1/protected/chat/deliveries/ack", 204, r, reqErr, true, "pending removed")
-	_ = bWS.Close()
-	bWS, _, bErr = dialWS(b, "/api/v1/protected/chat/ws", "http://localhost:15173")
-	_, noReplayErr := readWS(bWS, 800*time.Millisecond)
-	noReplay := bErr == nil && noReplayErr != nil
-	t.add("已 ACK 消息不再重放", "WS reconnect replay", "no frame", boolState(noReplay), noReplay, "read timeout confirms empty pending queue")
-	_ = bWS.Close()
-	bWS, _, bErr = dialWS(b, "/api/v1/protected/chat/ws", "http://localhost:15173")
-	if bErr != nil {
-		t.add("群聊测试前 B 重连", "GET /api/v1/protected/chat/ws", "HTTP 101", "dial error", false, bErr.Error())
-		_ = aWS.Close()
-		return
-	}
-
-	groupClientID := "group-1-" + t.runID
-	_ = sendText(aWS, groupClientID, "group", t.groupID, "hello-group")
-	aFrames, aFramesErr := collectMatches(aWS, 4*time.Second, groupClientID, 2)
-	bGroup, bGroupErr := readUntil(bWS, 4*time.Second, func(m wireMessage) bool {
-		return m.Metadata.ClientMessageID == groupClientID && m.Metadata.Type == "text"
-	})
-	var aOwn wireMessage
-	var groupAccepted bool
-	for _, msg := range aFrames {
-		if msg.Metadata.Type == "text" {
-			aOwn = msg
-		}
-		if msg.Metadata.Type == "accepted" {
-			groupAccepted = true
-		}
-	}
-	groupOK := aFramesErr == nil && bGroupErr == nil && groupAccepted && aOwn.Metadata.DeliveryID != "" && bGroup.Metadata.DeliveryID != ""
-	t.add("群消息持久化并投递全部成员", "WS group send", "sender delivery + accepted; member delivery", fmt.Sprintf("Aframes=%d Btype=%s", len(aFrames), bGroup.Metadata.Type), groupOK, "per-recipient delivery IDs present")
-	if aOwn.Metadata.DeliveryID != "" {
-		_, _ = a.do(http.MethodPost, "/api/v1/protected/chat/deliveries/ack", map[string]any{"deliveryIds": []string{aOwn.Metadata.DeliveryID}}, "pp_user_csrf", true)
-	}
-	if bGroup.Metadata.DeliveryID != "" {
-		_, _ = b.do(http.MethodPost, "/api/v1/protected/chat/deliveries/ack", map[string]any{"deliveryIds": []string{bGroup.Metadata.DeliveryID}}, "pp_user_csrf", true)
-	}
-
-	r, reqErr = b.do(http.MethodPost, "/api/v1/protected/chat/groups/"+t.groupID+"/leave", map[string]any{}, "pp_user_csrf", true)
-	t.requestResult("用户 B 退出群", "POST /api/v1/protected/chat/groups/:groupId/leave", 200, r, reqErr, true, "membership removed")
-	nonMemberID := "group-denied-" + t.runID
-	_ = sendText(bWS, nonMemberID, "group", t.groupID, "must-fail")
-	denied, deniedErr := readUntil(bWS, 3*time.Second, func(m wireMessage) bool { return m.Metadata.ClientMessageID == nonMemberID })
-	t.add("非成员群发送返回 error", "WS group send", "type=error", wsActual(denied, deniedErr), deniedErr == nil && denied.Metadata.Type == "error", "authorization rejection observable")
-
-	groupClientID2 := "group-2-" + t.runID
-	_ = sendText(aWS, groupClientID2, "group", t.groupID, "after-b-left")
-	aFrames, _ = collectMatches(aWS, 4*time.Second, groupClientID2, 2)
-	var aOwn2 wireMessage
-	for _, msg := range aFrames {
-		if msg.Metadata.Type == "text" {
-			aOwn2 = msg
-		}
-	}
-	_, bAfterLeaveErr := readWS(bWS, 900*time.Millisecond)
-	leftNotDelivered := bAfterLeaveErr != nil
-	t.add("退出群后不再接收群消息", "WS group receive", "no frame", boolState(leftNotDelivered), leftNotDelivered, "live membership update applied")
-	if aOwn2.Metadata.DeliveryID != "" {
-		_, _ = a.do(http.MethodPost, "/api/v1/protected/chat/deliveries/ack", map[string]any{"deliveryIds": []string{aOwn2.Metadata.DeliveryID}}, "pp_user_csrf", true)
-	}
-	_ = bWS.Close()
-
-	r, reqErr = b.do(http.MethodGet, "/api/v1/protected/chat/groups/"+t.groupID+"/members", nil, "", false)
-	t.requestResult("退群后禁止查看成员", "GET /api/v1/protected/chat/groups/:groupId/members", 403, r, reqErr, bodyCode(r) == "FORBIDDEN", "code="+bodyCode(r))
-	r, reqErr = b.do(http.MethodPost, "/api/v1/protected/chat/groups/"+t.groupID+"/leave", map[string]any{}, "pp_user_csrf", true)
-	t.requestResult("非成员重复退群", "POST /api/v1/protected/chat/groups/:groupId/leave", 403, r, reqErr, bodyCode(r) == "FORBIDDEN", "code="+bodyCode(r))
-	r, reqErr = a.do(http.MethodPost, "/api/v1/protected/chat/groups/"+t.groupID+"/leave", map[string]any{}, "pp_user_csrf", true)
-	t.requestResult("用户 A 退出群", "POST /api/v1/protected/chat/groups/:groupId/leave", 200, r, reqErr, true, "membership removed")
-	r, reqErr = a.do(http.MethodGet, "/api/v1/protected/chat/groups/mine", nil, "", false)
-	t.requestResult("退群后我的群列表更新", "GET /api/v1/protected/chat/groups/mine", 200, r, reqErr, !arrayContainsString(nested(jsonMap(r.body), "data", "groups"), t.groupID), "fixture group absent")
-	_ = aWS.Close()
-}
-
 func (t *tester) runManager(user *session, bootstrapUser, bootstrapPass, approveUser, rejectUser, password string) {
 	public := newSession(t.baseURL)
 	csrfProbeUser := approveUser + "_csrf"
@@ -862,107 +672,6 @@ func inspectCookieHeaders(headers []string, prefix string) (string, bool) {
 	sameSite := strings.Count(joined, "SameSite=Lax") >= 3
 	ok := access && refresh && csrf && accessPath && refreshPath && httpOnlyCount && sameSite
 	return fmt.Sprintf("access=%t refresh=%t csrf=%t scopedPaths=%t httpOnlyTokens=%t sameSiteLax=%t", access, refresh, csrf, accessPath && refreshPath, httpOnlyCount, sameSite), ok
-}
-
-func dialWS(s *session, path, origin string) (*websocket.Conn, *http.Response, error) {
-	base, _ := url.Parse(s.base)
-	scheme := "ws"
-	if base.Scheme == "https" {
-		scheme = "wss"
-	}
-	u := url.URL{Scheme: scheme, Host: base.Host, Path: path}
-	header := http.Header{}
-	if origin != "" {
-		header.Set("Origin", origin)
-	}
-	cookies := s.jar.Cookies(&url.URL{Scheme: base.Scheme, Host: base.Host, Path: path})
-	if len(cookies) > 0 {
-		parts := make([]string, 0, len(cookies))
-		for _, c := range cookies {
-			parts = append(parts, c.Name+"="+c.Value)
-		}
-		header.Set("Cookie", strings.Join(parts, "; "))
-	}
-	d := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
-	return d.Dial(u.String(), header)
-}
-
-func sendText(conn *websocket.Conn, clientID, groupType, to, content string) error {
-	return conn.WriteJSON(map[string]any{
-		"metadata": map[string]any{
-			"clientMessageId": clientID,
-			"type":            "text",
-			"groupType":       groupType,
-			"to":              to,
-		},
-		"content": content,
-	})
-}
-
-func readWS(conn *websocket.Conn, timeout time.Duration) (wireMessage, error) {
-	var msg wireMessage
-	if conn == nil {
-		return msg, fmt.Errorf("nil websocket")
-	}
-	_ = conn.SetReadDeadline(time.Now().Add(timeout))
-	err := conn.ReadJSON(&msg)
-	return msg, err
-}
-
-func readUntil(conn *websocket.Conn, timeout time.Duration, match func(wireMessage) bool) (wireMessage, error) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		var msg wireMessage
-		_ = conn.SetReadDeadline(deadline)
-		if err := conn.ReadJSON(&msg); err != nil {
-			return wireMessage{}, err
-		}
-		if match(msg) {
-			return msg, nil
-		}
-	}
-	return wireMessage{}, fmt.Errorf("matching frame timeout")
-}
-
-func collectMatches(conn *websocket.Conn, timeout time.Duration, clientID string, count int) ([]wireMessage, error) {
-	deadline := time.Now().Add(timeout)
-	var out []wireMessage
-	for len(out) < count {
-		var msg wireMessage
-		_ = conn.SetReadDeadline(deadline)
-		if err := conn.ReadJSON(&msg); err != nil {
-			return out, err
-		}
-		if msg.Metadata.ClientMessageID == clientID {
-			out = append(out, msg)
-		}
-	}
-	return out, nil
-}
-
-func waitWSClosed(conn *websocket.Conn, timeout time.Duration) bool {
-	if conn == nil {
-		return false
-	}
-	_ = conn.SetReadDeadline(time.Now().Add(timeout))
-	_, _, err := conn.ReadMessage()
-	_ = conn.Close()
-	return err != nil
-}
-
-func messageIDFromAccepted(msg wireMessage) string {
-	var content map[string]any
-	if json.Unmarshal([]byte(msg.Content), &content) != nil {
-		return ""
-	}
-	return asID(content["messageId"])
-}
-
-func wsActual(msg wireMessage, err error) string {
-	if err != nil {
-		return "read error/timeout"
-	}
-	return fmt.Sprintf("type=%s clientMessageId=%s deliveryId=%s messageId=%d", msg.Metadata.Type, msg.Metadata.ClientMessageID, msg.Metadata.DeliveryID, msg.Metadata.MessageID)
 }
 
 func statusOf(resp *http.Response) int {

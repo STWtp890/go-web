@@ -16,8 +16,18 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./deployments/postgresql/sql:/sql:ro
+      # The whole deployments/postgresql tree is mounted read-only so the
+      # bootstrap script can read the shared SQL; the per-service baselines are
+      # mounted separately below because a read-only parent mount cannot host new
+      # mount points inside it.
       - ./deployments/postgresql:/database:ro
       - ./deployments/postgresql/entryscript:/docker-entrypoint-initdb.d:ro
+      # Each source-owned service keeps its schema baseline inside its own module
+      # so the service owns its storage definition; the bootstrap below only
+      # applies them, it does not own them.
+      - ./apps/document-service/schema:/service-schema/document-service:ro
+      - ./apps/document-search/schema:/service-schema/document-search:ro
+      - ./apps/qq-search/schema:/service-schema/qq-search:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d gin_demo"]
       interval: 10s
@@ -42,8 +52,17 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # Legacy retrieval baseline. It is NOT part of the default startup path: the
+  # Web document surface reaches document-service and document-search, so nothing
+  # in the running product needs this service. It stays reachable behind a
+  # profile because apps/mixin-search still owns the migration-period retrieval
+  # implementation that ADR-017 stage B took over, and its own verification
+  # scripts prove that implementation.
+  #
+  #   docker compose --profile legacy-retrieval up -d mixin-search control-postgres
   control-postgres:
     image: postgres:17-bookworm
+    profiles: ["legacy-retrieval"]
     ports:
       # 只绑定回环，供容量测量与门禁直接读取控制状态（服务本身走容器网络）。
       - "127.0.0.1:${CONTROL_POSTGRES_PORT:-15433}:5432"
@@ -77,6 +96,7 @@ services:
     restart: unless-stopped
 
   mixin-search:
+    profiles: ["legacy-retrieval"]
     build:
       context: .
       dockerfile: apps/mixin-search/Dockerfile
@@ -124,6 +144,7 @@ services:
       - -chat-max-metadata-key-bytes=${MIXIN_SEARCH_CHAT_MAX_METADATA_KEY_BYTES:-32}
       - -chat-max-metadata-value-bytes=${MIXIN_SEARCH_CHAT_MAX_METADATA_VALUE_BYTES:-64}
       - -chat-max-metadata-total-bytes=${MIXIN_SEARCH_CHAT_MAX_METADATA_TOTAL_BYTES:-64}
+
       # 调用方身份：缺少 capability 的调用被拒绝，因此密钥必须挂载。
       - -capability-key-file=/app/secrets/mixin_search_capability.key
       - -capability-issuer=go-web
@@ -178,6 +199,9 @@ services:
       - ./apps/gin-backend/configs/rsa_public.pem:/app/configs/rsa_public.pem:ro
       # mixin-search 调用凭证使用同一条边界密钥，同样以只读卷提供。
       - ./deployments/secrets/mixin_search_capability.key:/app/secrets/mixin_search_capability.key:ro
+      # ADR-017：调用 document-service 与 document-search 的服务身份断言与资源范围
+      # capability 共用同一条边界密钥。
+      - ./deployments/secrets/mixin_search_capability.key:/app/secrets/boundary.key:ro
       - backend-storage:/app/storage
     depends_on:
       postgres:
@@ -199,19 +223,40 @@ services:
       - no-new-privileges:true
     restart: unless-stopped
 
-  document-index-worker:
-    image: gin-backend:local
-    command: ["/app/document-index-worker", "-config", "/app/configs/config.yaml"]
+  # ---------------------------------------------------------------------------
+  # Source-owned document and search services (ADR-017).
+  #
+  # Each service writes its own PostgreSQL schema with its own role, configured
+  # in deployments/postgresql/sql/service/service_roles.sql:
+  #   document_service_writer  -> schema document_service
+  #   document_search_writer   -> schema document_search (+ read-only on the Outbox)
+  #   qq_search_writer         -> schema qq_search
+  # The isolation is proven by deployments/postgresql/verify-service-isolation.ps1.
+  # ---------------------------------------------------------------------------
+  document-service:
+    build:
+      context: .
+      dockerfile: apps/document-service/Dockerfile
+      args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+    image: document-service:local
+    command: ["/app/document-service", "-config", "/app/configs/config.yaml"]
+    environment:
+      DOCUMENT_SERVICE_POSTGRES_DSN: postgres://document_service_writer:document_service@postgres:5432/gin_demo?sslmode=disable
+      DOCUMENT_SERVICE_CAPABILITY_KEY_FILE: /app/secrets/boundary.key
+      DOCUMENT_SERVICE_GRPC_LISTEN_ADDRESS: 0.0.0.0:18081
+      DOCUMENT_SERVICE_HTTP_LISTEN_ADDRESS: 0.0.0.0:18091
+    ports:
+      - "127.0.0.1:${DOCUMENT_SERVICE_GRPC_PORT:-18081}:18081"
+      - "127.0.0.1:${DOCUMENT_SERVICE_HTTP_PORT:-18091}:18091"
     volumes:
-      - ./apps/gin-backend/configs/config.docker.yaml:/app/configs/config.yaml:ro
-      - ./deployments/secrets/mixin_search_capability.key:/app/secrets/mixin_search_capability.key:ro
+      - ./apps/document-service/configs/config.docker.yaml:/app/configs/config.yaml:ro
+      - ./deployments/secrets/mixin_search_capability.key:/app/secrets/boundary.key:ro
     depends_on:
       postgres:
         condition: service_healthy
-      mixin-search:
-        condition: service_healthy
     healthcheck:
-      test: ["CMD", "/app/document-index-admin", "-config", "/app/configs/config.yaml", "status", "-timeout", "2s"]
+      test: ["CMD", "/app/document-service-healthcheck", "-address", "127.0.0.1:18091"]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -225,18 +270,44 @@ services:
       - no-new-privileges:true
     restart: unless-stopped
 
-  document-index-admin:
-    image: gin-backend:local
-    profiles: ["ops"]
-    command: ["/app/document-index-admin", "-config", "/app/configs/config.yaml", "status"]
+  document-search:
+    build:
+      context: .
+      dockerfile: apps/document-search/Dockerfile
+      args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+    image: document-search:local
+    command: ["/app/document-search", "-config", "/app/configs/config.yaml"]
+    environment:
+      DOCUMENT_SEARCH_POSTGRES_DSN: postgres://document_search_writer:document_search@postgres:5432/gin_demo?sslmode=disable
+      DOCUMENT_SEARCH_CAPABILITY_KEY_FILE: /app/secrets/boundary.key
+      DOCUMENT_SEARCH_SOURCE_CAPABILITY_KEY_FILE: /app/secrets/boundary.key
+      DOCUMENT_SEARCH_GRPC_LISTEN_ADDRESS: 0.0.0.0:18082
+      DOCUMENT_SEARCH_HTTP_LISTEN_ADDRESS: 0.0.0.0:18092
+      DOCUMENT_SEARCH_SOURCE_ENDPOINT: document-service:18081
+    ports:
+      - "127.0.0.1:${DOCUMENT_SEARCH_GRPC_PORT:-18082}:18082"
+      - "127.0.0.1:${DOCUMENT_SEARCH_HTTP_PORT:-18092}:18092"
     volumes:
-      - ./apps/gin-backend/configs/config.docker.yaml:/app/configs/config.yaml:ro
-      - ./deployments/secrets/mixin_search_capability.key:/app/secrets/mixin_search_capability.key:ro
+      - ./apps/document-search/configs/config.docker.yaml:/app/configs/config.yaml:ro
+      - ./deployments/secrets/mixin_search_capability.key:/app/secrets/boundary.key:ro
     depends_on:
       postgres:
         condition: service_healthy
-      mixin-search:
+      document-service:
         condition: service_healthy
+      # The vector index is a hard dependency of this service: it opens the
+      # active generation's collection at startup and refuses to start when the
+      # collection, alias or vector profile does not match. Waiting for Qdrant
+      # here turns a startup race into a normal ordered start.
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app/document-search-healthcheck", "-address", "127.0.0.1:18092"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
     read_only: true
     tmpfs:
       - /tmp
@@ -244,6 +315,44 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    restart: unless-stopped
+
+  qq-search:
+    build:
+      context: .
+      dockerfile: apps/qq-search/Dockerfile
+      args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+    image: qq-search:local
+    command: ["/app/qq-search", "-config", "/app/configs/config.yaml"]
+    environment:
+      QQ_SEARCH_POSTGRES_DSN: postgres://qq_search_writer:qq_search@postgres:5432/gin_demo?sslmode=disable
+      QQ_SEARCH_CAPABILITY_KEY_FILE: /app/secrets/boundary.key
+      QQ_SEARCH_GRPC_LISTEN_ADDRESS: 0.0.0.0:18083
+      QQ_SEARCH_HTTP_LISTEN_ADDRESS: 0.0.0.0:18093
+    ports:
+      - "127.0.0.1:${QQ_SEARCH_GRPC_PORT:-18083}:18083"
+      - "127.0.0.1:${QQ_SEARCH_HTTP_PORT:-18093}:18093"
+    volumes:
+      - ./apps/qq-search/configs/config.docker.yaml:/app/configs/config.yaml:ro
+      - ./deployments/secrets/mixin_search_capability.key:/app/secrets/boundary.key:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app/qq-search-healthcheck", "-address", "127.0.0.1:18093"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
 
   simple-frontend:
     build:

@@ -12,20 +12,29 @@ import (
 	redisconn "gin-backend/internal/common/base/connection/redis"
 	"gin-backend/internal/common/service/sessionevent"
 	"gin-backend/internal/config"
-	"gin-backend/internal/modules/document/application"
-	documentcache "gin-backend/internal/modules/document/infrastructure/cache"
-	"gin-backend/internal/modules/document/infrastructure/mixinsearch"
-	documentpostgresql "gin-backend/internal/modules/document/infrastructure/postgresql"
-	documenthttp "gin-backend/internal/modules/document/interfaces/http"
+	"gin-backend/internal/modules/document/infrastructure/documentsearch"
+	"gin-backend/internal/modules/document/infrastructure/documentservice"
+	sourceowned "gin-backend/internal/modules/document/interfaces/sourceowned"
+	"gin-backend/internal/platform/httpserver"
+
+	"packages/serviceauth"
 )
 
 type runtimeDependencies struct {
-	documentHTTP       *documenthttp.Handler
-	shadowSearch       *application.ShadowSearchObserver
-	shadowSearchClient *mixinsearch.Client
+	documentHTTP httpserver.RouteRegistrar
+	// documentServiceClient and documentSearchClient are the ADR-017 boundaries.
+	// They are nil when the source-owned services are not configured, and the
+	// Web document routes are then absent rather than backed by direct table
+	// access.
+	documentServiceClient *documentservice.Client
+	documentSearchClient  *documentsearch.Client
 }
 
 // ready 校验当前已接入的数据库与 Redis 基础设施均可用。
+//
+// 这里刻意只检查 gin-backend 自己拥有的连接：ADR-017 之后 Web 文档面经
+// document-service 与 document-search 访问正式文档，本进程不再注册、也不再
+// 健康检查文档业务库连接。
 func (dependencies *runtimeDependencies) ready(ctx context.Context) error {
 	pg, err := postgresqlconn.PostgreSQLManager.Get(connection.ServiceAuth)
 	if err != nil {
@@ -36,18 +45,6 @@ func (dependencies *runtimeDependencies) ready(ctx context.Context) error {
 		return err
 	}
 	if err := postgresqlconn.HealthCheck(db); err != nil {
-		return err
-	}
-
-	documentPostgreSQL, err := postgresqlconn.PostgreSQLManager.Get(connection.ServiceDocument)
-	if err != nil {
-		return err
-	}
-	documentDB, err := documentPostgreSQL.GetConn()
-	if err != nil {
-		return err
-	}
-	if err := postgresqlconn.HealthCheck(documentDB); err != nil {
 		return err
 	}
 
@@ -99,90 +96,75 @@ func initDependencies(conf *config.Config) (*runtimeDependencies, func()) {
 		panic(fmt.Sprintf("Redis 连接失败: %v", err))
 	}
 
-	documentDB, err := postgresqlconn.PostgreSQLManager.RegisterAndGet(connection.ServiceDocument, conf.PostgresConfig, conf.LogConfig.Level)
-	if err != nil {
-		_ = postgresqlconn.PostgreSQLManager.Unregister(connection.ServiceAuth)
-		_ = redisconn.RedisManager.Unregister(connection.ServiceAuth)
-		_ = redisconn.RedisManager.Unregister(connection.ServiceCache)
-		panic(fmt.Sprintf("PostgreSQL 连接失败: %v", err))
-	}
-
-	documentRepository, err := documentpostgresql.New(documentDB)
-	if err != nil {
-		panic(fmt.Sprintf("初始化文档仓储失败: %v", err))
-	}
-	documentCommands, err := application.NewCommandService(documentRepository)
-	if err != nil {
-		panic(fmt.Sprintf("初始化文档写服务失败: %v", err))
-	}
-	var (
-		shadowSearch       *application.ShadowSearchObserver
-		shadowSearchClient *mixinsearch.Client
-		queryOptions       []application.QueryOption
-	)
-	if conf.ShadowSearchConfig.Enabled {
-		searchIssuer, err := mixinsearch.NewCapabilityIssuerFromConfig(
-			conf.MixinSearchSecurity.CapabilityKeyPath,
-			conf.MixinSearchSecurity.Issuer,
-			conf.MixinSearchSecurity.SearchCallerID,
-			conf.MixinSearchSecurity.Audience,
-			conf.MixinSearchSecurity.TokenTTL,
-		)
+	// ADR-017：正式文档与空间的唯一写入方是 document-service。启用来源专属服务
+	// 时，Web 文档路由整体切到服务接口（写命令 + 详情读取 + 经 capability 的检索），
+	// 不再读写文档业务表。未启用时不注册文档路由，而不是退回直接写表。
+	var documentRouteHandler httpserver.RouteRegistrar
+	var documentServiceClient *documentservice.Client
+	var documentSearchClient *documentsearch.Client
+	if conf.SourceOwnedServices.Enabled {
+		// The boundary key loader lives in the shared boundary package: go-web no
+		// longer has a mixin-search client to own it.
+		boundaryKey, err := serviceauth.LoadBoundaryKeyFile(conf.SourceOwnedServices.CapabilityKeyPath)
 		if err != nil {
-			panic(fmt.Sprintf("初始化 mixin-search 调用凭证失败: %v", err))
+			panic(fmt.Sprintf("读取来源专属服务边界密钥失败: %v", err))
 		}
-		shadowSearchClient, err = mixinsearch.New(
-			conf.ShadowSearchConfig.GRPCAddress, conf.IndexDeliveryConfig.MaxSendBytes, searchIssuer,
-		)
+		documentServiceClient, err = documentservice.New(documentservice.Config{
+			Endpoint:       conf.SourceOwnedServices.DocumentServiceAddress,
+			Audience:       conf.SourceOwnedServices.DocumentServiceAudience,
+			Caller:         serviceauth.Caller(conf.SourceOwnedServices.Caller),
+			Actor:          conf.SourceOwnedServices.Actor,
+			Scopes:         []serviceauth.Scope{serviceauth.ScopeDocumentWrite, serviceauth.ScopeDocumentRead},
+			RequestTimeout: conf.SourceOwnedServices.RequestTimeout,
+		}, boundaryKey)
 		if err != nil {
-			panic(fmt.Sprintf("初始化文档影子查询客户端失败: %v", err))
+			panic(fmt.Sprintf("初始化文档服务客户端失败: %v", err))
 		}
-		shadowSearch, err = application.NewShadowSearchObserver(documentRepository, shadowSearchClient, application.ShadowSearchObserverConfig{
-			QueueSize: conf.ShadowSearchConfig.QueueSize, Concurrency: conf.ShadowSearchConfig.Concurrency,
-			Timeout: conf.ShadowSearchConfig.Timeout, RecordTimeout: conf.ShadowSearchConfig.RecordTimeout,
-			TopK: conf.ShadowSearchConfig.TopK,
+		documentSearchClient, err = documentsearch.New(documentsearch.Config{
+			Endpoint:       conf.SourceOwnedServices.DocumentSearchAddress,
+			Audience:       conf.SourceOwnedServices.DocumentSearchAudience,
+			Caller:         serviceauth.Caller(conf.SourceOwnedServices.Caller),
+			Actor:          conf.SourceOwnedServices.Actor,
+			RequestTimeout: conf.SourceOwnedServices.RequestTimeout,
+		}, boundaryKey)
+		if err != nil {
+			panic(fmt.Sprintf("初始化文档检索客户端失败: %v", err))
+		}
+		gateway, err := sourceowned.New(sourceowned.Config{
+			Documents: documentServiceClient,
+			Search:    documentSearchClient,
 		})
 		if err != nil {
-			_ = shadowSearchClient.Close()
-			panic(fmt.Sprintf("初始化文档影子查询观察器失败: %v", err))
+			panic(fmt.Sprintf("初始化文档服务网关失败: %v", err))
 		}
-		queryOptions = append(queryOptions, application.WithShadowSearchScheduler(shadowSearch))
-	}
-	documentQueries, err := application.NewQueryService(documentRepository, documentcache.New(0), queryOptions...)
-	if err != nil {
-		if shadowSearch != nil {
-			shadowSearch.Close()
+		serviceHandler, err := sourceowned.NewServiceAdapter(gateway)
+		if err != nil {
+			panic(fmt.Sprintf("初始化文档服务 HTTP 适配器失败: %v", err))
 		}
-		if shadowSearchClient != nil {
-			_ = shadowSearchClient.Close()
-		}
-		panic(fmt.Sprintf("初始化文档查询服务失败: %v", err))
-	}
-	documentHandler, err := documenthttp.New(documentCommands, documentQueries)
-	if err != nil {
-		panic(fmt.Sprintf("初始化文档 HTTP 适配器失败: %v", err))
+		documentRouteHandler = serviceHandler
 	}
 
 	// 数据库结构由 PostgreSQL 空卷初始化脚本建立，不在服务启动时迁移。
 	// Chat 包使用独立 ServiceChat 名称，但当前不注册连接或路由。
 	dependencies := &runtimeDependencies{
-		documentHTTP: documentHandler, shadowSearch: shadowSearch, shadowSearchClient: shadowSearchClient,
+		documentHTTP:          documentRouteHandler,
+		documentServiceClient: documentServiceClient,
+		documentSearchClient:  documentSearchClient,
 	}
 	stopCacheStats := basecache.DefaultRuntime().StartStatsLogger(time.Minute)
 	return dependencies, func() {
 		stopCacheStats()
-		if dependencies.shadowSearch != nil {
-			dependencies.shadowSearch.Close()
+		if dependencies.documentServiceClient != nil {
+			if err := dependencies.documentServiceClient.Close(); err != nil {
+				slog.Error("关闭文档服务连接失败", slog.String("error", err.Error()))
+			}
 		}
-		if dependencies.shadowSearchClient != nil {
-			if err := dependencies.shadowSearchClient.Close(); err != nil {
-				slog.Error("关闭文档影子查询连接失败", slog.String("error", err.Error()))
+		if dependencies.documentSearchClient != nil {
+			if err := dependencies.documentSearchClient.Close(); err != nil {
+				slog.Error("关闭文档检索服务连接失败", slog.String("error", err.Error()))
 			}
 		}
 		sessionevent.SetDefaultBus(nil)
-		if err := postgresqlconn.PostgreSQLManager.Unregister(connection.ServiceDocument); err != nil {
-			slog.Error("关闭文档 PostgreSQL 连接失败", slog.String("error", err.Error()))
-		}
 		if err := postgresqlconn.PostgreSQLManager.Unregister(connection.ServiceAuth); err != nil {
 			slog.Error("关闭数据库连接失败", slog.String("error", err.Error()))
 		}

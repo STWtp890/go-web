@@ -24,6 +24,34 @@ $targets = @(
             'mixin-search/chat/v1/chat.pb.go',
             'mixin-search/chat/v1/chat_grpc.pb.go'
         )
+    },
+    @{
+        Proto = 'packages/proto/document/v1/document.proto'
+        Files = @(
+            'document/v1/document.pb.go',
+            'document/v1/document_grpc.pb.go'
+        )
+    },
+    @{
+        Proto = 'packages/proto/qqsource/v1/qqsource.proto'
+        Files = @(
+            'qqsource/v1/qqsource.pb.go',
+            'qqsource/v1/qqsource_grpc.pb.go'
+        )
+    },
+    @{
+        Proto = 'packages/proto/documentsearch/v1/documentsearch.proto'
+        Files = @(
+            'documentsearch/v1/documentsearch.pb.go',
+            'documentsearch/v1/documentsearch_grpc.pb.go'
+        )
+    },
+    @{
+        Proto = 'packages/proto/qqsearch/v1/qqsearch.proto'
+        Files = @(
+            'qqsearch/v1/qqsearch.pb.go',
+            'qqsearch/v1/qqsearch_grpc.pb.go'
+        )
     }
 )
 

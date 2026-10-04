@@ -14,8 +14,12 @@ server:
 postgres:
   host: postgres
   port: 5432
-  user: postgres
-  password: "postgres"
+  # The Web account: auth and manager tables only. It has no privilege on the
+  # source-owned service schemas, so the database enforces the ADR-017 boundary
+  # independently of the code. Created by
+  # deployments/postgresql/sql/service/service_roles.sql.
+  user: go_web_app
+  password: "go_web_app"
   dbname: gin_demo
   max_idle_conns: 10
   max_open_conns: 100
@@ -26,39 +30,20 @@ redis:
   password: ""
   db: 0
 
-document_index_delivery:
+# ADR-017 source-owned services. In the Compose stack the Web document routes are
+# served by document-service and document-search, so the container never reads or
+# writes the document business tables.
+source_owned_services:
   enabled: true
-  grpc_address: mixin-search:9090
-  batch_size: 32
-  concurrency: 8
-  poll_interval: 500ms
-  lease_duration: 2m
-  index_timeout: 30s
-  control_timeout: 5s
-  base_backoff: 1s
-  max_backoff: 15s
-  max_send_bytes: 16777216
-  health_timeout: 2s
-
-# mixin-search 拒绝任何不能证明身份的调用方，并按角色区分索引写入与检索。
-# 边界密钥由 deployments/bootstrap.ps1 生成，不入库也不入镜像，Compose 以只读卷
-# 挂载到 /app/secrets/。token_ttl 必须覆盖本文件中最大的 RPC 超时（30s）。
-mixin_search_security:
+  document_service_address: document-service:18081
+  document_search_address: document-search:18082
+  document_service_audience: document-service
+  document_search_audience: document-search
+  capability_audience: document-search
+  caller: go-web
+  actor: go-web-api
   capability_key_path: secrets/mixin_search_capability.key
-  issuer: go-web
-  audience: mixin-search
-  token_ttl: 2m
-  index_caller_id: go-web-index-worker
-  search_caller_id: go-web-shadow-search
-
-document_search_shadow:
-  enabled: true
-  grpc_address: mixin-search:9090
-  queue_size: 256
-  concurrency: 4
-  timeout: 750ms
-  record_timeout: 2s
-  top_k: 50
+  request_timeout: 10s
 
 custom:
   jwt:

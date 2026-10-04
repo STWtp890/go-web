@@ -1,3 +1,5 @@
+> 状态：**迁移前时点快照（2026-09-14 前后）**。ADR-017 阶段 C 之后，本文引用的旧 `public.*` 文档表、`document-index-worker` / `document-index-admin` / `document-search-eval`、`gin-backend` 的 `spacectl` 与 `connection.ServiceDocument` 均已退场；本文保留为当时的评估记录，不代表当前实现。`docs/` 治理树内的当前状态见 [docs/architecture/PROJECT_STRUCTURE.md](./docs/architecture/PROJECT_STRUCTURE.md) 与 [docs/planning/CURRENT_IMPLEMENTATION_PLAN.md](./docs/planning/CURRENT_IMPLEMENTATION_PLAN.md)。
+
 # gin-backend / mixin-search 项目结构组织评估（终版）
 
 > **评估对象**：`apps/gin-backend`、`apps/mixin-search`

@@ -1,0 +1,81 @@
+# document-search configuration template.
+#
+# The two boundary key entries point at the same development key here because the
+# development baseline shares one boundary key across services. A deployment that
+# rotates keys per service points them at different files; the wire format does
+# not change.
+grpc_listen_address: "127.0.0.1:18082"
+http_listen_address: "127.0.0.1:18092"
+
+postgres:
+  dsn: "postgres://document_search_writer:document_search@127.0.0.1:15432/gin_demo?sslmode=disable"
+  schema: "document_search"
+  max_open_conns: 16
+  conn_max_lifetime: "30m"
+  connect_timeout: "10s"
+
+auth:
+  capability_key_file: "../../deployments/secrets/mixin_search_capability.key"
+  audience: "document-search"
+  allowed_callers: []
+  enable_reflection: false
+
+source:
+  endpoint: "127.0.0.1:18081"
+  caller_identity: "document-search"
+  capability_key_file: "../../deployments/secrets/mixin_search_capability.key"
+  audience: "document-service"
+  scope: "document-event-reader"
+  batch_size: 100
+  poll_interval: "500ms"
+  request_timeout: "10s"
+  reconnect_backoff: "2s"
+  disabled: false
+
+index:
+  collection_alias: "go_web_document_v1"
+  storage_domain: "document-search:documents:v1"
+  index_profile: "markdown-v1"
+  max_chunks: 200
+  default_top_k: 10
+  max_top_k: 100
+
+# The vector half of the index.
+#
+# The collection the service opens is not named here: the alias, storage domain,
+# embedding profile and vector width are read from the active row of
+# document_search.index_generations, and the values below must agree with it. A
+# disagreement fails startup instead of opening a second, unintended collection.
+vector:
+  enabled: true
+  # Qdrant gRPC endpoint. The development stack publishes it on 16334; inside
+  # Compose the service reaches qdrant:6334.
+  endpoint: "127.0.0.1:16334"
+  api_key: ""
+  use_tls: false
+  # One Qdrant call must not hold the index transaction open.
+  timeout: "10s"
+  # The embedding profile. local-hash-v1 is the deterministic local hash
+  # embedding taken over from mixin-search (64 dimensions, unigrams plus adjacent
+  # bigrams, FNV-1a, L2-normalized). A different profile is a different index
+  # generation, never a reinterpretation of stored vectors.
+  profile: "local-hash-v1"
+  dimensions: 64
+  # How many points one query recalls before the SQL scope filter keeps the
+  # documents the caller may actually see. Bounded so an answer cannot grow with
+  # the size of the corpus.
+  recall: 100
+  # Reciprocal-rank-fusion constant: a document an arm ranked at position r
+  # contributes 1/(rrf_k + r) to its fused score.
+  rrf_k: 60
+  # The RRF fusion window: how many of the top keyword matches take part in the
+  # fusion with the vector recall. It bounds how deep a recall can reorder the
+  # answer, not how much of the answer a caller can read - the keyword matches
+  # beyond the window follow the fused window in keyword order, and total counts
+  # every keyword match.
+  max_keyword_candidates: 1000
+  # After a rebuild, drop the physical collections of this alias that no
+  # index_generations row references.
+  prune_generations_on_rebuild: true
+
+shutdown_timeout: "10s"

@@ -1,0 +1,545 @@
+syntax = "proto3";
+
+package document.v1;
+
+option go_package = "packages/gen/document/v1;documentv1";
+
+// DocumentService is the single business write boundary for formal documents,
+// knowledge spaces, space membership, QQ group to space bindings, resource
+// authorization and the document change Outbox.
+//
+// It is not a generic SQL proxy: callers submit business commands and detail
+// queries, never table names or statements.
+//
+// Identity model
+// --------------
+// The document service owns its own resource access subject registry
+// (AccessSubject). An access subject is a namespace-qualified identity such as
+// "web:user:42" or "qq:10001:user:20002". Web requests and QQ requests arrive
+// through separate trusted entry points and supply verified identity material;
+// the document service decides space membership and document permission from
+// its own facts. The two identity families are deliberately NOT required to be
+// bound to each other.
+//
+// Every RPC requires a signed service assertion in metadata (packages/serviceauth):
+//
+//   authorization: Bearer <service-assertion-token>
+//
+// The assertion proves which service is calling (caller), which scopes it holds
+// and which resource subject plus session context it is acting for. A caller may
+// only claim subjects inside its own namespace.
+service DocumentService {
+  rpc CreateDocument(CreateDocumentRequest) returns (CreateDocumentResponse);
+  // UpdateDraft appends an unpublished draft. The active version does not move,
+  // no index event is written and a draft is never returned as the detail's
+  // version. Drafts are for staging; use SaveDocument to make an edit live.
+  rpc UpdateDraft(UpdateDraftRequest) returns (UpdateDraftResponse);
+  // SaveDocument is the "edit and save" use case: one transaction performs the
+  // ownership check, the expected-revision check, the new version insert, the
+  // active-version switch, the optional access-policy change and the Outbox
+  // event. It returns the state after the switch, so the caller reads the new
+  // body immediately. Repeating a request id returns the same result instead of
+  // writing a second version and a second event.
+  rpc SaveDocument(SaveDocumentRequest) returns (SaveDocumentResponse);
+  rpc PublishDocument(PublishDocumentRequest) returns (PublishDocumentResponse);
+  rpc WithdrawVersion(WithdrawVersionRequest) returns (WithdrawVersionResponse);
+  rpc ArchiveDocument(ArchiveDocumentRequest) returns (ArchiveDocumentResponse);
+  rpc TrashDocument(TrashDocumentRequest) returns (TrashDocumentResponse);
+  rpc GetDocument(GetDocumentRequest) returns (GetDocumentResponse);
+  rpc ListDocuments(ListDocumentsRequest) returns (ListDocumentsResponse);
+
+  rpc CreateTeamSpace(CreateTeamSpaceRequest) returns (CreateTeamSpaceResponse);
+  rpc GetSpace(GetSpaceRequest) returns (GetSpaceResponse);
+  rpc ListSubjects(ListSubjectsRequest) returns (ListSubjectsResponse);
+  rpc GrantSpaceMember(GrantSpaceMemberRequest) returns (GrantSpaceMemberResponse);
+  rpc RevokeSpaceMember(RevokeSpaceMemberRequest) returns (RevokeSpaceMemberResponse);
+
+  rpc BindGroupSpace(BindGroupSpaceRequest) returns (BindGroupSpaceResponse);
+  rpc RevokeGroupSpace(RevokeGroupSpaceRequest) returns (RevokeGroupSpaceResponse);
+
+  // ResolveAccessScope answers the resource-side question only: which spaces and
+  // documents may this subject reach in this session context? Channel permission
+  // belongs to py-agent; the effective scope is the intersection computed by the
+  // caller. Denied never degrades into an empty Granted scope.
+  rpc ResolveAccessScope(ResolveAccessScopeRequest) returns (ResolveAccessScopeResponse);
+
+  // IssueSearchCapability resolves the scope and, when the decision is Granted,
+  // mints the short-lived resource capability the caller presents to
+  // document-search (issuer "document-service", audience "document-search").
+  //
+  // It exists so the resource fact source is also the only capability issuer:
+  // a search service validates the credential offline and never has to trust a
+  // caller's own description of its range. A Denied resolution returns no token.
+  rpc IssueSearchCapability(IssueSearchCapabilityRequest) returns (IssueSearchCapabilityResponse);
+
+  // ListDocumentEvents streams the document change Outbox. document-search is the
+  // only intended consumer. Consumers persist their own cursor and tolerate
+  // duplicate delivery; search services must never call back into this service
+  // while answering a query.
+  rpc ListDocumentEvents(ListDocumentEventsRequest) returns (stream DocumentEventEnvelope);
+}
+
+enum LifecycleStatus {
+  LIFECYCLE_STATUS_UNSPECIFIED = 0;
+  LIFECYCLE_STATUS_ACTIVE = 1;
+  LIFECYCLE_STATUS_ARCHIVED = 2;
+  LIFECYCLE_STATUS_TRASHED = 3;
+}
+
+enum PublicationStatus {
+  PUBLICATION_STATUS_UNSPECIFIED = 0;
+  PUBLICATION_STATUS_DRAFT = 1;
+  PUBLICATION_STATUS_PUBLISHED = 2;
+  PUBLICATION_STATUS_SUPERSEDED = 3;
+  PUBLICATION_STATUS_WITHDRAWN = 4;
+}
+
+enum SpaceType {
+  SPACE_TYPE_UNSPECIFIED = 0;
+  SPACE_TYPE_PRIVATE = 1;
+  SPACE_TYPE_TEAM = 2;
+}
+
+enum MemberRole {
+  MEMBER_ROLE_UNSPECIFIED = 0;
+  MEMBER_ROLE_OWNER = 1;
+  MEMBER_ROLE_ADMIN = 2;
+  MEMBER_ROLE_MEMBER = 3;
+}
+
+enum SubjectType {
+  SUBJECT_TYPE_UNSPECIFIED = 0;
+  SUBJECT_TYPE_USER = 1;
+  SUBJECT_TYPE_GROUP = 2;
+}
+
+enum Decision {
+  DECISION_UNSPECIFIED = 0;
+  DECISION_GRANTED = 1;
+  DECISION_DENIED = 2;
+}
+
+enum DeniedReason {
+  DENIED_REASON_UNSPECIFIED = 0;
+  DENIED_REASON_SUBJECT_UNKNOWN = 1;
+  DENIED_REASON_SUBJECT_REVOKED = 2;
+  DENIED_REASON_GROUP_UNBOUND = 3;
+  DENIED_REASON_GROUP_BINDING_REVOKED = 4;
+  DENIED_REASON_NOT_SPACE_MEMBER = 5;
+  DENIED_REASON_SESSION_CONTEXT_INVALID = 6;
+  DENIED_REASON_SUBJECT_INACTIVE = 7;
+}
+
+enum ConversationKind {
+  CONVERSATION_KIND_UNSPECIFIED = 0;
+  CONVERSATION_KIND_PRIVATE = 1;
+  CONVERSATION_KIND_GROUP = 2;
+}
+
+// AccessSubject is the document service's own resource access principal.
+// subject_key is canonical and namespace qualified.
+message AccessSubject {
+  string subject_key = 1;
+  SubjectType subject_type = 2;
+  string origin = 3;
+  string display_name = 4;
+  bool active = 5;
+  string created_at = 6;
+  string updated_at = 7;
+}
+
+message ConversationContext {
+  ConversationKind kind = 1;
+  string external_group_id = 2;
+}
+
+message DocumentSource {
+  // Origin system that produced the raw content: "web", "qq".
+  string origin = 1;
+  string bot_id = 2;
+  string conversation_id = 3;
+  string source_record_id = 4;
+}
+
+message DocumentSummary {
+  string document_id = 1;
+  string owner_subject_key = 2;
+  string owner_space_id = 3;
+  LifecycleStatus lifecycle_status = 4;
+  string active_version_id = 5;
+  string title = 6;
+  PublicationStatus publication_status = 7;
+  uint64 aggregate_revision = 8;
+  string created_at = 9;
+  string updated_at = 10;
+  // The access policy's authenticated-public flag, read from the policy row
+  // rather than inferred from the publication status. A published document is
+  // not automatically public: publication says which version is active, the
+  // policy says who may read it. Summaries carry the flag so a list and a detail
+  // read of the same document cannot disagree about visibility.
+  bool authenticated_public = 11;
+}
+
+message DocumentVersion {
+  string version_id = 1;
+  string document_id = 2;
+  uint64 revision = 3;
+  PublicationStatus publication_status = 4;
+  string title = 5;
+  string summary = 6;
+  string content = 7;
+  string content_format = 8;
+  string content_sha256 = 9;
+  string created_by_subject_key = 10;
+  string created_at = 11;
+}
+
+message DocumentDetail {
+  DocumentSummary summary = 1;
+  DocumentVersion version = 2;
+  bool authenticated_public = 3;
+  repeated string granted_space_ids = 4;
+  DocumentSource source = 5;
+}
+
+message KnowledgeSpace {
+  string space_id = 1;
+  string owner_subject_key = 2;
+  SpaceType space_type = 3;
+  string name = 4;
+  string created_at = 5;
+  string updated_at = 6;
+}
+
+message SpaceMember {
+  string space_id = 1;
+  string subject_key = 2;
+  MemberRole member_role = 3;
+  string created_at = 4;
+  string revoked_at = 5;
+}
+
+message GroupSpaceBinding {
+  string binding_id = 1;
+  string channel = 2;
+  string bot_id = 3;
+  string external_group_id = 4;
+  string space_id = 5;
+  string actor = 6;
+  string source = 7;
+  string reason = 8;
+  string created_at = 9;
+  string revoked_at = 10;
+}
+
+message CreateDocumentRequest {
+  string title = 1;
+  string content = 2;
+  string content_format = 3;
+  bool authenticated_public = 4;
+  // Optional origin trace when the request originates from a QQ record. The
+  // source record id is never a document identity and never replaces document_id.
+  DocumentSource source = 5;
+  string request_id = 6;
+}
+
+message CreateDocumentResponse {
+  DocumentDetail document = 1;
+}
+
+message UpdateDraftRequest {
+  string document_id = 1;
+  string title = 2;
+  string content = 3;
+  string content_format = 4;
+  // Reserves the field number the access flag once used. A draft edit never
+  // changes the access policy, and a caller that asks it to is rejected with
+  // INVALID_ARGUMENT rather than silently ignored: an edit must not be able to
+  // revoke or widen access by accident. Access changes belong to SaveDocument,
+  // which states explicitly whether a policy change is being requested.
+  optional bool authenticated_public = 5;
+  // Optimistic concurrency: 0 means "do not check".
+  uint64 expected_aggregate_revision = 6;
+  string request_id = 7;
+}
+
+message UpdateDraftResponse {
+  DocumentDetail document = 1;
+}
+
+message SaveDocumentRequest {
+  string document_id = 1;
+  string title = 2;
+  string content = 3;
+  string content_format = 4;
+  // The optional access-policy change. An absent field means "keep the policy as
+  // it is", which is what an ordinary body edit sends; an explicit true or false
+  // asks for a policy change and is applied in the same transaction as the
+  // version. Presence, not the boolean value, is what distinguishes the two
+  // cases, so an edit can neither revoke access by omission nor be ambiguous
+  // about intent.
+  optional bool authenticated_public = 5;
+  // Optimistic concurrency: 0 means "do not check". A stale revision fails the
+  // whole transaction: no version, no policy change, no event.
+  uint64 expected_aggregate_revision = 6;
+  // Idempotency key. The service keeps a durable record of every committed
+  // request id per document, so a retry is recognized whenever it arrives - not
+  // only while it is the most recent one. Reusing an id with a DIFFERENT payload
+  // is rejected with ALREADY_EXISTS rather than silently overwriting.
+  string request_id = 7;
+}
+
+message SaveDocumentResponse {
+  // The document as committed. On a fresh save this is the state the call just
+  // produced. On a replay it is the CURRENT committed state, which may have moved
+  // on since the first attempt: replayed=true means "this request id was already
+  // committed and this call changed nothing", so the body reflects the document
+  // as it stands now, not as it stood when the request id was first used.
+  DocumentDetail document = 1;
+  // True when this response is a replay of an earlier attempt with the same
+  // request id. No version was appended, no policy was written and no event was
+  // emitted by this call.
+  bool replayed = 2;
+  // The version this request id produced. On a fresh save it is the version that
+  // was just activated; on a replay it is the version the FIRST attempt created,
+  // which may since have been superseded. It is the correlation handle between a
+  // retried request and the effect its original attempt had.
+  string applied_version_id = 3;
+}
+
+message PublishDocumentRequest {
+  string document_id = 1;
+  string version_id = 2;
+  uint64 expected_aggregate_revision = 3;
+  string request_id = 4;
+}
+
+message PublishDocumentResponse {
+  DocumentDetail document = 1;
+}
+
+message WithdrawVersionRequest {
+  string document_id = 1;
+  string version_id = 2;
+  string request_id = 3;
+}
+
+message WithdrawVersionResponse {
+  DocumentDetail document = 1;
+}
+
+message ArchiveDocumentRequest {
+  string document_id = 1;
+  string request_id = 2;
+}
+
+message ArchiveDocumentResponse {
+  DocumentDetail document = 1;
+}
+
+message TrashDocumentRequest {
+  string document_id = 1;
+  string request_id = 2;
+}
+
+message TrashDocumentResponse {
+  DocumentDetail document = 1;
+}
+
+message GetDocumentRequest {
+  string document_id = 1;
+}
+
+message GetDocumentResponse {
+  DocumentDetail document = 1;
+}
+
+message ListDocumentsRequest {
+  // Empty lists documents visible to the caller subject.
+  string owner_subject_key = 1;
+  string space_id = 2;
+  LifecycleStatus lifecycle_status = 3;
+  int32 page_size = 4;
+  string page_token = 5;
+  // Restricts the result to documents whose access policy is authenticated
+  // public. It is a filter, never a grant: the caller still has to be allowed to
+  // read what it matches.
+  bool authenticated_public_only = 6;
+}
+
+message ListDocumentsResponse {
+  repeated DocumentSummary documents = 1;
+  // Opaque forward cursor. It is passed back verbatim as page_token; a caller
+  // never constructs one, because the cursor is a position in the service's own
+  // ordering rather than an offset.
+  string next_page_token = 2;
+  // Number of documents matching the filter, independent of the page returned.
+  // It lets a caller render an honest page count instead of inferring one from
+  // the page size.
+  int64 total_count = 3;
+}
+
+message CreateTeamSpaceRequest {
+  string name = 1;
+  string request_id = 2;
+}
+
+message CreateTeamSpaceResponse {
+  KnowledgeSpace space = 1;
+}
+
+message GetSpaceRequest {
+  string space_id = 1;
+}
+
+message GetSpaceResponse {
+  KnowledgeSpace space = 1;
+  repeated SpaceMember members = 2;
+  repeated GroupSpaceBinding group_bindings = 3;
+}
+
+message ListSubjectsRequest {
+  string subject_key = 1;
+}
+
+message ListSubjectsResponse {
+  repeated AccessSubject subjects = 1;
+}
+
+message GrantSpaceMemberRequest {
+  string space_id = 1;
+  string subject_key = 2;
+  MemberRole member_role = 3;
+  string request_id = 4;
+}
+
+message GrantSpaceMemberResponse {
+  SpaceMember member = 1;
+}
+
+message RevokeSpaceMemberRequest {
+  string space_id = 1;
+  string subject_key = 2;
+  string request_id = 3;
+}
+
+message RevokeSpaceMemberResponse {
+  SpaceMember member = 1;
+}
+
+message BindGroupSpaceRequest {
+  string bot_id = 1;
+  string external_group_id = 2;
+  string space_id = 3;
+  string reason = 4;
+  string request_id = 5;
+}
+
+message BindGroupSpaceResponse {
+  GroupSpaceBinding binding = 1;
+}
+
+message RevokeGroupSpaceRequest {
+  string bot_id = 1;
+  string external_group_id = 2;
+  string reason = 3;
+  string request_id = 4;
+}
+
+message RevokeGroupSpaceResponse {
+  GroupSpaceBinding binding = 1;
+}
+
+message ResolveAccessScopeRequest {
+  string subject_key = 1;
+  ConversationContext conversation = 2;
+}
+
+message ResolveAccessScopeResponse {
+  Decision decision = 1;
+  DeniedReason denied_reason = 2;
+  repeated string private_space_ids = 3;
+  string current_team_space_id = 4;
+  repeated string other_team_space_ids = 5;
+  // Deterministic union of the three labelled families, recomputed server side.
+  // It is never accepted as input from the caller.
+  repeated string member_space_ids = 6;
+}
+
+message IssueSearchCapabilityRequest {
+  string subject_key = 1;
+  ConversationContext conversation = 2;
+  // Optional narrowing requested by the caller. It must be a subset of the
+  // resolved envelope; an identifier outside it rejects the whole request.
+  repeated string requested_space_ids = 3;
+  repeated string requested_document_ids = 4;
+}
+
+message IssueSearchCapabilityResponse {
+  Decision decision = 1;
+  DeniedReason denied_reason = 2;
+  // The signed capability to present to document-search in the
+  // "x-resource-capability" metadata header. Empty when the decision is Denied:
+  // a denial is never downgraded into an empty-but-valid grant.
+  string capability = 3;
+  string expires_at = 4;
+  // The resolved envelope, repeated here so the caller can narrow its request
+  // without a second round trip. Labels are server generated.
+  repeated string private_space_ids = 5;
+  string current_team_space_id = 6;
+  repeated string other_team_space_ids = 7;
+  repeated string member_space_ids = 8;
+  repeated string allowed_document_ids = 9;
+  bool authenticated_public = 10;
+}
+
+enum DocumentEventKind {
+  DOCUMENT_EVENT_KIND_UNSPECIFIED = 0;
+  // Upsert carries the complete indexable state of one document version plus the
+  // complete access snapshot; it is emitted for creation, content update,
+  // publication and any access change.
+  DOCUMENT_EVENT_KIND_UPSERT = 1;
+  // Delete removes the document from the index. A later event with a lower
+  // lifecycle revision must never resurrect it.
+  DOCUMENT_EVENT_KIND_DELETE = 2;
+}
+
+// DocumentEventEnvelope is the versioned document change event. Consumers apply
+// the payload idempotently and must tolerate duplicates, reordering across
+// documents and redelivery after a restart.
+message DocumentEventEnvelope {
+  int64 sequence = 1;
+  string event_id = 2;
+  DocumentEventKind kind = 3;
+  string document_id = 4;
+  string version_id = 5;
+  uint64 aggregate_revision = 6;
+  uint64 activation_revision = 7;
+  uint64 access_revision = 8;
+  uint64 lifecycle_revision = 9;
+  LifecycleStatus lifecycle_status = 10;
+  PublicationStatus publication_status = 11;
+  string owner_subject_key = 12;
+  string owner_space_id = 13;
+  bool authenticated_public = 14;
+  repeated string allowed_space_ids = 15;
+  string title = 16;
+  string summary = 17;
+  string content = 18;
+  string content_format = 19;
+  string content_sha256 = 20;
+  string index_profile = 21;
+  string occurred_at = 22;
+  DocumentSource source = 23;
+  // The document's creation instant, so a consumer can present a real creation
+  // time without calling back into this service.
+  string created_at = 24;
+}
+
+message ListDocumentEventsRequest {
+  // Exclusive lower bound: the consumer passes the last applied sequence.
+  int64 after_sequence = 1;
+  int32 batch_size = 2;
+  // When true the stream stays open and delivers new events as they commit.
+  bool follow = 3;
+}

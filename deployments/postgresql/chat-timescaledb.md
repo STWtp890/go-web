@@ -16,13 +16,13 @@
 
 | 项 | 现状 | 来源 |
 | --- | --- | --- |
-| 连接 | 单实例 PostgreSQL `gin_demo`，`PostgreSQLManager` 注册模式（ServiceAuth/ServiceDocument/ServiceChat），chat 代码使用独立 ServiceChat；当前组合根不注册该连接 | `internal/common/base/connection/postgresql/` |
+| 连接 | 单实例 PostgreSQL `gin_demo`，`PostgreSQLManager` 注册模式（ServiceAuth/ServiceChat）；chat 代码使用独立 ServiceChat；当前组合根不注册该连接。ADR-017 之后文档业务不再有本进程连接，旧的 `ServiceDocument` 注册键已随阶段 C 删除 | `internal/common/base/connection/postgresql/` |
 | 驱动 | `gorm.io/driver/postgres v1.6.2` + `gorm.io/gorm v1.31.2` | `apps/gin-backend/go.mod` |
 | 消息表 | `chat_messages`：`id`(PK 自增)、`group_type`、`from_id`、`to_id`(复合索引)、`payload`(text)、`created_at`/`updated_at`(int64)、`deleted_at`(gorm.DeletedAt 软删) | `internal/model/orm/chat/message.go` |
 | 读路径 | `FetchOffline`（to_id+private, `ORDER BY id ASC LIMIT 100`）；`FetchGroupHistory`（to_id+group, `ORDER BY id DESC LIMIT 100` 反转） | `internal/modules/chat/store/message.go` |
 | 写路径 | 投递热路径同步 `Save`（INSERT） | `structure/bridge/deliver.go` |
 | 初始化 | 空库初始化直接建立 Chat schema 与 hypertable；当前运行时不注册 Chat 服务 | `deployments/postgresql/entryscript/00-init.sh` |
-| 部署 | 空库初始化统一安装 TimescaleDB/pg_search；文档 BM25 载体为 `document_search_projection` | 仓库 |
+| 部署 | 空库初始化统一安装 TimescaleDB/pg_search；正式文档全文检索已迁到独立的 document-search 服务（`document_search.document_index`），旧 `public.document_search_projection` 已随阶段 C 删除 | 仓库 |
 
 ---
 

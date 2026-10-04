@@ -1,0 +1,181 @@
+syntax = "proto3";
+
+package qqsearch.v1;
+
+option go_package = "packages/gen/qqsearch/v1;qqsearchv1";
+
+// QQSearchService owns the raw QQ search indexes only: original files and
+// original chat messages live in separate data models, tables and index
+// collections inside this one service.
+//
+// It consumes qqsource.v1 events produced by py-agent's QQ data module and never
+// calls back into py-agent while answering a query. Authorization uses a channel
+// scope capability issued by py-agent (issuer "py-agent", audience "qq-search");
+// the resource half of the envelope stays with document-service.
+service QQSearchService {
+  rpc IndexQQSourceEvent(IndexQQSourceEventRequest) returns (IndexQQSourceEventResponse);
+  rpc SearchQQMessages(SearchQQMessagesRequest) returns (SearchQQMessagesResponse);
+  rpc SearchQQFiles(SearchQQFilesRequest) returns (SearchQQFilesResponse);
+  rpc GetQQRecordState(GetQQRecordStateRequest) returns (GetQQRecordStateResponse);
+  rpc RebuildIndex(RebuildIndexRequest) returns (RebuildIndexResponse);
+  rpc GetIndexStatus(GetIndexStatusRequest) returns (GetIndexStatusResponse);
+}
+
+enum QQRecordKind {
+  QQ_RECORD_KIND_UNSPECIFIED = 0;
+  QQ_RECORD_KIND_MESSAGE = 1;
+  QQ_RECORD_KIND_FILE = 2;
+}
+
+enum QQRecordStatus {
+  QQ_RECORD_STATUS_UNSPECIFIED = 0;
+  QQ_RECORD_STATUS_INDEXED = 1;
+  QQ_RECORD_STATUS_RECALLED = 2;
+  QQ_RECORD_STATUS_DELETED = 3;
+}
+
+message QQRecordState {
+  string record_id = 1;
+  QQRecordKind kind = 2;
+  string bot_id = 3;
+  string conversation_id = 4;
+  uint64 record_revision = 5;
+  QQRecordStatus status = 6;
+  string indexed_at = 7;
+}
+
+// IndexQQSourceEventRequest mirrors qqsource.v1.QQSourceEventEnvelope. At most
+// one of message/file/recall is set, matching kind.
+message IndexQQSourceEventRequest {
+  string event_id = 1;
+  int64 sequence = 2;
+  uint64 record_revision = 3;
+  // message_upsert | file_upsert | message_recalled | file_recalled
+  string kind = 4;
+  string channel = 5;
+  string bot_id = 6;
+  // private | group
+  string conversation_kind = 7;
+  string external_user_id = 8;
+  string external_group_id = 9;
+  string conversation_id = 10;
+  // Message payload: message_text, sender_external_user_id, sent_at,
+  // platform_sequence.
+  string record_id = 11;
+  string message_text = 12;
+  string sender_external_user_id = 13;
+  string sent_at = 14;
+  int64 platform_sequence = 15;
+  // File payload: file_name, mime_type, size_bytes, content_sha256,
+  // storage_ref, uploader_external_user_id, uploaded_at. Messages and files use
+  // separate fields on purpose, so a producer cannot fill a message field for a
+  // file record and have it silently accepted.
+  string file_name = 16;
+  string mime_type = 17;
+  int64 size_bytes = 18;
+  string content_sha256 = 19;
+  string storage_ref = 20;
+  string uploaded_at = 21;
+  string uploader_external_user_id = 22;
+  // Recall payload: recalled_at, operator_external_user_id.
+  string recalled_at = 23;
+  string operator_external_user_id = 24;
+  string occurred_at = 25;
+}
+
+message IndexQQSourceEventResponse {
+  bool applied = 1;
+  string reason = 2;
+  QQRecordState state = 3;
+}
+
+// The channel scope granted by the capability. A query must stay inside it;
+// any identifier outside the granted scope rejects the whole request.
+message QQChannelScope {
+  repeated string bot_ids = 1;
+  repeated string conversation_ids = 2;
+  repeated string external_group_ids = 3;
+}
+
+message SearchQQMessagesRequest {
+  string query = 1;
+  QQChannelScope scope = 2;
+  int32 top_k = 3;
+}
+
+message QQMessageHit {
+  string record_id = 1;
+  string bot_id = 2;
+  string conversation_id = 3;
+  string sender_external_user_id = 4;
+  string text = 5;
+  string sent_at = 6;
+  double score = 7;
+  bool recalled = 8;
+}
+
+message SearchQQMessagesResponse {
+  repeated QQMessageHit hits = 1;
+  bool truncated = 2;
+}
+
+message SearchQQFilesRequest {
+  string query = 1;
+  QQChannelScope scope = 2;
+  int32 top_k = 3;
+}
+
+message QQFileHit {
+  string record_id = 1;
+  string bot_id = 2;
+  string conversation_id = 3;
+  string uploader_external_user_id = 4;
+  string file_name = 5;
+  string mime_type = 6;
+  int64 size_bytes = 7;
+  string uploaded_at = 8;
+  double score = 9;
+  bool recalled = 10;
+}
+
+message SearchQQFilesResponse {
+  repeated QQFileHit hits = 1;
+  bool truncated = 2;
+}
+
+message GetQQRecordStateRequest {
+  QQRecordKind kind = 1;
+  string record_id = 2;
+  // The channel scope the caller is asking about, narrowed from the capability
+  // py-agent issued. A record outside the effective scope is reported exactly
+  // like a record that does not exist, so this lookup cannot be used to probe
+  // whether another bot or conversation holds a given record id. Naming an
+  // identifier outside the granted scope rejects the whole request.
+  QQChannelScope scope = 3;
+}
+
+message GetQQRecordStateResponse {
+  bool exists = 1;
+  QQRecordState state = 2;
+}
+
+message RebuildIndexRequest {
+  bool confirm = 1;
+}
+
+message RebuildIndexResponse {
+  int32 messages_rebuilt = 1;
+  int32 files_rebuilt = 2;
+  int32 records_failed = 3;
+}
+
+message GetIndexStatusRequest {}
+
+message GetIndexStatusResponse {
+  string message_collection = 1;
+  string file_collection = 2;
+  int32 indexed_messages = 3;
+  int32 indexed_files = 4;
+  int64 events_applied = 5;
+  int64 last_sequence = 6;
+}

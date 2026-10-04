@@ -1,0 +1,36 @@
+# document-service configuration template.
+#
+# Every value here has a documented default in internal/config; this file exists
+# so the shape of the configuration is reviewable and so a deployment can mount
+# its own copy. Credentials are never placed here: the boundary key is mounted as
+# a read-only secret file and the database credentials come from the DSN
+# environment variable.
+grpc_listen_address: "127.0.0.1:18081"
+http_listen_address: "127.0.0.1:18091"
+
+postgres:
+  # Development default only. Production must supply its own credentials.
+  dsn: "postgres://document_service_writer:document_service@127.0.0.1:15432/gin_demo?sslmode=disable"
+  schema: "document_service"
+  max_open_conns: 16
+  max_idle_conns: 4
+  conn_max_lifetime: "30m"
+  connect_timeout: "10s"
+
+auth:
+  capability_key_file: "../../deployments/secrets/mixin_search_capability.key"
+  audience: "document-service"
+  issuer: "document-service"
+  capability_ttl: "2m"
+  # Empty means the registered default set: go-web, py-agent, document-service,
+  # spacectl. Narrow it in a deployment that only serves one caller.
+  allowed_callers: []
+  # Reflection lets any caller enumerate the administrative surface of the fact
+  # source, so it stays off outside local debugging.
+  enable_reflection: false
+
+outbox:
+  max_batch_size: 200
+  poll_interval: "500ms"
+
+shutdown_timeout: "10s"

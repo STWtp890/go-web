@@ -1,0 +1,29 @@
+{
+  "comment": "Verbatim shape of py-agent's InboundEvent JSON (agent_bot.domain.models). conversation_id is not stored here because py-agent derives it: qq:<bot_id>:group:<group_id> or qq:<bot_id>:private:<user_id>.",
+  "events": [
+    {
+      "bot_id": "10001",
+      "user_id": "20002",
+      "message_id": "msg-1001",
+      "text": "private hello about the quarterly report",
+      "group_id": null,
+      "mentioned": false
+    },
+    {
+      "bot_id": "10001",
+      "user_id": "20003",
+      "message_id": "msg-1002",
+      "text": "group hello about the quarterly report",
+      "group_id": "999",
+      "mentioned": true
+    },
+    {
+      "bot_id": "10001",
+      "user_id": "20004",
+      "message_id": "msg-1003",
+      "text": "second group message in the same group",
+      "group_id": "999",
+      "mentioned": true
+    }
+  ]
+}

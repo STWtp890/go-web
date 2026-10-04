@@ -1,0 +1,29 @@
+# qq-search configuration template.
+grpc_listen_address: "127.0.0.1:18083"
+http_listen_address: "127.0.0.1:18093"
+
+postgres:
+  dsn: "postgres://qq_search_writer:qq_search@127.0.0.1:15432/gin_demo?sslmode=disable"
+  schema: "qq_search"
+  max_open_conns: 16
+  conn_max_lifetime: "30m"
+  connect_timeout: "10s"
+
+auth:
+  capability_key_file: "../../deployments/secrets/mixin_search_capability.key"
+  audience: "qq-search"
+  allowed_callers: []
+  enable_reflection: false
+
+index:
+  # Messages and files are separate models with separate lifecycles, so they must
+  # never share a table or a collection.
+  message_collection_alias: "qq_source_messages_v1"
+  message_storage_domain: "qq-search:messages:v1"
+  file_collection_alias: "qq_source_files_v1"
+  file_storage_domain: "qq-search:files:v1"
+  default_top_k: 10
+  max_top_k: 100
+  max_batch_size: 500
+
+shutdown_timeout: "10s"

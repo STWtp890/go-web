@@ -5,12 +5,14 @@ server:
   read_timeout: 30s
   write_timeout: 30s
 
-# PostgreSQL 配置 (auth/markdown/chat 共用)
+# PostgreSQL 配置 (auth/manager 业务表)
+# 账号是 go_web_app：它只被授予认证与管理表，对三个来源专属服务 schema 没有任何权限。
+# 该角色由 deployments/postgresql/sql/service/service_roles.sql 建立。
 postgres:
   host: 127.0.0.1
   port: 15432
-  user: postgres
-  password: "postgres"
+  user: go_web_app
+  password: "go_web_app"
   dbname: gin_demo
   max_idle_conns: 10
   max_open_conns: 100
@@ -22,41 +24,22 @@ redis:
   password: ""
   db: 0
 
-# 文档事实始终记录 Outbox；enabled 仅控制独立 Worker 是否消费。
-document_index_delivery:
+# ADR-017：正式文档与空间的唯一写入方是 document-service。启用本段后，Web 文档
+# 路由整体切到文档服务接口（写命令、详情读取，以及经 capability 的正式文档检索），
+# go-web 不再读写文档业务表。未启用时文档路由不注册——刻意不提供"直接写表"的回退。
+source_owned_services:
   enabled: false
-  grpc_address: 127.0.0.1:9090
-  batch_size: 32
-  concurrency: 8
-  poll_interval: 500ms
-  lease_duration: 2m
-  index_timeout: 30s
-  control_timeout: 5s
-  base_backoff: 1s
-  max_backoff: 5m
-  max_send_bytes: 16777216
-  health_timeout: 2s
-
-# 本文件面向从 apps/gin-backend 直接运行的本地进程，因此密钥路径相对该目录。
-# 密钥由 deployments/bootstrap.ps1 生成；未生成时只有需要调用 mixin-search 的
-# 进程（Worker、对账、评测、启用影子查询的服务）会失败关闭。
-mixin_search_security:
+  document_service_address: 127.0.0.1:18081
+  document_search_address: 127.0.0.1:18082
+  document_service_audience: document-service
+  document_search_audience: document-search
+  # 必须等于 document_search_audience：capability 只对签发给它的 audience 有效。
+  capability_audience: document-search
+  # caller 必须是登记过的、可以声明 web:* 主体的服务身份。
+  caller: go-web
+  actor: go-web-api
   capability_key_path: ../../deployments/secrets/mixin_search_capability.key
-  issuer: go-web
-  audience: mixin-search
-  token_ttl: 2m
-  index_caller_id: go-web-index-worker
-  search_caller_id: go-web-shadow-search
-
-# 正式 HTTP 结果仍来自 BM25；影子调用通过有界队列异步执行且只写观测记录。
-document_search_shadow:
-  enabled: false
-  grpc_address: 127.0.0.1:9090
-  queue_size: 256
-  concurrency: 4
-  timeout: 750ms
-  record_timeout: 2s
-  top_k: 50
+  request_timeout: 10s
 
 custom:
   # JWT 配置 (RS256 非对称加密)

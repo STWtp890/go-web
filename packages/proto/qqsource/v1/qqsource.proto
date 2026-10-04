@@ -1,0 +1,96 @@
+syntax = "proto3";
+
+package qqsource.v1;
+
+option go_package = "packages/gen/qqsource/v1;qqsourcev1";
+
+// QQSourceService is served by py-agent's QQ data module. It is the only writer
+// of QQ raw facts: original chat messages, original files, conversations and
+// recall facts. Raw QQ content does not become a formal document merely by being
+// stored or indexed.
+//
+// qq-search is the only intended consumer. It indexes raw messages and raw files
+// in separate data models, tables and index collections, and it never calls back
+// into py-agent while answering a query.
+//
+// QQ file and message identity is (channel, bot_id, conversation_id, record_id).
+// Recall is an append-only fact: the original row is never deleted, only marked.
+service QQSourceService {
+  rpc ListQQSourceEvents(ListQQSourceEventsRequest) returns (stream QQSourceEventEnvelope);
+}
+
+enum QQSourceEventKind {
+  QQ_SOURCE_EVENT_KIND_UNSPECIFIED = 0;
+  QQ_SOURCE_EVENT_KIND_MESSAGE_UPSERT = 1;
+  QQ_SOURCE_EVENT_KIND_FILE_UPSERT = 2;
+  QQ_SOURCE_EVENT_KIND_MESSAGE_RECALLED = 3;
+  QQ_SOURCE_EVENT_KIND_FILE_RECALLED = 4;
+}
+
+enum QQConversationKind {
+  QQ_CONVERSATION_KIND_UNSPECIFIED = 0;
+  QQ_CONVERSATION_KIND_PRIVATE = 1;
+  QQ_CONVERSATION_KIND_GROUP = 2;
+}
+
+message QQConversation {
+  string channel = 1;
+  string bot_id = 2;
+  QQConversationKind kind = 3;
+  string external_user_id = 4;
+  string external_group_id = 5;
+  string conversation_id = 6;
+}
+
+message QQMessageRecord {
+  string record_id = 1;
+  string conversation_id = 2;
+  string sender_external_user_id = 3;
+  string text = 4;
+  string sent_at = 5;
+  // Sequence within the conversation when the platform supplies one.
+  int64 platform_sequence = 6;
+}
+
+message QQFileRecord {
+  string record_id = 1;
+  string conversation_id = 2;
+  string uploader_external_user_id = 3;
+  string file_name = 4;
+  string mime_type = 5;
+  int64 size_bytes = 6;
+  string content_sha256 = 7;
+  string storage_ref = 8;
+  string uploaded_at = 9;
+}
+
+message QQRecallFact {
+  string record_id = 1;
+  string conversation_id = 2;
+  string recalled_at = 3;
+  string operator_external_user_id = 4;
+}
+
+// QQSourceEventEnvelope carries exactly one of the three payloads, selected by
+// kind. The event contract is versioned by the proto package; consumers must
+// tolerate duplicate delivery and out-of-order arrival per record.
+message QQSourceEventEnvelope {
+  int64 sequence = 1;
+  string event_id = 2;
+  // Producer-assigned monotonic ordering hint; a lower value must never replace
+  // a newer record revision on the consumer side.
+  uint64 record_revision = 3;
+  QQSourceEventKind kind = 4;
+  QQConversation conversation = 5;
+  QQMessageRecord message = 6;
+  QQFileRecord file = 7;
+  QQRecallFact recall = 8;
+  string occurred_at = 9;
+}
+
+message ListQQSourceEventsRequest {
+  // Exclusive lower bound: the consumer passes the last applied sequence.
+  int64 after_sequence = 1;
+  int32 batch_size = 2;
+  bool follow = 3;
+}

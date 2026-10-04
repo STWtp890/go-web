@@ -1,0 +1,28 @@
+# document-service configuration for the root Compose stack.
+#
+# Addresses bind all interfaces because the container network is the boundary;
+# host ports are published on the loopback interface only (see docker-compose.yaml).
+grpc_listen_address: "0.0.0.0:18081"
+http_listen_address: "0.0.0.0:18091"
+
+postgres:
+  dsn: "postgres://document_service_writer:document_service@postgres:5432/gin_demo?sslmode=disable"
+  schema: "document_service"
+  max_open_conns: 16
+  max_idle_conns: 4
+  conn_max_lifetime: "30m"
+  connect_timeout: "10s"
+
+auth:
+  capability_key_file: "/app/secrets/boundary.key"
+  audience: "document-service"
+  issuer: "document-service"
+  capability_ttl: "2m"
+  allowed_callers: []
+  enable_reflection: false
+
+outbox:
+  max_batch_size: 200
+  poll_interval: "500ms"
+
+shutdown_timeout: "10s"

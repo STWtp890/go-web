@@ -1,0 +1,56 @@
+# document-search configuration for the root Compose stack.
+grpc_listen_address: "0.0.0.0:18082"
+http_listen_address: "0.0.0.0:18092"
+
+postgres:
+  dsn: "postgres://document_search_writer:document_search@postgres:5432/gin_demo?sslmode=disable"
+  schema: "document_search"
+  max_open_conns: 16
+  conn_max_lifetime: "30m"
+  connect_timeout: "10s"
+
+auth:
+  capability_key_file: "/app/secrets/boundary.key"
+  audience: "document-search"
+  allowed_callers: []
+  enable_reflection: false
+
+source:
+  endpoint: "document-service:18081"
+  caller_identity: "document-search"
+  capability_key_file: "/app/secrets/boundary.key"
+  audience: "document-service"
+  scope: "document-event-reader"
+  batch_size: 100
+  poll_interval: "500ms"
+  request_timeout: "10s"
+  reconnect_backoff: "2s"
+  disabled: false
+
+index:
+  collection_alias: "go_web_document_v1"
+  storage_domain: "document-search:documents:v1"
+  index_profile: "markdown-v1"
+  max_chunks: 200
+  default_top_k: 10
+  max_top_k: 100
+
+# The Qdrant service of the Compose stack serves gRPC on 6334. The collection
+# identity itself (alias, storage domain, embedding profile, vector width) is read
+# from document_search.index_generations and must agree with these values.
+vector:
+  enabled: true
+  endpoint: "qdrant:6334"
+  api_key: ""
+  use_tls: false
+  timeout: "10s"
+  profile: "local-hash-v1"
+  dimensions: 64
+  recall: 100
+  rrf_k: 60
+  # The RRF fusion window: the keyword matches that take part in the fusion with
+  # the vector recall. The matches beyond it stay readable, in keyword order.
+  max_keyword_candidates: 1000
+  prune_generations_on_rebuild: true
+
+shutdown_timeout: "10s"
